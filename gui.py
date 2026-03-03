@@ -21,9 +21,15 @@ class GamryProtocolApp:
         self.root.title("Procesamiento de datos Gamry Protocol")
         self.root.geometry("650x270")
 
-        # Default folders
-        self.default_input_dir = pathlib.Path(r"C:\Users\gonza\Documents\GitHub\Deg2026_Tool\data")
-        self.default_output_dir = pathlib.Path(r"C:\Users\gonza\Documents\GitHub\Deg2026_Tool\outputs")
+        # Repository root = folder where this gui file lives
+        self.repo_dir = pathlib.Path(__file__).resolve().parent
+
+        # Default folders relative to the repo
+        self.default_input_dir = self.repo_dir / "data"
+        self.default_output_dir = self.repo_dir / "outputs"
+
+        # Ensure output folder exists
+        self.default_output_dir.mkdir(parents=True, exist_ok=True)
 
         self.options_window = None
         self.selected_options = {}
