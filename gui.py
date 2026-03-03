@@ -3,12 +3,12 @@ from tkinter import filedialog, ttk
 
 
 PIPELINE_OPTIONS = {
-    "EIS": ["Nyquist plot", "Bode plot", "Equivalent circuit fit"],
-    "CV": ["Peak current", "Onset potential"],
-    "PC": ["Average voltage", "Stability"],
-    "OCP": ["Drift", "Mean value"],
-    "Deg": ["Trend", "Degradation rate"],
-    "Full analysis": ["EIS", "CV", "PC", "OCP", "Deg"]
+    "EIS": ["Nyquist plot", "Bode plot", "Equivalent circuit fit", "V", "I vs pt", "T vs t"],
+    "CV": ["I vs t", "Peak current", "Onset potential"],
+    "PC": ["V vs I completo", "V vs I last", "V vs t", "I vs t", "T vs t", "dV/dI", "Step Stability"],
+    "OCP": ["V vs t", "V final", "Drift", "DeltaV"],
+    "Deg": ["V vs t", "I vs t", "T vs t", "dV/dt", "dV/dt final", "Trend", "Degradation rate"],
+    "Análisis multiple": ["EIS", "CV", "PC", "OCP", "Deg"]
 }
 
 
@@ -33,11 +33,11 @@ def pipeline_selected():
     selected_pipeline = pipeline_combo.get().strip()
 
     if not input_dir or not output_dir or not selected_pipeline:
-        print("Please complete all fields first.")
+        print("Complete todos los campos.")
         return
 
-    print(f"Input directory: {input_dir}")
-    print(f"Output directory: {output_dir}")
+    print(f"Directorio de entrada: {input_dir}")
+    print(f"Directorio de salida: {output_dir}")
     print(f"Pipeline: {selected_pipeline}")
 
     open_pipeline_window(selected_pipeline)
@@ -72,25 +72,25 @@ root = tk.Tk()
 root.title("Procesamiento de datos Gamry Protocol")
 root.geometry("650x220")
 
-input_label = tk.Label(root, text="Input folder:")
+input_label = tk.Label(root, text="Carpeta de entrada:")
 input_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
 
 input_entry = tk.Entry(root, width=60)
 input_entry.grid(row=0, column=1, padx=10, pady=10)
 
-browsein_button = tk.Button(root, text="Browse...", command=lambda: browse_button("bin"))
+browsein_button = tk.Button(root, text="Buscar...", command=lambda: browse_button("bin"))
 browsein_button.grid(row=0, column=2, padx=10, pady=10)
 
-output_label = tk.Label(root, text="Output folder:")
+output_label = tk.Label(root, text="Carpeta de salidar:")
 output_label.grid(row=1, column=0, padx=10, pady=10, sticky="w")
 
 output_entry = tk.Entry(root, width=60)
 output_entry.grid(row=1, column=1, padx=10, pady=10)
 
-browseout_button = tk.Button(root, text="Browse...", command=lambda: browse_button("bout"))
+browseout_button = tk.Button(root, text="Buscar...", command=lambda: browse_button("bout"))
 browseout_button.grid(row=1, column=2, padx=10, pady=10)
 
-pipeline_label = tk.Label(root, text="Pipeline:")
+pipeline_label = tk.Label(root, text="Analizar:")
 pipeline_label.grid(row=2, column=0, padx=10, pady=10, sticky="w")
 
 pipeline_combo = ttk.Combobox(
