@@ -21,6 +21,10 @@ class GamryProtocolApp:
         self.root.title("Procesamiento de datos Gamry Protocol")
         self.root.geometry("650x270")
 
+        # Default folders
+        self.default_input_dir = pathlib.Path(r"C:\Users\gonza\Documents\GitHub\Deg2026_Tool\data")
+        self.default_output_dir = pathlib.Path(r"C:\Users\gonza\Documents\GitHub\Deg2026_Tool\outputs")
+
         self.options_window = None
         self.selected_options = {}
 
@@ -35,6 +39,7 @@ class GamryProtocolApp:
 
         self.input_entry = tk.Entry(self.root, width=60)
         self.input_entry.grid(row=0, column=1, padx=10, pady=10)
+        self.input_entry.insert(0, str(self.default_input_dir))
 
         browsein_button = tk.Button(
             self.root,
@@ -48,6 +53,7 @@ class GamryProtocolApp:
 
         self.output_entry = tk.Entry(self.root, width=60)
         self.output_entry.grid(row=1, column=1, padx=10, pady=10)
+        self.output_entry.insert(0, str(self.default_output_dir))
 
         browseout_button = tk.Button(
             self.root,
@@ -83,8 +89,17 @@ class GamryProtocolApp:
         self.status_var.set(message)
 
     def browse_button(self, button_type):
-        title = "Select input folder" if button_type == "bin" else "Select output folder"
-        folder = filedialog.askdirectory(title=title)
+        if button_type == "bin":
+            title = "Select input folder"
+            start_dir = self.input_entry.get().strip() or str(self.default_input_dir)
+        else:
+            title = "Select output folder"
+            start_dir = self.output_entry.get().strip() or str(self.default_output_dir)
+
+        folder = filedialog.askdirectory(
+            title=title,
+            initialdir=start_dir
+        )
 
         if not folder:
             self.set_status("Selección cancelada.")
