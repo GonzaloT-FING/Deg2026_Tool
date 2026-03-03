@@ -1,14 +1,14 @@
-"""EIS (.DTA) -> Excel (.xlsx) exporter (Gamry Potentiostatic EIS)
+"""EIS (.DTA) -> Excel (.xlsx) exporter for Gamry Potentiostatic EIS.
 
-Version 1 goals (as discussed):
-  - Find all EIS files in a folder by filename containing 'EISPOT'
-  - Parse required metadata fields
-  - Parse the ZCURVE table
-  - Export ONE .xlsx per input file with two sheets:
-        1) Metadata
-        2) Data
+What this version does:
+  - Finds all .DTA files whose filename contains 'EISPOT'
+  - Parses selected metadata fields
+  - Parses the ZCURVE table
+  - Exports ONE .xlsx per input file with two sheets:
+        1) Metadata  -> Campo / Valor / Unidad
+        2) Data      -> headers row, units row, then numeric data
 
-This script is intentionally simple and heavily commented for learning.
+This version is written to match the real structure of the uploaded Gamry files.
 """
 
 from __future__ import annotations
@@ -22,23 +22,25 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 
-# --- What we want to extract (your spec) ------------------------------------
+# ---------------------------------------------------------------------------
+# Labels to export (Spanish-friendly names)
+# ---------------------------------------------------------------------------
 
 META_FIELDS = [
-    ("TITLE", "Title"),
-    ("DATE", "Date"),
-    ("TIME", "Time"),
+    ("TITLE", "Técnica"),
+    ("DATE", "Fecha"),
+    ("TIME", "Hora"),
     ("VDC", "Vdc"),
-    ("FREQINIT", "freqinit"),
-    ("FREQFINAL", "freqfinal"),
-    ("PTSPERDEC", "ptsperdec"),
-    ("VAC", "vac"),
-    ("AREA", "area"),
+    ("FREQINIT", "Frecuencia inicial"),
+    ("FREQFINAL", "Frecuencia final"),
+    ("PTSPERDEC", "Puntos por década"),
+    ("VAC", "Amplitud"),
+    ("AREA", "Área"),
 ]
 
 DATA_MAP = {
     "Pt": "Pt",
-    "Freq": "Frequency",
+    "Freq": "Frecuencia",
     "Zreal": "Zreal",
     "Zimag": "Zimag",
     "Zsig": "Zsig",
@@ -46,16 +48,20 @@ DATA_MAP = {
     "Zphz": "Zphz",
     "Idc": "Idc",
     "Vdc": "Vdc",
-    "Temp": "Temperature",
+    "Temp": "Temperatura",
 }
 
 
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+
 def to_float(val: str) -> float | None:
-    """Convert Gamry-style numbers (decimal comma, scientific notation) to float."""
+    """Convert Gamry-style numbers (decimal comma) to float."""
     s = val.strip()
     if not s:
         return None
-    # Gamry exports commonly use ',' as decimal separator.
+
     s = s.replace(",", ".")
     try:
         return float(s)
@@ -63,31 +69,78 @@ def to_float(val: str) -> float | None:
         return None
 
 
+def _drop_leading_blank(parts: list[str]) -> list[str]:
+    """Gamry ZCURVE rows usually start with a leading tab.
+
+    Example after split:
+        ['', 'Pt', 'Time', 'Freq', ...]
+    We remove the first empty item if present.
+    """
+    if parts and parts[0] == "":
+        return parts[1:]
+    return parts
+
+
+def _extract_parenthesized_unit(text: str) -> str:
+    """Extract the last '(...)' group from a description line."""
+    matches = re.findall(r"\(([^()]*)\)", text)
+    if matches:
+        return matches[-1].strip()
+    return ""
+
+
+def _extract_meta_unit(key: str, description: str) -> str:
+    """Extract a clean metadata unit from the descriptive text.
+
+    Real examples from the uploaded files:
+      VDC       ...   DC Voltage (V)
+      FREQINIT  ...   Initial Freq. (Hz)
+      VAC       ...   AC Voltage (mV rms)
+      AREA      ...   Sample Area (cm^2)
+    """
+    unit = _extract_parenthesized_unit(description)
+    if unit:
+        return unit
+
+    if key == "PTSPERDEC":
+        return "points/decade"
+
+    # Non-physical fields stay blank.
+    if key in {"TITLE", "DATE", "TIME"}:
+        return ""
+
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Parsed container
+# ---------------------------------------------------------------------------
+
 @dataclass
 class ParsedDTA:
-    meta: dict[str, str]
+    meta_values: dict[str, str]
+    meta_units: dict[str, str]
     header: list[str]
+    units: list[str]
     rows: list[list[str]]
 
 
+# ---------------------------------------------------------------------------
+# Parsing
+# ---------------------------------------------------------------------------
+
 def parse_gamry_dta(path: Path) -> ParsedDTA:
-    """Parse a Gamry .DTA file that contains a ZCURVE table.
-
-    Strategy:
-      1) Read the file as text (latin-1 is safe for the ° symbol in headers)
-      2) Collect metadata key/value pairs until we reach 'ZCURVE\tTABLE'
-      3) Read the column header line (starts with 'Pt')
-      4) Skip the units line (starts with '#')
-      5) Read data rows (first token is an integer Pt)
-    """
-
+    """Parse one Gamry .DTA file containing a ZCURVE table."""
     text = path.read_text(encoding="latin-1", errors="replace")
     lines = text.splitlines()
 
-    meta: dict[str, str] = {}
-    table_started = False
+    meta_values: dict[str, str] = {}
+    meta_units: dict[str, str] = {}
     header: list[str] | None = None
-    data_rows: list[list[str]] = []
+    units: list[str] = []
+    rows: list[list[str]] = []
+
+    table_started = False
 
     for line in lines:
         if not table_started:
@@ -95,94 +148,137 @@ def parse_gamry_dta(path: Path) -> ParsedDTA:
                 table_started = True
                 continue
 
-            parts = line.split("\t")
-            if len(parts) >= 3 and parts[0].strip():
-                key = parts[0].strip()
-                val = parts[2].strip()
-                meta[key] = val
-
-        else:
             if not line.strip():
                 continue
 
-            parts = line.strip().split("\t")
+            parts = line.split("\t")
+            if len(parts) >= 3 and parts[0].strip():
+                key = parts[0].strip()
+                value = parts[2].strip()
+                description = parts[-1].strip() if len(parts) >= 4 else ""
 
-            if header is None:
-                if parts and parts[0] == "Pt":
-                    header = parts
-                continue
+                meta_values[key] = value
+                meta_units[key] = _extract_meta_unit(key, description)
 
-            # Units row starts with '#'
-            if parts and parts[0] == "#":
-                continue
+            continue
 
-            # Data rows start with an integer Pt index
-            if parts and re.fullmatch(r"-?\d+", parts[0]):
-                data_rows.append(parts)
+        # Table section ------------------------------------------------------
+        if not line.strip():
+            continue
+
+        parts = _drop_leading_blank(line.rstrip("\r\n").split("\t"))
+        if not parts:
+            continue
+
+        # Header row
+        if header is None:
+            if parts[0] == "Pt":
+                header = parts
+            continue
+
+        # Units row
+        if parts[0] == "#":
+            units = parts
+            continue
+
+        # Data rows start with the integer point index
+        if re.fullmatch(r"-?\d+", parts[0]):
+            rows.append(parts)
 
     if header is None:
         raise ValueError(f"No data header found in {path.name} (expected 'Pt ...')")
 
-    return ParsedDTA(meta=meta, header=header, rows=data_rows)
+    return ParsedDTA(
+        meta_values=meta_values,
+        meta_units=meta_units,
+        header=header,
+        units=units,
+        rows=rows,
+    )
 
+
+# ---------------------------------------------------------------------------
+# Export
+# ---------------------------------------------------------------------------
 
 def export_to_xlsx(parsed: ParsedDTA, out_path: Path) -> None:
-    """Create an .xlsx with Metadata + Data sheets."""
-
+    """Create one .xlsx with Metadata + Data sheets."""
     wb = Workbook()
-    wb.remove(wb.active)  # remove the default sheet
+    wb.remove(wb.active)
 
     ws_meta = wb.create_sheet("Metadata")
     ws_data = wb.create_sheet("Data")
 
-    # --- Metadata sheet ------------------------------------------------------
-    ws_meta["A1"] = "Field"
-    ws_meta["B1"] = "Value"
-    ws_meta["A1"].font = ws_meta["B1"].font = Font(bold=True)
+    # ---------------- Metadata sheet ---------------------------------------
+    ws_meta["A1"] = "Campo"
+    ws_meta["B1"] = "Valor"
+    ws_meta["C1"] = "Unidad"
+    for ref in ("A1", "B1", "C1"):
+        ws_meta[ref].font = Font(bold=True)
     ws_meta.freeze_panes = "A2"
 
-    row = 2
-    numeric_keys = {"VDC", "FREQINIT", "FREQFINAL", "PTSPERDEC", "VAC", "AREA"}
-    for key, label in META_FIELDS:
-        ws_meta.cell(row=row, column=1, value=label)
-        raw_val = parsed.meta.get(key, "")
+    numeric_meta_keys = {"VDC", "FREQINIT", "FREQFINAL", "PTSPERDEC", "VAC", "AREA"}
 
-        if key in numeric_keys:
-            num = to_float(raw_val)
-            ws_meta.cell(row=row, column=2, value=num if num is not None else raw_val)
+    for row_idx, (key, label) in enumerate(META_FIELDS, start=2):
+        raw_value = parsed.meta_values.get(key, "")
+        raw_unit = parsed.meta_units.get(key, "")
+
+        ws_meta.cell(row=row_idx, column=1, value=label)
+
+        if key in numeric_meta_keys:
+            num = to_float(raw_value)
+            ws_meta.cell(row=row_idx, column=2, value=num if num is not None else raw_value)
         else:
-            ws_meta.cell(row=row, column=2, value=raw_val)
-        row += 1
+            ws_meta.cell(row=row_idx, column=2, value=raw_value)
 
-    # --- Data sheet ----------------------------------------------------------
-    col_idx = {name: i for i, name in enumerate(parsed.header)}
-    selected_cols = [c for c in DATA_MAP if c in col_idx]
-    out_headers = [DATA_MAP[c] for c in selected_cols]
+        ws_meta.cell(row=row_idx, column=3, value=raw_unit)
 
-    for j, h in enumerate(out_headers, start=1):
-        cell = ws_data.cell(row=1, column=j, value=h)
+    # ---------------- Data sheet -------------------------------------------
+    col_idx = {name: idx for idx, name in enumerate(parsed.header)}
+    selected_source_cols = [name for name in DATA_MAP if name in col_idx]
+    selected_output_headers = [DATA_MAP[name] for name in selected_source_cols]
+
+    # Row 1 = names
+    for col_num, header_name in enumerate(selected_output_headers, start=1):
+        cell = ws_data.cell(row=1, column=col_num, value=header_name)
         cell.font = Font(bold=True)
-    ws_data.freeze_panes = "A2"
 
-    for r_i, parts in enumerate(parsed.rows, start=2):
-        for c_i, col_name in enumerate(selected_cols, start=1):
-            raw = parts[col_idx[col_name]] if col_idx[col_name] < len(parts) else ""
-            num = to_float(raw)
-            ws_data.cell(row=r_i, column=c_i, value=num if num is not None else raw)
+    # Row 2 = units
+    for col_num, source_name in enumerate(selected_source_cols, start=1):
+        unit_value = ""
+        source_index = col_idx[source_name]
 
-    # --- Light formatting: widths + vertical alignment ----------------------
+        if parsed.units and source_index < len(parsed.units):
+            unit_value = parsed.units[source_index]
+            if unit_value == "#":
+                unit_value = ""
+
+        ws_data.cell(row=2, column=col_num, value=unit_value)
+
+    ws_data.freeze_panes = "A3"
+
+    # Row 3 onward = numeric data
+    for row_num, raw_parts in enumerate(parsed.rows, start=3):
+        for col_num, source_name in enumerate(selected_source_cols, start=1):
+            source_index = col_idx[source_name]
+            raw_value = raw_parts[source_index] if source_index < len(raw_parts) else ""
+
+            num = to_float(raw_value)
+            ws_data.cell(row=row_num, column=col_num, value=num if num is not None else raw_value)
+
+    # ---------------- Light formatting -------------------------------------
     for ws in (ws_meta, ws_data):
-        for col in range(1, ws.max_column + 1):
-            maxlen = 0
-            for r in range(1, min(ws.max_row, 50) + 1):  # sample first 50 rows
-                v = ws.cell(row=r, column=col).value
-                if v is None:
+        for col_num in range(1, ws.max_column + 1):
+            max_len = 0
+            for row_num in range(1, min(ws.max_row, 50) + 1):
+                value = ws.cell(row=row_num, column=col_num).value
+                if value is None:
                     continue
-                maxlen = max(maxlen, len(str(v)))
-            ws.column_dimensions[get_column_letter(col)].width = min(max(10, maxlen + 2), 45)
+                max_len = max(max_len, len(str(value)))
 
-        for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row,
-                                      min_col=1, max_col=ws.max_column):
+            ws.column_dimensions[get_column_letter(col_num)].width = min(max(10, max_len + 2), 45)
+
+        for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
             for cell in row_cells:
                 cell.alignment = Alignment(vertical="top")
 
@@ -190,18 +286,28 @@ def export_to_xlsx(parsed: ParsedDTA, out_path: Path) -> None:
     wb.save(out_path)
 
 
+# ---------------------------------------------------------------------------
+# Folder export
+# ---------------------------------------------------------------------------
+
 def export_folder(input_dir: Path, output_dir: Path) -> list[Path]:
-    """Find EISPOT*.DTA in input_dir and export each to output_dir."""
+    """Find all EISPOT .DTA files in input_dir and export them to output_dir."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    dta_files = sorted([p for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() == ".dta" and "EISPOT" in p.name])
+    dta_files = sorted(
+        [
+            p for p in input_dir.iterdir()
+            if p.is_file() and p.suffix.lower() == ".dta" and "EISPOT" in p.name
+        ]
+    )
+
     if not dta_files:
         return []
 
     exported: list[Path] = []
-    for f in dta_files:
-        parsed = parse_gamry_dta(f)
-        out_path = output_dir / f"{f.stem}.xlsx"
+    for dta_file in dta_files:
+        parsed = parse_gamry_dta(dta_file)
+        out_path = output_dir / f"{dta_file.stem}.xlsx"
         export_to_xlsx(parsed, out_path)
         exported.append(out_path)
 
@@ -209,14 +315,14 @@ def export_folder(input_dir: Path, output_dir: Path) -> list[Path]:
 
 
 def main() -> None:
-    # Example CLI usage (edit these paths):
+    """Manual standalone test."""
     input_dir = Path(r"C:\\path\\to\\your\\input")
     output_dir = Path(r"C:\\path\\to\\your\\output")
 
     exported = export_folder(input_dir, output_dir)
     print(f"Exported {len(exported)} file(s)")
-    for p in exported:
-        print(" -", p)
+    for path in exported:
+        print(" -", path)
 
 
 if __name__ == "__main__":
