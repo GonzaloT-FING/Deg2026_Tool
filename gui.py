@@ -6,7 +6,7 @@ from tkinter import filedialog, ttk
 
 
 PIPELINE_OPTIONS = {
-    "EIS": ["Nyquist plot", "Bode plot", "Equivalent circuit fit", "V", "I vs pt", "T vs t"],
+    "EIS": ["Nyquist plot", "Bode plot", "I vs pt", "T vs pt", "Equivalent circuit fit"],
     "CV": ["I vs t", "Peak current", "Onset potential"],
     "PC": ["V vs I completo", "V vs I last", "V vs t", "I vs t", "T vs t", "dV/dI", "Step Stability"],
     "OCP": ["V vs t", "V final", "Drift", "DeltaV"],
@@ -176,10 +176,13 @@ class GamryProtocolApp:
                     input_dir = pathlib.Path(self.input_entry.get().strip())
                     output_dir = pathlib.Path(self.output_entry.get().strip())
 
-                    exported_files = export_folder(input_dir, output_dir)
+                    exported_files = export_folder(input_dir, output_dir, selected)
 
                     if exported_files:
-                        self.set_status(f"EIS exportado: {len(exported_files)} archivo(s) .xlsx creado(s).")
+                        self.set_status(
+                            f"EIS exportado: {len(exported_files)} archivo(s) .xlsx creado(s). "
+                            f"Se generaron también los gráficos seleccionados."
+                        )
                     else:
                         self.set_status("No se encontraron archivos .DTA con 'EISPOT' en la carpeta de entrada.")
 

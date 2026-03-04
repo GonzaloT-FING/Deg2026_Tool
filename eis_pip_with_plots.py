@@ -24,8 +24,6 @@ from pathlib import Path
 from typing import Iterable
 import re
 
-import math
-
 import matplotlib
 matplotlib.use("Agg")  # safe non-interactive backend for GUI/headless runs
 import matplotlib.pyplot as plt
@@ -362,62 +360,24 @@ def export_to_xlsx(parsed: ParsedDTA, out_path: Path) -> None:
 
 def _save_plot(fig, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
 def plot_nyquist(parsed: ParsedDTA, out_path: Path) -> Path | None:
-    """Plot Nyquist with equal scaling and adaptive open-circle markers."""
+    """Plot Zimag vs Zreal (as requested)."""
     x, y = _paired_series(parsed, "Zreal", "Zimag")
     if not x or not y:
         return None
 
-    y_plot = [-v for v in y]  # standard Nyquist convention
-
     x_unit = _column_unit(parsed, "Zreal")
     y_unit = _column_unit(parsed, "Zimag")
 
-    x_min, x_max = min(x), max(x)
-    y_min, y_max = min(y_plot), max(y_plot)
-
-    x_span = max(x_max - x_min, 1e-12)
-    y_span = max(y_max - y_min, 1e-12)
-
-    pad_x = 0.05 * x_span
-    pad_y = 0.05 * y_span
-
     fig, ax = plt.subplots()
-
-    ax.set_xlim(x_min - pad_x, x_max + pad_x)
-    ax.set_ylim(y_min - pad_y, y_max + pad_y)
-
-    # Equal data scaling and axes box shaped by data proportions
-    ax.set_aspect("equal", adjustable="box")
-    box_ratio = (y_span + 2 * pad_y) / (x_span + 2 * pad_x)
-    ax.set_box_aspect(box_ratio)
-
-    # Adaptive marker size:
-    # - wider/shorter plots -> smaller markers
-    # - more points         -> slightly smaller markers
-    npts = len(x)
-
-    ms = 5.0 * math.sqrt(max(box_ratio, 0.05))
-    ms *= math.sqrt(30 / max(npts, 30))
-    ms = max(1.8, min(ms, 4.5))
-
-    ax.plot(
-        x,
-        y_plot,
-        "-o",                    # line + circle markers
-        linewidth=1.0,
-        markersize=ms,
-        markerfacecolor="none",  # hollow circles
-        markeredgewidth=max(0.6, ms * 0.18),
-    )
-
+    ax.plot(x, y, marker="o")
     ax.set_title(f"{_technique_name(parsed)} - Nyquist")
     ax.set_xlabel(f"Zreal ({x_unit})" if x_unit else "Zreal")
-    ax.set_ylabel(f"-Zimag ({y_unit})" if y_unit else "-Zimag")
+    ax.set_ylabel(f"Zimag ({y_unit})" if y_unit else "Zimag")
     ax.grid(True)
 
     _save_plot(fig, out_path)
@@ -509,20 +469,20 @@ def export_plots(parsed: ParsedDTA, output_dir: Path, base_name: str, selected_o
     created: list[Path] = []
 
     if "Nyquist plot" in chosen:
-        p = plot_nyquist(parsed, output_dir / f"{base_name}_nyquist.svg")
+        p = plot_nyquist(parsed, output_dir / f"{base_name}_nyquist.png")
         if p is not None:
             created.append(p)
 
     if "Bode plot" in chosen:
-        created.extend(plot_bode(parsed, output_dir / f"{base_name}_bode.svg"))
+        created.extend(plot_bode(parsed, output_dir / f"{base_name}_bode.png"))
 
     if "I vs pt" in chosen:
-        p = plot_idc_vs_pt(parsed, output_dir / f"{base_name}_idc_vs_pt.svg")
+        p = plot_idc_vs_pt(parsed, output_dir / f"{base_name}_idc_vs_pt.png")
         if p is not None:
             created.append(p)
 
     if "T vs pt" in chosen or "T vs t" in chosen:
-        p = plot_temp_vs_pt(parsed, output_dir / f"{base_name}_temp_vs_pt.svg")
+        p = plot_temp_vs_pt(parsed, output_dir / f"{base_name}_temp_vs_pt.png")
         if p is not None:
             created.append(p)
 
