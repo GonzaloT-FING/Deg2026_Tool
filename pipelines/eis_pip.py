@@ -372,7 +372,7 @@ def fig_nyquist(parsed: ParsedDTA) -> Figure | None:
     fig = _new_figure()
     ax = fig.add_subplot(111)
 
-    ax.plot(x, y_plot, marker="o", linestyle="-")  # default styling
+    ax.plot(x, y_plot, marker="o", linestyle="-", markerfacecolor="none")  # default styling
 
     # Square intervals: 1 unit in x == 1 unit in y
     ax.set_aspect("equal", adjustable="box")
@@ -526,6 +526,26 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
     def _fmt(v: float) -> str:
         return f"{v:.6g}"
+    
+    from matplotlib.ticker import MaxNLocator
+
+    def _snap_linear_limits(vmin: float, vmax: float, nbins: int = 6) -> tuple[float, float]:
+        # Ensure order and non-degenerate span
+        if vmax < vmin:
+            vmin, vmax = vmax, vmin
+        if vmin == vmax:
+            pad = 1.0 if vmin == 0 else abs(vmin) * 0.1
+            vmin -= pad
+            vmax += pad
+
+        loc = MaxNLocator(nbins=nbins)
+        ticks = list(loc.tick_values(vmin, vmax))
+        if not ticks:
+            return vmin, vmax
+
+        lo = max([t for t in ticks if t <= vmin], default=min(ticks))
+        hi = min([t for t in ticks if t >= vmax], default=max(ticks))
+        return float(lo), float(hi)
 
     def _add_tab(tab_title: str, fig: Figure) -> None:
         is_nyquist = ("nyquist" in tab_title.lower())
@@ -638,10 +658,43 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             _update_limit_entries()
 
         def autoscale_axes():
-            ax.relim()
-            ax.autoscale_view()
-            if is_nyquist:
-                ax.set_aspect("equal", adjustable="box")
+            # Default: normal autoscale for log axes / non-Nyquist
+            if ax.get_xscale() == "log" or ax.get_yscale() == "log" or not is_nyquist:
+                ax.relim()
+                ax.autoscale_view()
+                if is_nyquist:
+                    ax.set_aspect("equal", adjustable="box")
+                canvas.draw_idle()
+                _update_limit_entries()
+                return
+
+            # Nyquist + linear axes: Ymin = 0 and snap to "nice" ticks
+            if line is None:
+                ax.relim()
+                ax.autoscale_view()
+                x0, x1 = ax.get_xlim()
+                y0, y1 = ax.get_ylim()
+            else:
+                xdata = list(line.get_xdata(orig=False))
+                ydata = list(line.get_ydata(orig=False))
+                # filter finite
+                pts = [(x, y) for x, y in zip(xdata, ydata) if (x is not None and y is not None)]
+                if not pts:
+                    return
+                xs = [float(x) for x, _ in pts]
+                ys = [float(y) for _, y in pts]
+                x0, x1 = min(xs), max(xs)
+                y1 = max(ys)
+                y0 = 0.0  # as requested
+
+            # Snap to nearest "nice" axis marks
+            x0s, x1s = _snap_linear_limits(x0, x1)
+            y0s, y1s = _snap_linear_limits(0.0, y1)
+
+            ax.set_xlim(x0s, x1s)
+            ax.set_ylim(y0s, y1s)
+
+            ax.set_aspect("equal", adjustable="box")  # preserve square units
             canvas.draw_idle()
             _update_limit_entries()
 
@@ -658,6 +711,11 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
             mk = marker_var.get().strip()
             line.set_marker("" if mk == "None" else mk)
+
+            # Keep markers hollow by default
+            if line.get_marker() not in ("", None):
+                line.set_markerfacecolor("none")
+                line.set_markeredgecolor(line.get_color())
 
             try:
                 line.set_linewidth(float(lw_var.get()))
@@ -698,10 +756,22 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             e.grid(row=r, column=1, sticky="w", pady=2)
             return e
 
-        _row(axes_box, 0, "Xmin", xmin_var)
-        _row(axes_box, 1, "Xmax", xmax_var)
-        _row(axes_box, 2, "Ymin", ymin_var)
-        _row(axes_box, 3, "Ymax", ymax_var)
+        exmin = _row(axes_box, 0, "Xmin", xmin_var)
+        exmax = _row(axes_box, 1, "Xmax", xmax_var)
+        eymin = _row(axes_box, 2, "Ymin", ymin_var)
+        eymax = _row(axes_box, 3, "Ymax", ymax_var)
+
+        pending = {"id": None}
+
+        def _schedule_apply_axes(_evt=None):
+            if pending["id"] is not None:
+                tab.after_cancel(pending["id"])
+            pending["id"] = tab.after(300, apply_axes)
+
+        for e in (exmin, exmax, eymin, eymax):
+            e.bind("<Return>", apply_axes)
+            e.bind("<FocusOut>", apply_axes)
+            e.bind("<KeyRelease>", _schedule_apply_axes)
 
         btns_axes = ttk.Frame(axes_box)
         btns_axes.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -713,29 +783,45 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         style_box.pack(fill="x", pady=(0, 10))
 
         ttk.Label(style_box, text="Color").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Entry(style_box, textvariable=color_var, width=12).grid(row=0, column=1, sticky="w", pady=2)
+        color_entry = ttk.Entry(style_box, textvariable=color_var, width=12)
+        color_entry.grid(row=0, column=1, sticky="w", pady=2)
         ttk.Button(style_box, text="Pick…", command=pick_color).grid(row=0, column=2, sticky="w", padx=(6, 0), pady=2)
 
         ttk.Label(style_box, text="Line").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Combobox(style_box, textvariable=linestyle_var, values=linestyle_opts, width=9, state="readonly")\
-            .grid(row=1, column=1, sticky="w", pady=2)
+        linestyle_cb = ttk.Combobox(style_box, textvariable=linestyle_var, values=linestyle_opts, width=9, state="readonly")
+        linestyle_cb.grid(row=1, column=1, sticky="w", pady=2)
 
         ttk.Label(style_box, text="Marker").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Combobox(style_box, textvariable=marker_var, values=marker_opts, width=9, state="readonly")\
-            .grid(row=2, column=1, sticky="w", pady=2)
+        marker_cb = ttk.Combobox(style_box, textvariable=marker_var, values=marker_opts, width=9, state="readonly")
+        marker_cb.grid(row=2, column=1, sticky="w", pady=2)
 
         ttk.Label(style_box, text="LW").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Spinbox(style_box, from_=0.0, to=10.0, increment=0.1, textvariable=lw_var, width=10)\
-            .grid(row=3, column=1, sticky="w", pady=2)
+        lw_spin = ttk.Spinbox(style_box, from_=0.0, to=10.0, increment=0.1, textvariable=lw_var, width=10)
+        lw_spin.grid(row=3, column=1, sticky="w", pady=2)
 
         ttk.Label(style_box, text="MS").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
-        ttk.Spinbox(style_box, from_=0.0, to=20.0, increment=0.5, textvariable=ms_var, width=10)\
-            .grid(row=4, column=1, sticky="w", pady=2)
+        ms_spin = ttk.Spinbox(style_box, from_=0.0, to=20.0, increment=0.5, textvariable=ms_var, width=10)
+        ms_spin.grid(row=4, column=1, sticky="w", pady=2)
+
+        # Comboboxes apply instantly on selection
+        linestyle_cb.bind("<<ComboboxSelected>>", lambda e: apply_style())
+        marker_cb.bind("<<ComboboxSelected>>", lambda e: apply_style())
+
+        # Spinboxes: apply on arrow clicks + typing
+        lw_spin.configure(command=apply_style)
+        ms_spin.configure(command=apply_style)
+        lw_spin.bind("<KeyRelease>", lambda e: apply_style())
+        ms_spin.bind("<KeyRelease>", lambda e: apply_style())
+
+        # Color entry: apply on Enter or leaving the field
+        color_entry.bind("<Return>", lambda e: apply_style())
+        color_entry.bind("<FocusOut>", lambda e: apply_style())
 
         btns_style = ttk.Frame(style_box)
         btns_style.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         ttk.Button(btns_style, text="Apply", command=apply_style).pack(side="left", expand=True, fill="x", padx=(0, 6))
         ttk.Button(btns_style, text="Reset", command=reset_style).pack(side="left", expand=True, fill="x")
+        
 
         if line is None:
             for child in style_box.winfo_children():
@@ -751,6 +837,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
     if created_root:
         win.mainloop()
+        
 
 
 # ---------------------------------------------------------------------------
