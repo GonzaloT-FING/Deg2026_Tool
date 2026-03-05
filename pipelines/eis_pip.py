@@ -553,9 +553,14 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
     ttk.Label(topbar, text="Select plot:").pack(side="left")
 
+    nyquist_sources: dict[str, dict] = {}
+
     plot_names_var = tk.StringVar()
     plot_select = ttk.Combobox(topbar, textvariable=plot_names_var, state="readonly", width=55)
     plot_select.pack(side="left", padx=(6, 0), fill="x", expand=True)
+
+    compose_btn = ttk.Button(topbar, text="Componer")
+    compose_btn.pack(side="left", padx=(8, 0))
 
     def _goto_selected(_evt=None):
         wanted = plot_names_var.get()
@@ -644,6 +649,13 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
         ax = fig.axes[0] if fig.axes else fig.add_subplot(111)
         line = ax.lines[0] if ax.lines else None
+
+        if is_nyquist and line is not None:
+            nyquist_sources[tab_title] = {
+                "line": line,   # live reference (so we can copy current formatting)
+                "ax": ax,
+                "fig": fig,
+            }
 
         init_title_text = ax.get_title()
         title_text_var = tk.StringVar(value=init_title_text)
@@ -1215,6 +1227,273 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     pass
 
         win._mpl_refs.append((canvas, toolbar, fig, ax, line))  # type: ignore[attr-defined]
+
+    def open_composer():
+        import tkinter as tk
+        from tkinter import ttk
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+
+        if not nyquist_sources:
+            return
+
+        # If already open, just focus it
+        existing = getattr(win, "_composer_win", None)
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            existing.focus_force()
+            return
+
+        comp = tk.Toplevel(win)
+        win._composer_win = comp  # type: ignore[attr-defined]
+        comp.title("Composite (Nyquist)")
+        comp.geometry("1250x780")
+
+        outer = ttk.Frame(comp)
+        outer.pack(fill="both", expand=True)
+
+        # Left: plot
+        plot_frame = ttk.Frame(outer)
+        plot_frame.pack(side="left", fill="both", expand=True)
+
+        figc = _new_figure()
+        axc = figc.add_subplot(111)
+        axc.set_aspect("equal", adjustable="box")
+        axc.grid(True)
+        axc.set_title("Composite - Nyquist")
+        axc.set_xlabel("Zreal")
+        axc.set_ylabel("-Zimag")
+
+        canvas = FigureCanvasTkAgg(figc, master=plot_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        toolbar = NavigationToolbar2Tk(canvas, plot_frame)
+        toolbar.update()
+
+        # Right: controls
+        ctrl = ttk.Frame(outer, padding=10)
+        ctrl.pack(side="right", fill="y")
+
+        # Source list
+        src_box = ttk.LabelFrame(ctrl, text="Nyquist sources", padding=8)
+        src_box.pack(fill="x", pady=(0, 10))
+
+        lb = tk.Listbox(src_box, selectmode="extended", height=12, exportselection=False)
+        lb.pack(fill="x", expand=False)
+
+        titles = sorted(nyquist_sources.keys())
+        for t in titles:
+            lb.insert("end", t)
+
+        # Composite line storage: title -> line
+        comp_lines: dict[str, object] = {}
+
+        legend_var = tk.BooleanVar(value=True)
+
+        def _apply_legend():
+            if legend_var.get():
+                axc.legend(loc="best", fontsize=9)
+            else:
+                leg = axc.get_legend()
+                if leg is not None:
+                    leg.remove()
+            canvas.draw_idle()
+
+        def _copy_style(src_line, dst_line):
+            # Copy current formatting from the source line
+            dst_line.set_color(src_line.get_color())
+            dst_line.set_linestyle(src_line.get_linestyle())
+            dst_line.set_marker(src_line.get_marker())
+            dst_line.set_linewidth(src_line.get_linewidth())
+            dst_line.set_markersize(src_line.get_markersize())
+
+            # Keep hollow markers (your default)
+            try:
+                dst_line.set_markerfacecolor("none")
+            except Exception:
+                pass
+            try:
+                dst_line.set_markeredgecolor(dst_line.get_color())
+            except Exception:
+                pass
+
+        def _fit_all():
+            # Fit to union of all composite curves and keep Ymin=0 (nice for Nyquist)
+            if not comp_lines:
+                return
+
+            xs = []
+            ys = []
+            for ln in comp_lines.values():
+                x = list(ln.get_xdata(orig=False))
+                y = list(ln.get_ydata(orig=False))
+                xs.extend([float(v) for v in x])
+                ys.extend([float(v) for v in y])
+
+            if not xs or not ys:
+                return
+
+            x0, x1 = min(xs), max(xs)
+            y0, y1 = 0.0, max(ys)
+
+            # small padding
+            dx = (x1 - x0) if x1 != x0 else (abs(x0) * 0.1 + 1.0)
+            dy = (y1 - y0) if y1 != y0 else (abs(y1) * 0.1 + 1.0)
+            pad_x = 0.05 * dx
+            pad_y = 0.05 * dy
+
+            axc.set_xlim(x0 - pad_x, x1 + pad_x)
+            axc.set_ylim(max(0.0, y0 - pad_y), y1 + pad_y)
+            axc.set_aspect("equal", adjustable="box")
+            canvas.draw_idle()
+            _sync_limit_entries()
+
+        def add_selected():
+            sel = [lb.get(i) for i in lb.curselection()]
+            for title in sel:
+                if title in comp_lines:
+                    continue
+                src_line = nyquist_sources[title]["line"]
+
+                x = list(src_line.get_xdata(orig=False))
+                y = list(src_line.get_ydata(orig=False))
+
+                # label = title (legend uses this)
+                (ln,) = axc.plot(x, y, label=title)
+
+                _copy_style(src_line, ln)
+
+                # If you want later hover freq on composite, keep freqs too:
+                freqs = getattr(src_line, "_eis_freq", None)
+                if freqs is not None:
+                    ln._eis_freq = freqs  # type: ignore[attr-defined]
+
+                comp_lines[title] = ln
+
+            axc.set_aspect("equal", adjustable="box")
+            _apply_legend()
+            _fit_all()
+
+        def remove_selected():
+            sel = [lb.get(i) for i in lb.curselection()]
+            removed_any = False
+            for title in sel:
+                ln = comp_lines.pop(title, None)
+                if ln is not None:
+                    try:
+                        ln.remove()
+                    except Exception:
+                        pass
+                    removed_any = True
+
+            if removed_any:
+                _apply_legend()
+                _fit_all()
+
+        def clear_all():
+            for ln in list(comp_lines.values()):
+                try:
+                    ln.remove()
+                except Exception:
+                    pass
+            comp_lines.clear()
+            _apply_legend()
+            canvas.draw_idle()
+            _sync_limit_entries()
+
+        btns = ttk.Frame(src_box)
+        btns.pack(fill="x", pady=(8, 0))
+        ttk.Button(btns, text="Add", command=add_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(btns, text="Remove", command=remove_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(btns, text="Clear", command=clear_all).pack(side="left", expand=True, fill="x")
+
+        ttk.Checkbutton(ctrl, text="Legend", variable=legend_var, command=_apply_legend).pack(anchor="w", pady=(0, 10))
+
+        # Axis limits box (independent limits for composite)
+        lim_box = ttk.LabelFrame(ctrl, text="Axes limits", padding=8)
+        lim_box.pack(fill="x", pady=(0, 10))
+
+        def _fmt(v: float) -> str:
+            return f"{v:.6g}"
+
+        xmin_var = tk.StringVar()
+        xmax_var = tk.StringVar()
+        ymin_var = tk.StringVar()
+        ymax_var = tk.StringVar()
+
+        def _sync_limit_entries():
+            x0, x1 = axc.get_xlim()
+            y0, y1 = axc.get_ylim()
+            xmin_var.set(_fmt(x0))
+            xmax_var.set(_fmt(x1))
+            ymin_var.set(_fmt(y0))
+            ymax_var.set(_fmt(y1))
+
+        _sync_limit_entries()
+
+        def _parse_float(s: str) -> float | None:
+            s = s.strip()
+            if not s:
+                return None
+            try:
+                return float(s)
+            except ValueError:
+                return None
+
+        def apply_limits():
+            cx0, cx1 = axc.get_xlim()
+            cy0, cy1 = axc.get_ylim()
+
+            nx0 = _parse_float(xmin_var.get())
+            nx1 = _parse_float(xmax_var.get())
+            ny0 = _parse_float(ymin_var.get())
+            ny1 = _parse_float(ymax_var.get())
+
+            axc.set_xlim(cx0 if nx0 is None else nx0, cx1 if nx1 is None else nx1)
+            axc.set_ylim(cy0 if ny0 is None else ny0, cy1 if ny1 is None else ny1)
+            axc.set_aspect("equal", adjustable="box")
+            canvas.draw_idle()
+            _sync_limit_entries()
+
+        def _row(parent, r, label, var):
+            ttk.Label(parent, text=label, width=5).grid(row=r, column=0, sticky="w", padx=(0, 6), pady=2)
+            e = ttk.Entry(parent, textvariable=var, width=12)
+            e.grid(row=r, column=1, sticky="w", pady=2)
+            return e
+
+        exmin = _row(lim_box, 0, "Xmin", xmin_var)
+        exmax = _row(lim_box, 1, "Xmax", xmax_var)
+        eymin = _row(lim_box, 2, "Ymin", ymin_var)
+        eymax = _row(lim_box, 3, "Ymax", ymax_var)
+
+        # Debounced auto-apply
+        pending = {"id": None}
+
+        def _schedule(_evt=None):
+            if pending["id"] is not None:
+                comp.after_cancel(pending["id"])
+            pending["id"] = comp.after(300, apply_limits)
+
+        for e in (exmin, exmax, eymin, eymax):
+            e.bind("<Return>", lambda ev: apply_limits())
+            e.bind("<FocusOut>", lambda ev: apply_limits())
+            e.bind("<KeyRelease>", _schedule)
+
+        b2 = ttk.Frame(lim_box)
+        b2.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(b2, text="Fit all", command=_fit_all).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(b2, text="Reset", command=_sync_limit_entries).pack(side="left", expand=True, fill="x")
+
+        def _on_close():
+            comp.destroy()
+            try:
+                delattr(win, "_composer_win")
+            except Exception:
+                pass
+
+        comp.protocol("WM_DELETE_WINDOW", _on_close)
+    
+    compose_btn.configure(command=open_composer)
 
     for tab_title, fig in figures:
         _add_tab(tab_title, fig)
