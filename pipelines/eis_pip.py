@@ -846,6 +846,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
         fonts_box = ttk.LabelFrame(ctrl_frame, text="Fonts", padding=8)
         fonts_box.pack(fill="x", pady=(0, 10))
+        fonts_box.columnconfigure(1, weight=1)
 
         ttk.Label(fonts_box, text="Ticks").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
         tick_spin = ttk.Spinbox(fonts_box, from_=6.0, to=30.0, increment=0.5,
@@ -865,9 +866,10 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         ttk.Label(fonts_box, text="Text").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
         title_entry = ttk.Entry(fonts_box, textvariable=title_text_var, width=18)
         title_entry.grid(row=3, column=1, sticky="w", pady=2)
+        title_entry.grid(row=3, column=1, sticky="ew", pady=2)
 
         btns_fonts = ttk.Frame(fonts_box)
-        btns_fonts.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        btns_fonts.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Button(btns_fonts, text="Reset", command=reset_fonts).pack(side="left", expand=True, fill="x")
 
         ttk.Label(style_box, text="Color").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
