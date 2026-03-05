@@ -26,9 +26,7 @@ import re
 
 import math
 
-import matplotlib
-matplotlib.use("Agg")  # safe non-interactive backend for GUI/headless runs
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
@@ -357,23 +355,20 @@ def export_to_xlsx(parsed: ParsedDTA, out_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Plotting
+# Plotting (interactive: build Figures and show them in a Tk window)
 # ---------------------------------------------------------------------------
 
-def _save_plot(fig, out_path: Path) -> None:
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
+def _new_figure() -> Figure:
+    # You can tweak size if you want bigger/smaller default tabs
+    return Figure(figsize=(6.8, 4.8), dpi=100)
 
-
-def plot_nyquist(parsed: ParsedDTA, out_path: Path) -> Path | None:
-    """Plot Nyquist with equal scaling and adaptive open-circle markers."""
+def fig_nyquist(parsed: ParsedDTA) -> Figure | None:
+    """Nyquist figure (no file export)."""
     x, y = _paired_series(parsed, "Zreal", "Zimag")
     if not x or not y:
         return None
 
     y_plot = [-v for v in y]  # standard Nyquist convention
-
     x_unit = _column_unit(parsed, "Zreal")
     y_unit = _column_unit(parsed, "Zimag")
 
@@ -382,11 +377,11 @@ def plot_nyquist(parsed: ParsedDTA, out_path: Path) -> Path | None:
 
     x_span = max(x_max - x_min, 1e-12)
     y_span = max(y_max - y_min, 1e-12)
-
     pad_x = 0.05 * x_span
     pad_y = 0.05 * y_span
 
-    fig, ax = plt.subplots()
+    fig = _new_figure()
+    ax = fig.add_subplot(111)
 
     ax.set_xlim(x_min - pad_x, x_max + pad_x)
     ax.set_ylim(y_min - pad_y, y_max + pad_y)
@@ -394,13 +389,14 @@ def plot_nyquist(parsed: ParsedDTA, out_path: Path) -> Path | None:
     # Equal data scaling and axes box shaped by data proportions
     ax.set_aspect("equal", adjustable="box")
     box_ratio = (y_span + 2 * pad_y) / (x_span + 2 * pad_x)
-    ax.set_box_aspect(box_ratio)
+    try:
+        ax.set_box_aspect(box_ratio)
+    except Exception:
+        # Older Matplotlib versions might not support set_box_aspect
+        pass
 
-    # Adaptive marker size:
-    # - wider/shorter plots -> smaller markers
-    # - more points         -> slightly smaller markers
+    # Adaptive marker size
     npts = len(x)
-
     ms = 5.0 * math.sqrt(max(box_ratio, 0.05))
     ms *= math.sqrt(30 / max(npts, 30))
     ms = max(1.8, min(ms, 4.5))
@@ -408,10 +404,10 @@ def plot_nyquist(parsed: ParsedDTA, out_path: Path) -> Path | None:
     ax.plot(
         x,
         y_plot,
-        "-o",                    # line + circle markers
+        "-o",
         linewidth=1.0,
         markersize=ms,
-        markerfacecolor="none",  # hollow circles
+        markerfacecolor="none",
         markeredgewidth=max(0.6, ms * 0.18),
     )
 
@@ -420,16 +416,12 @@ def plot_nyquist(parsed: ParsedDTA, out_path: Path) -> Path | None:
     ax.set_ylabel(f"-Zimag ({y_unit})" if y_unit else "-Zimag")
     ax.grid(True)
 
-    _save_plot(fig, out_path)
-    return out_path
+    fig.tight_layout()
+    return fig
 
-
-def plot_bode(parsed: ParsedDTA, out_base_path: Path) -> list[Path]:
-    """Create two bode plots:
-    - Zmod vs Freq
-    - Zphz vs Freq
-    """
-    created: list[Path] = []
+def figs_bode(parsed: ParsedDTA) -> list[tuple[str, Figure]]:
+    """Two Bode figures: Zmod and Zphz."""
+    out: list[tuple[str, Figure]] = []
 
     freq_unit = _column_unit(parsed, "Freq")
     zmod_unit = _column_unit(parsed, "Zmod")
@@ -437,32 +429,31 @@ def plot_bode(parsed: ParsedDTA, out_base_path: Path) -> list[Path]:
 
     x1, y1 = _paired_series(parsed, "Freq", "Zmod", require_positive_x=True)
     if x1 and y1:
-        fig, ax = plt.subplots()
+        fig = _new_figure()
+        ax = fig.add_subplot(111)
         ax.semilogx(x1, y1, marker="o")
         ax.set_title(f"{_technique_name(parsed)} - Bode (Zmod)")
         ax.set_xlabel(f"Frecuencia ({freq_unit})" if freq_unit else "Frecuencia")
         ax.set_ylabel(f"Zmod ({zmod_unit})" if zmod_unit else "Zmod")
         ax.grid(True, which="both")
-        out_path = out_base_path.with_name(f"{out_base_path.stem}_zmod{out_base_path.suffix}")
-        _save_plot(fig, out_path)
-        created.append(out_path)
+        fig.tight_layout()
+        out.append(("Bode (Zmod)", fig))
 
     x2, y2 = _paired_series(parsed, "Freq", "Zphz", require_positive_x=True)
     if x2 and y2:
-        fig, ax = plt.subplots()
+        fig = _new_figure()
+        ax = fig.add_subplot(111)
         ax.semilogx(x2, y2, marker="o")
         ax.set_title(f"{_technique_name(parsed)} - Bode (Zphz)")
         ax.set_xlabel(f"Frecuencia ({freq_unit})" if freq_unit else "Frecuencia")
         ax.set_ylabel(f"Zphz ({zphz_unit})" if zphz_unit else "Zphz")
         ax.grid(True, which="both")
-        out_path = out_base_path.with_name(f"{out_base_path.stem}_zphz{out_base_path.suffix}")
-        _save_plot(fig, out_path)
-        created.append(out_path)
+        fig.tight_layout()
+        out.append(("Bode (Zphz)", fig))
 
-    return created
+    return out
 
-
-def plot_idc_vs_pt(parsed: ParsedDTA, out_path: Path) -> Path | None:
+def fig_idc_vs_pt(parsed: ParsedDTA) -> Figure | None:
     x, y = _paired_series(parsed, "Pt", "Idc")
     if not x or not y:
         return None
@@ -470,18 +461,17 @@ def plot_idc_vs_pt(parsed: ParsedDTA, out_path: Path) -> Path | None:
     x_unit = _column_unit(parsed, "Pt")
     y_unit = _column_unit(parsed, "Idc")
 
-    fig, ax = plt.subplots()
+    fig = _new_figure()
+    ax = fig.add_subplot(111)
     ax.plot(x, y, marker="o")
     ax.set_title(f"{_technique_name(parsed)} - Idc vs Pt")
     ax.set_xlabel(f"Pt ({x_unit})" if x_unit else "Pt")
     ax.set_ylabel(f"Idc ({y_unit})" if y_unit else "Idc")
     ax.grid(True)
+    fig.tight_layout()
+    return fig
 
-    _save_plot(fig, out_path)
-    return out_path
-
-
-def plot_temp_vs_pt(parsed: ParsedDTA, out_path: Path) -> Path | None:
+def fig_temp_vs_pt(parsed: ParsedDTA) -> Figure | None:
     x, y = _paired_series(parsed, "Pt", "Temp")
     if not x or not y:
         return None
@@ -489,44 +479,94 @@ def plot_temp_vs_pt(parsed: ParsedDTA, out_path: Path) -> Path | None:
     x_unit = _column_unit(parsed, "Pt")
     y_unit = _column_unit(parsed, "Temp")
 
-    fig, ax = plt.subplots()
+    fig = _new_figure()
+    ax = fig.add_subplot(111)
     ax.plot(x, y, marker="o")
     ax.set_title(f"{_technique_name(parsed)} - Temperatura vs Pt")
     ax.set_xlabel(f"Pt ({x_unit})" if x_unit else "Pt")
     ax.set_ylabel(f"Temperatura ({y_unit})" if y_unit else "Temperatura")
     ax.grid(True)
+    fig.tight_layout()
+    return fig
 
-    _save_plot(fig, out_path)
-    return out_path
-
-
-def export_plots(parsed: ParsedDTA, output_dir: Path, base_name: str, selected_options: Iterable[str] | None) -> list[Path]:
-    """Create only the plots requested by the GUI."""
+def build_figures(parsed: ParsedDTA, base_name: str, selected_options: Iterable[str] | None) -> list[tuple[str, Figure]]:
+    """Create only the figures requested by the GUI."""
     if not selected_options:
         return []
 
     chosen = set(selected_options)
-    created: list[Path] = []
+    figs: list[tuple[str, Figure]] = []
 
     if "Nyquist plot" in chosen:
-        p = plot_nyquist(parsed, output_dir / f"{base_name}_nyquist.svg")
-        if p is not None:
-            created.append(p)
+        f = fig_nyquist(parsed)
+        if f is not None:
+            figs.append((f"{base_name} — Nyquist", f))
 
     if "Bode plot" in chosen:
-        created.extend(plot_bode(parsed, output_dir / f"{base_name}_bode.svg"))
+        for label, f in figs_bode(parsed):
+            figs.append((f"{base_name} — {label}", f))
 
     if "I vs pt" in chosen:
-        p = plot_idc_vs_pt(parsed, output_dir / f"{base_name}_idc_vs_pt.svg")
-        if p is not None:
-            created.append(p)
+        f = fig_idc_vs_pt(parsed)
+        if f is not None:
+            figs.append((f"{base_name} — Idc vs Pt", f))
 
     if "T vs pt" in chosen or "T vs t" in chosen:
-        p = plot_temp_vs_pt(parsed, output_dir / f"{base_name}_temp_vs_pt.svg")
-        if p is not None:
-            created.append(p)
+        f = fig_temp_vs_pt(parsed)
+        if f is not None:
+            figs.append((f"{base_name} — Temp vs Pt", f))
 
-    return created
+    # "Equivalent circuit fit" is listed in GUI but not implemented here yet.
+    return figs
+
+def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS plots") -> None:
+    """Open a Tk window with tabs, each containing an interactive Matplotlib figure."""
+    if not figures:
+        return
+
+    import tkinter as tk
+    from tkinter import ttk
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+
+    root = tk._default_root
+    created_root = False
+    if root is None:
+        root = tk.Tk()
+        root.withdraw()
+        created_root = True
+
+    win = tk.Toplevel(root)
+    win.title(window_title)
+    win.geometry("1100x750")
+
+    nb = ttk.Notebook(win)
+    nb.pack(fill="both", expand=True)
+
+    # keep refs so canvases/toolbars don't get GC'd
+    win._mpl_refs = []  # type: ignore[attr-defined]
+
+    def _on_close():
+        # free figure contents
+        for _, fig in figures:
+            fig.clear()
+        win.destroy()
+        if created_root:
+            root.destroy()
+
+    win.protocol("WM_DELETE_WINDOW", _on_close)
+
+    for tab_title, fig in figures:
+        frame = ttk.Frame(nb)
+        nb.add(frame, text=tab_title[:28] + ("…" if len(tab_title) > 28 else ""))
+
+        canvas = FigureCanvasTkAgg(fig, master=frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        toolbar = NavigationToolbar2Tk(canvas, frame)
+        toolbar.update()
+
+        win._mpl_refs.append((canvas, toolbar, fig))  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -562,8 +602,6 @@ def export_folder(
         xlsx_path = output_dir / f"{dta_file.stem}.xlsx"
         export_to_xlsx(parsed, xlsx_path)
         exported_xlsx.append(xlsx_path)
-
-        export_plots(parsed, output_dir, dta_file.stem, selected_options)
 
     return exported_xlsx
 
