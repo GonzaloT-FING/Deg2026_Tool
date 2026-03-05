@@ -489,7 +489,6 @@ def build_figures(parsed: ParsedDTA, base_name: str, selected_options: Iterable[
     return figs
 
 def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS plots") -> None:
-    """Open a Tk window with tabs, each containing an interactive Matplotlib figure + controls."""
     if not figures:
         return
 
@@ -522,20 +521,18 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
     win.protocol("WM_DELETE_WINDOW", _on_close)
 
-    # Simple options (you can expand later)
     marker_opts = ["o", ".", "x", "+", "s", "^", "v", "D", "None"]
     linestyle_opts = ["-", "--", "-.", ":", "None"]
 
     def _fmt(v: float) -> str:
         return f"{v:.6g}"
 
-    for tab_title, fig in figures:
+    def _add_tab(tab_title: str, fig: Figure) -> None:
         is_nyquist = ("nyquist" in tab_title.lower())
 
         tab = ttk.Frame(nb)
         nb.add(tab, text=tab_title[:28] + ("…" if len(tab_title) > 28 else ""))
 
-        # Split: left plot, right controls
         outer = ttk.Frame(tab)
         outer.pack(fill="both", expand=True)
 
@@ -545,7 +542,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         ctrl_frame = ttk.Frame(outer, padding=10)
         ctrl_frame.pack(side="right", fill="y")
 
-        # Canvas + toolbar
         canvas = FigureCanvasTkAgg(fig, master=plot_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -553,15 +549,12 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         toolbar = NavigationToolbar2Tk(canvas, plot_frame)
         toolbar.update()
 
-        # Get main axes + line (assumes first)
         ax = fig.axes[0] if fig.axes else fig.add_subplot(111)
         line = ax.lines[0] if ax.lines else None
 
-        # Keep Nyquist equal aspect from the start (and after any axis changes)
         if is_nyquist:
             ax.set_aspect("equal", adjustable="box")
 
-        # ---------- Tk variables ----------
         x0, x1 = ax.get_xlim()
         y0, y1 = ax.get_ylim()
         xmin_var = tk.StringVar(value=_fmt(x0))
@@ -578,7 +571,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         init_lw = float(line.get_linewidth()) if line else 1.0
         init_ms = float(line.get_markersize()) if line else 4.0
 
-        # Normalize "None" representations
         if init_marker in (None, "", "None"):
             init_marker = "None"
         if init_ls in (None, "", "None"):
@@ -608,7 +600,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 return None
 
         def apply_axes():
-            # xlim/ylim apply (blank = keep current)
             cur_x0, cur_x1 = ax.get_xlim()
             cur_y0, cur_y1 = ax.get_ylim()
 
@@ -622,16 +613,12 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             new_y0 = cur_y0 if ny0 is None else ny0
             new_y1 = cur_y1 if ny1 is None else ny1
 
-            # Respect log axes (Bode): limits must be > 0
-            if ax.get_xscale() == "log":
-                if new_x0 <= 0 or new_x1 <= 0:
-                    # ignore invalid change
-                    _update_limit_entries()
-                    return
-            if ax.get_yscale() == "log":
-                if new_y0 <= 0 or new_y1 <= 0:
-                    _update_limit_entries()
-                    return
+            if ax.get_xscale() == "log" and (new_x0 <= 0 or new_x1 <= 0):
+                _update_limit_entries()
+                return
+            if ax.get_yscale() == "log" and (new_y0 <= 0 or new_y1 <= 0):
+                _update_limit_entries()
+                return
 
             ax.set_xlim(new_x0, new_x1)
             ax.set_ylim(new_y0, new_y1)
@@ -662,20 +649,16 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             if line is None:
                 return
 
-            # Color (allow any matplotlib color string)
             c = color_var.get().strip()
             if c:
                 line.set_color(c)
 
-            # Line style
             ls = linestyle_var.get().strip()
             line.set_linestyle("" if ls == "None" else ls)
 
-            # Marker
             mk = marker_var.get().strip()
             line.set_marker("" if mk == "None" else mk)
 
-            # Widths/sizes
             try:
                 line.set_linewidth(float(lw_var.get()))
             except Exception:
@@ -705,8 +688,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 color_var.set(chosen[1])
                 apply_style()
 
-        # ---------- Controls UI ----------
-        # AXES
+        # --- Controls UI ---
         axes_box = ttk.LabelFrame(ctrl_frame, text="Axes limits", padding=8)
         axes_box.pack(fill="x", pady=(0, 10))
 
@@ -727,7 +709,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         ttk.Button(btns_axes, text="Autoscale", command=autoscale_axes).pack(side="left", expand=True, fill="x", padx=(0, 6))
         ttk.Button(btns_axes, text="Reset", command=reset_axes).pack(side="left", expand=True, fill="x")
 
-        # STYLE
         style_box = ttk.LabelFrame(ctrl_frame, text="Style", padding=8)
         style_box.pack(fill="x", pady=(0, 10))
 
@@ -756,7 +737,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         ttk.Button(btns_style, text="Apply", command=apply_style).pack(side="left", expand=True, fill="x", padx=(0, 6))
         ttk.Button(btns_style, text="Reset", command=reset_style).pack(side="left", expand=True, fill="x")
 
-        # If no line exists, disable style controls nicely
         if line is None:
             for child in style_box.winfo_children():
                 try:
@@ -766,7 +746,9 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
         win._mpl_refs.append((canvas, toolbar, fig, ax, line))  # type: ignore[attr-defined]
 
-    # If this file is run standalone (no existing mainloop), start one.
+    for tab_title, fig in figures:
+        _add_tab(tab_title, fig)
+
     if created_root:
         win.mainloop()
 
