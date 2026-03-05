@@ -738,6 +738,56 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             ms_var.set(init_ms)
             apply_style()
 
+        # ---------------- Fonts ----------------
+        # Initial font sizes (grab from current artists)
+        try:
+            init_tick_fs = float(ax.get_xticklabels()[0].get_fontsize()) if ax.get_xticklabels() else 10.0
+        except Exception:
+            init_tick_fs = 10.0
+
+        try:
+            init_label_fs = float(ax.xaxis.label.get_fontsize() or 12.0)
+        except Exception:
+            init_label_fs = 12.0
+
+        try:
+            init_title_fs = float(ax.title.get_fontsize() or 14.0)
+        except Exception:
+            init_title_fs = 14.0
+
+        tick_fs_var = tk.DoubleVar(value=init_tick_fs)
+        label_fs_var = tk.DoubleVar(value=init_label_fs)
+        title_fs_var = tk.DoubleVar(value=init_title_fs)
+
+        def apply_fonts():
+            # Apply to all axes in the figure (safe even if later you add multi-axes figs)
+            try:
+                tfs = float(tick_fs_var.get())
+                lfs = float(label_fs_var.get())
+                hfs = float(title_fs_var.get())
+            except Exception:
+                return
+
+            for ax_ in fig.axes:
+                ax_.tick_params(labelsize=tfs)
+                ax_.xaxis.label.set_fontsize(lfs)
+                ax_.yaxis.label.set_fontsize(lfs)
+                ax_.title.set_fontsize(hfs)
+
+            # Layout may need refresh when fonts change
+            try:
+                fig.tight_layout()
+            except Exception:
+                pass
+
+            canvas.draw_idle()
+
+        def reset_fonts():
+            tick_fs_var.set(init_tick_fs)
+            label_fs_var.set(init_label_fs)
+            title_fs_var.set(init_title_fs)
+            apply_fonts()
+
         def pick_color():
             if line is None:
                 return
@@ -782,6 +832,28 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         style_box = ttk.LabelFrame(ctrl_frame, text="Style", padding=8)
         style_box.pack(fill="x", pady=(0, 10))
 
+        fonts_box = ttk.LabelFrame(ctrl_frame, text="Fonts", padding=8)
+        fonts_box.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(fonts_box, text="Ticks").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
+        tick_spin = ttk.Spinbox(fonts_box, from_=6.0, to=30.0, increment=0.5,
+                                textvariable=tick_fs_var, width=10)
+        tick_spin.grid(row=0, column=1, sticky="w", pady=2)
+
+        ttk.Label(fonts_box, text="Labels").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
+        label_spin = ttk.Spinbox(fonts_box, from_=6.0, to=40.0, increment=0.5,
+                                textvariable=label_fs_var, width=10)
+        label_spin.grid(row=1, column=1, sticky="w", pady=2)
+
+        ttk.Label(fonts_box, text="Title").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
+        title_spin = ttk.Spinbox(fonts_box, from_=6.0, to=50.0, increment=0.5,
+                                textvariable=title_fs_var, width=10)
+        title_spin.grid(row=2, column=1, sticky="w", pady=2)
+
+        btns_fonts = ttk.Frame(fonts_box)
+        btns_fonts.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(btns_fonts, text="Reset", command=reset_fonts).pack(side="left", expand=True, fill="x")
+
         ttk.Label(style_box, text="Color").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
         color_entry = ttk.Entry(style_box, textvariable=color_var, width=12)
         color_entry.grid(row=0, column=1, sticky="w", pady=2)
@@ -802,6 +874,15 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         ttk.Label(style_box, text="MS").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
         ms_spin = ttk.Spinbox(style_box, from_=0.0, to=20.0, increment=0.5, textvariable=ms_var, width=10)
         ms_spin.grid(row=4, column=1, sticky="w", pady=2)
+
+        # Apply on arrow clicks + typing
+        tick_spin.configure(command=apply_fonts)
+        label_spin.configure(command=apply_fonts)
+        title_spin.configure(command=apply_fonts)
+
+        tick_spin.bind("<KeyRelease>", lambda e: apply_fonts())
+        label_spin.bind("<KeyRelease>", lambda e: apply_fonts())
+        title_spin.bind("<KeyRelease>", lambda e: apply_fonts())
 
         # Comboboxes apply instantly on selection
         linestyle_cb.bind("<<ComboboxSelected>>", lambda e: apply_style())
