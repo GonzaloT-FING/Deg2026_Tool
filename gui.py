@@ -11,6 +11,7 @@ PIPELINE_OPTIONS = {
     "PC": ["V vs I completo", "V vs I last", "V vs t", "I vs t", "T vs t", "dV/dI", "Step Stability"],
     "OCP": ["V vs t", "V final", "Drift", "DeltaV"],
     "Deg": ["V vs t", "I vs t", "T vs t", "dV/dt", "dV/dt final", "Trend", "Degradation rate"],
+    "Activacion": ["V vs t", "I vs t", "T vs t", "dV/dt", "dV/dt final", "Trend", "Degradation rate"],
     "Análisis multiple": ["EIS", "CV", "PC", "OCP", "Deg"]
 }
 

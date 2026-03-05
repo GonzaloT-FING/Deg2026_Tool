@@ -547,6 +547,33 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
     nb = ttk.Notebook(win)
     nb.pack(fill="both", expand=True)
 
+    # after nb = ttk.Notebook(win) ...
+    topbar = ttk.Frame(win, padding=(8, 6))
+    topbar.pack(fill="x")
+
+    ttk.Label(topbar, text="Select plot:").pack(side="left")
+
+    plot_names_var = tk.StringVar()
+    plot_select = ttk.Combobox(topbar, textvariable=plot_names_var, state="readonly", width=55)
+    plot_select.pack(side="left", padx=(6, 0), fill="x", expand=True)
+
+    def _goto_selected(_evt=None):
+        wanted = plot_names_var.get()
+        vals = list(plot_select["values"])
+        if wanted in vals:
+            i = vals.index(wanted)
+            nb.select(i)
+
+    plot_select.bind("<<ComboboxSelected>>", _goto_selected)
+
+    def _sync_combo(_evt=None):
+        i = nb.index("current")
+        vals = list(plot_select["values"])
+        if 0 <= i < len(vals):
+            plot_names_var.set(vals[i])
+
+    nb.bind("<<NotebookTabChanged>>", _sync_combo)
+
     win._mpl_refs = []  # type: ignore[attr-defined]
 
     def _on_close():
@@ -589,6 +616,15 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
         tab = ttk.Frame(nb)
         nb.add(tab, text=tab_title[:28] + ("…" if len(tab_title) > 28 else ""))
+
+        # right after nb.add(tab, text=...)
+        current = list(plot_select["values"])
+        current.append(tab_title)
+        plot_select["values"] = current
+
+        # also set initial value once
+        if not plot_names_var.get():
+            plot_names_var.set(tab_title)
 
         outer = ttk.Frame(tab)
         outer.pack(fill="both", expand=True)
