@@ -260,6 +260,43 @@ def _paired_series(
 
     return xs, ys
 
+def _triplet_series(
+    parsed: ParsedDTA,
+    x_name: str,
+    y_name: str,
+    f_name: str,
+    *,
+    require_positive_f: bool = True,
+) -> tuple[list[float], list[float], list[float]]:
+    x_idx = _column_index(parsed, x_name)
+    y_idx = _column_index(parsed, y_name)
+    f_idx = _column_index(parsed, f_name)
+
+    if x_idx is None or y_idx is None or f_idx is None:
+        return [], [], []
+
+    xs: list[float] = []
+    ys: list[float] = []
+    fs: list[float] = []
+
+    for row in parsed.rows:
+        if x_idx >= len(row) or y_idx >= len(row) or f_idx >= len(row):
+            continue
+
+        x_val = to_float(row[x_idx])
+        y_val = to_float(row[y_idx])
+        f_val = to_float(row[f_idx])
+
+        if x_val is None or y_val is None or f_val is None:
+            continue
+        if require_positive_f and f_val <= 0:
+            continue
+
+        xs.append(x_val)
+        ys.append(y_val)
+        fs.append(f_val)
+
+    return xs, ys, fs
 
 def _technique_name(parsed: ParsedDTA) -> str:
     return parsed.meta_values.get("TITLE", "").strip() or "Potentiostatic EIS"
@@ -363,20 +400,20 @@ def _new_figure() -> Figure:
     return Figure(figsize=(6.8, 4.8), dpi=100)
 
 def fig_nyquist(parsed: ParsedDTA) -> Figure | None:
-    x, y = _paired_series(parsed, "Zreal", "Zimag")
-    if not x or not y:
+    x, y, f = _triplet_series(parsed, "Zreal", "Zimag", "Freq")
+    if not x or not y or not f:
         return None
 
-    y_plot = [-v for v in y]  # Nyquist convention
+    y_plot = [-v for v in y]
 
     fig = _new_figure()
     ax = fig.add_subplot(111)
 
-    ax.plot(x, y_plot, marker="o", linestyle="-", markerfacecolor="none")  # default styling
+    (line,) = ax.plot(x, y_plot, marker="o", linestyle="-", markerfacecolor="none")
+    line._eis_freq = f  # attach frequency array (same index as points)
 
-    # Square intervals: 1 unit in x == 1 unit in y
     ax.set_aspect("equal", adjustable="box")
-    ax.margins(0.05)  # small padding
+    ax.margins(0.05)
 
     x_unit = _column_unit(parsed, "Zreal")
     y_unit = _column_unit(parsed, "Zimag")
@@ -926,6 +963,208 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             if pending_title["id"] is not None:
                 tab.after_cancel(pending_title["id"])
             pending_title["id"] = tab.after(250, apply_title_text)
+
+        # ---------------- Frequency tools (Nyquist only) ----------------
+        freqs = getattr(line, "_eis_freq", None) if line is not None else None
+
+        def _fmt_freq_hz(v: float) -> str:
+            # nice readable frequency formatting
+            av = abs(v)
+            if av >= 1e6:
+                return f"{v/1e6:.3g} MHz"
+            if av >= 1e3:
+                return f"{v/1e3:.3g} kHz"
+            return f"{v:.3g} Hz"
+
+        # Only enable this panel for Nyquist plots that actually have freq data
+        if is_nyquist and line is not None and isinstance(freqs, list) and len(freqs) == len(line.get_xdata()):
+            freq_box = ttk.LabelFrame(ctrl_frame, text="Frequency", padding=8)
+            freq_box.pack(fill="x", pady=(0, 10))
+
+            # --- Hover tooltip ---
+            hover_var = tk.BooleanVar(value=True)
+
+            hover_annot = ax.annotate(
+                "",
+                xy=(0, 0),
+                xytext=(10, 10),
+                textcoords="offset points",
+                bbox=dict(boxstyle="round", fc="white", alpha=0.9),
+                arrowprops=dict(arrowstyle="->", alpha=0.7),
+            )
+            hover_annot.set_visible(False)
+
+            def _toggle_hover():
+                if not hover_var.get():
+                    hover_annot.set_visible(False)
+                    canvas.draw_idle()
+
+            ttk.Checkbutton(freq_box, text="Hover shows frequency", variable=hover_var, command=_toggle_hover)\
+                .grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+            def _on_move(event):
+                if not hover_var.get():
+                    return
+                if event.inaxes != ax or event.x is None or event.y is None:
+                    if hover_annot.get_visible():
+                        hover_annot.set_visible(False)
+                        canvas.draw_idle()
+                    return
+
+                xdata = list(line.get_xdata(orig=False))
+                ydata = list(line.get_ydata(orig=False))
+
+                best_i = None
+                best_d2 = 1e18
+                # threshold ~12 px
+                thresh2 = 12.0 * 12.0
+
+                for i, (xv, yv) in enumerate(zip(xdata, ydata)):
+                    xp, yp = ax.transData.transform((xv, yv))
+                    d2 = (xp - event.x) ** 2 + (yp - event.y) ** 2
+                    if d2 < best_d2:
+                        best_d2 = d2
+                        best_i = i
+
+                if best_i is None or best_d2 > thresh2:
+                    if hover_annot.get_visible():
+                        hover_annot.set_visible(False)
+                        canvas.draw_idle()
+                    return
+
+                fval = freqs[best_i]
+                hover_annot.xy = (xdata[best_i], ydata[best_i])
+                hover_annot.set_text(f"f = {_fmt_freq_hz(float(fval))}")
+                if not hover_annot.get_visible():
+                    hover_annot.set_visible(True)
+                canvas.draw_idle()
+
+            canvas.mpl_connect("motion_notify_event", _on_move)
+
+            # --- Static labels for export ---
+            ttk.Separator(freq_box).grid(row=1, column=0, columnspan=2, sticky="ew", pady=6)
+
+            # Defaults: full range, labels OFF (N=0)
+            fmin_default = min(freqs)
+            fmax_default = max(freqs)
+
+            freqmin_var = tk.StringVar(value=f"{fmin_default:.6g}")
+            freqmax_var = tk.StringVar(value=f"{fmax_default:.6g}")
+            nlabels_var = tk.IntVar(value=0)
+
+            static_artists: list[object] = []
+
+            def _clear_static():
+                nonlocal static_artists
+                for a in static_artists:
+                    try:
+                        a.remove()
+                    except Exception:
+                        pass
+                static_artists = []
+                canvas.draw_idle()
+
+            def _parse_float_or_none(s: str) -> float | None:
+                s = s.strip()
+                if not s:
+                    return None
+                try:
+                    return float(s)
+                except ValueError:
+                    return None
+
+            def _apply_static_labels():
+                _clear_static()
+
+                n = int(nlabels_var.get())
+                if n <= 0:
+                    return
+
+                fmin_in = _parse_float_or_none(freqmin_var.get())
+                fmax_in = _parse_float_or_none(freqmax_var.get())
+
+                # if blank/invalid, use full range
+                fmin_use = fmin_default if fmin_in is None else fmin_in
+                fmax_use = fmax_default if fmax_in is None else fmax_in
+
+                lo = min(fmin_use, fmax_use)
+                hi = max(fmin_use, fmax_use)
+
+                # candidate indices in the requested freq window
+                candidates = [i for i, fv in enumerate(freqs) if lo <= float(fv) <= hi]
+
+                if not candidates:
+                    # fallback: whole curve
+                    candidates = list(range(len(freqs)))
+
+                # Choose indices:
+                if n == 1:
+                    target = fmin_use  # spec: nearest to Freqmin
+                    idx = min(candidates, key=lambda i: abs(float(freqs[i]) - target))
+                    idxs = [idx]
+                else:
+                    # evenly spaced in point number *within* candidates
+                    m = len(candidates)
+                    if n > m:
+                        n = m
+                    if n == 1:
+                        idxs = [candidates[0]]
+                    else:
+                        pos = [round(k * (m - 1) / (n - 1)) for k in range(n)]
+                        idxs = sorted({candidates[p] for p in pos})
+
+                xdata = list(line.get_xdata(orig=False))
+                ydata = list(line.get_ydata(orig=False))
+                fs = float(tick_fs_var.get()) if "tick_fs_var" in locals() else 10.0
+                label_fs = max(7.0, fs * 0.9)
+
+                for i in idxs:
+                    txt = _fmt_freq_hz(float(freqs[i]))
+                    a = ax.annotate(
+                        txt,
+                        xy=(xdata[i], ydata[i]),
+                        xytext=(6, 6),
+                        textcoords="offset points",
+                        fontsize=label_fs,
+                        bbox=dict(boxstyle="round,pad=0.15", fc="white", alpha=0.7),
+                    )
+                    static_artists.append(a)
+
+                canvas.draw_idle()
+
+            # UI widgets
+            ttk.Label(freq_box, text="Freqmin").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
+            fmin_entry = ttk.Entry(freq_box, textvariable=freqmin_var, width=12)
+            fmin_entry.grid(row=2, column=1, sticky="w", pady=2)
+
+            ttk.Label(freq_box, text="Freqmax").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
+            fmax_entry = ttk.Entry(freq_box, textvariable=freqmax_var, width=12)
+            fmax_entry.grid(row=3, column=1, sticky="w", pady=2)
+
+            ttk.Label(freq_box, text="N labels").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
+            n_spin = ttk.Spinbox(freq_box, from_=0, to=50, increment=1, textvariable=nlabels_var, width=10)
+            n_spin.grid(row=4, column=1, sticky="w", pady=2)
+
+            btns_f = ttk.Frame(freq_box)
+            btns_f.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+            ttk.Button(btns_f, text="Clear", command=lambda: (nlabels_var.set(0), _apply_static_labels()))\
+                .pack(side="left", expand=True, fill="x")
+
+            # Debounced auto-apply for static labels
+            pending_freq = {"id": None}
+
+            def _schedule_labels(_evt=None):
+                if pending_freq["id"] is not None:
+                    tab.after_cancel(pending_freq["id"])
+                pending_freq["id"] = tab.after(300, _apply_static_labels)
+
+            for e in (fmin_entry, fmax_entry):
+                e.bind("<Return>", lambda ev: _apply_static_labels())
+                e.bind("<FocusOut>", lambda ev: _apply_static_labels())
+                e.bind("<KeyRelease>", _schedule_labels)
+
+            n_spin.configure(command=_apply_static_labels)
+            n_spin.bind("<KeyRelease>", lambda ev: _apply_static_labels())
 
         title_entry.bind("<Return>", lambda e: apply_title_text())
         title_entry.bind("<FocusOut>", lambda e: apply_title_text())
