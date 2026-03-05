@@ -572,6 +572,17 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         ax = fig.axes[0] if fig.axes else fig.add_subplot(111)
         line = ax.lines[0] if ax.lines else None
 
+        init_title_text = ax.get_title()
+        title_text_var = tk.StringVar(value=init_title_text)
+
+        def apply_title_text():
+            ax.set_title(title_text_var.get(), fontsize=float(title_fs_var.get()))
+            try:
+                fig.tight_layout()
+            except Exception:
+                pass
+            canvas.draw_idle()
+
         if is_nyquist:
             ax.set_aspect("equal", adjustable="box")
 
@@ -786,7 +797,9 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             tick_fs_var.set(init_tick_fs)
             label_fs_var.set(init_label_fs)
             title_fs_var.set(init_title_fs)
+            title_text_var.set(init_title_text)
             apply_fonts()
+            apply_title_text()
 
         def pick_color():
             if line is None:
@@ -825,7 +838,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
         btns_axes = ttk.Frame(axes_box)
         btns_axes.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        ttk.Button(btns_axes, text="Apply", command=apply_axes).pack(side="left", expand=True, fill="x", padx=(0, 6))
         ttk.Button(btns_axes, text="Autoscale", command=autoscale_axes).pack(side="left", expand=True, fill="x", padx=(0, 6))
         ttk.Button(btns_axes, text="Reset", command=reset_axes).pack(side="left", expand=True, fill="x")
 
@@ -849,6 +861,10 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         title_spin = ttk.Spinbox(fonts_box, from_=6.0, to=50.0, increment=0.5,
                                 textvariable=title_fs_var, width=10)
         title_spin.grid(row=2, column=1, sticky="w", pady=2)
+
+        ttk.Label(fonts_box, text="Text").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
+        title_entry = ttk.Entry(fonts_box, textvariable=title_text_var, width=18)
+        title_entry.grid(row=3, column=1, sticky="w", pady=2)
 
         btns_fonts = ttk.Frame(fonts_box)
         btns_fonts.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -900,8 +916,18 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
         btns_style = ttk.Frame(style_box)
         btns_style.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(8, 0))
-        ttk.Button(btns_style, text="Apply", command=apply_style).pack(side="left", expand=True, fill="x", padx=(0, 6))
         ttk.Button(btns_style, text="Reset", command=reset_style).pack(side="left", expand=True, fill="x")
+
+        pending_title = {"id": None}
+
+        def _schedule_title(_evt=None):
+            if pending_title["id"] is not None:
+                tab.after_cancel(pending_title["id"])
+            pending_title["id"] = tab.after(250, apply_title_text)
+
+        title_entry.bind("<Return>", lambda e: apply_title_text())
+        title_entry.bind("<FocusOut>", lambda e: apply_title_text())
+        title_entry.bind("<KeyRelease>", _schedule_title)
         
 
         if line is None:
