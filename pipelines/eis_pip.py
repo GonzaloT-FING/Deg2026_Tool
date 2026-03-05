@@ -363,54 +363,23 @@ def _new_figure() -> Figure:
     return Figure(figsize=(6.8, 4.8), dpi=100)
 
 def fig_nyquist(parsed: ParsedDTA) -> Figure | None:
-    """Nyquist figure (no file export)."""
     x, y = _paired_series(parsed, "Zreal", "Zimag")
     if not x or not y:
         return None
 
-    y_plot = [-v for v in y]  # standard Nyquist convention
-    x_unit = _column_unit(parsed, "Zreal")
-    y_unit = _column_unit(parsed, "Zimag")
-
-    x_min, x_max = min(x), max(x)
-    y_min, y_max = min(y_plot), max(y_plot)
-
-    x_span = max(x_max - x_min, 1e-12)
-    y_span = max(y_max - y_min, 1e-12)
-    pad_x = 0.05 * x_span
-    pad_y = 0.05 * y_span
+    y_plot = [-v for v in y]  # Nyquist convention
 
     fig = _new_figure()
     ax = fig.add_subplot(111)
 
-    ax.set_xlim(x_min - pad_x, x_max + pad_x)
-    ax.set_ylim(y_min - pad_y, y_max + pad_y)
+    ax.plot(x, y_plot, marker="o", linestyle="-")  # default styling
 
-    # Equal data scaling and axes box shaped by data proportions
+    # Square intervals: 1 unit in x == 1 unit in y
     ax.set_aspect("equal", adjustable="box")
-    box_ratio = (y_span + 2 * pad_y) / (x_span + 2 * pad_x)
-    try:
-        ax.set_box_aspect(box_ratio)
-    except Exception:
-        # Older Matplotlib versions might not support set_box_aspect
-        pass
+    ax.margins(0.05)  # small padding
 
-    # Adaptive marker size
-    npts = len(x)
-    ms = 5.0 * math.sqrt(max(box_ratio, 0.05))
-    ms *= math.sqrt(30 / max(npts, 30))
-    ms = max(1.8, min(ms, 4.5))
-
-    ax.plot(
-        x,
-        y_plot,
-        "-o",
-        linewidth=1.0,
-        markersize=ms,
-        markerfacecolor="none",
-        markeredgewidth=max(0.6, ms * 0.18),
-    )
-
+    x_unit = _column_unit(parsed, "Zreal")
+    y_unit = _column_unit(parsed, "Zimag")
     ax.set_title(f"{_technique_name(parsed)} - Nyquist")
     ax.set_xlabel(f"Zreal ({x_unit})" if x_unit else "Zreal")
     ax.set_ylabel(f"-Zimag ({y_unit})" if y_unit else "-Zimag")
@@ -520,12 +489,12 @@ def build_figures(parsed: ParsedDTA, base_name: str, selected_options: Iterable[
     return figs
 
 def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS plots") -> None:
-    """Open a Tk window with tabs, each containing an interactive Matplotlib figure."""
+    """Open a Tk window with tabs, each containing an interactive Matplotlib figure + controls."""
     if not figures:
         return
 
     import tkinter as tk
-    from tkinter import ttk
+    from tkinter import ttk, colorchooser
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
     root = tk._default_root
@@ -537,16 +506,14 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
     win = tk.Toplevel(root)
     win.title(window_title)
-    win.geometry("1100x750")
+    win.geometry("1200x780")
 
     nb = ttk.Notebook(win)
     nb.pack(fill="both", expand=True)
 
-    # keep refs so canvases/toolbars don't get GC'd
     win._mpl_refs = []  # type: ignore[attr-defined]
 
     def _on_close():
-        # free figure contents
         for _, fig in figures:
             fig.clear()
         win.destroy()
@@ -555,18 +522,253 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
     win.protocol("WM_DELETE_WINDOW", _on_close)
 
-    for tab_title, fig in figures:
-        frame = ttk.Frame(nb)
-        nb.add(frame, text=tab_title[:28] + ("…" if len(tab_title) > 28 else ""))
+    # Simple options (you can expand later)
+    marker_opts = ["o", ".", "x", "+", "s", "^", "v", "D", "None"]
+    linestyle_opts = ["-", "--", "-.", ":", "None"]
 
-        canvas = FigureCanvasTkAgg(fig, master=frame)
+    def _fmt(v: float) -> str:
+        return f"{v:.6g}"
+
+    for tab_title, fig in figures:
+        is_nyquist = ("nyquist" in tab_title.lower())
+
+        tab = ttk.Frame(nb)
+        nb.add(tab, text=tab_title[:28] + ("…" if len(tab_title) > 28 else ""))
+
+        # Split: left plot, right controls
+        outer = ttk.Frame(tab)
+        outer.pack(fill="both", expand=True)
+
+        plot_frame = ttk.Frame(outer)
+        plot_frame.pack(side="left", fill="both", expand=True)
+
+        ctrl_frame = ttk.Frame(outer, padding=10)
+        ctrl_frame.pack(side="right", fill="y")
+
+        # Canvas + toolbar
+        canvas = FigureCanvasTkAgg(fig, master=plot_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
 
-        toolbar = NavigationToolbar2Tk(canvas, frame)
+        toolbar = NavigationToolbar2Tk(canvas, plot_frame)
         toolbar.update()
 
-        win._mpl_refs.append((canvas, toolbar, fig))  # type: ignore[attr-defined]
+        # Get main axes + line (assumes first)
+        ax = fig.axes[0] if fig.axes else fig.add_subplot(111)
+        line = ax.lines[0] if ax.lines else None
+
+        # Keep Nyquist equal aspect from the start (and after any axis changes)
+        if is_nyquist:
+            ax.set_aspect("equal", adjustable="box")
+
+        # ---------- Tk variables ----------
+        x0, x1 = ax.get_xlim()
+        y0, y1 = ax.get_ylim()
+        xmin_var = tk.StringVar(value=_fmt(x0))
+        xmax_var = tk.StringVar(value=_fmt(x1))
+        ymin_var = tk.StringVar(value=_fmt(y0))
+        ymax_var = tk.StringVar(value=_fmt(y1))
+
+        init_xlim = (x0, x1)
+        init_ylim = (y0, y1)
+
+        init_color = line.get_color() if line else ""
+        init_marker = (line.get_marker() if line else "o") or "None"
+        init_ls = (line.get_linestyle() if line else "-") or "None"
+        init_lw = float(line.get_linewidth()) if line else 1.0
+        init_ms = float(line.get_markersize()) if line else 4.0
+
+        # Normalize "None" representations
+        if init_marker in (None, "", "None"):
+            init_marker = "None"
+        if init_ls in (None, "", "None"):
+            init_ls = "None"
+
+        color_var = tk.StringVar(value=str(init_color))
+        marker_var = tk.StringVar(value=str(init_marker))
+        linestyle_var = tk.StringVar(value=str(init_ls))
+        lw_var = tk.DoubleVar(value=init_lw)
+        ms_var = tk.DoubleVar(value=init_ms)
+
+        def _update_limit_entries():
+            a0, a1 = ax.get_xlim()
+            b0, b1 = ax.get_ylim()
+            xmin_var.set(_fmt(a0))
+            xmax_var.set(_fmt(a1))
+            ymin_var.set(_fmt(b0))
+            ymax_var.set(_fmt(b1))
+
+        def _parse_float(s: str) -> float | None:
+            s = s.strip()
+            if not s:
+                return None
+            try:
+                return float(s)
+            except ValueError:
+                return None
+
+        def apply_axes():
+            # xlim/ylim apply (blank = keep current)
+            cur_x0, cur_x1 = ax.get_xlim()
+            cur_y0, cur_y1 = ax.get_ylim()
+
+            nx0 = _parse_float(xmin_var.get())
+            nx1 = _parse_float(xmax_var.get())
+            ny0 = _parse_float(ymin_var.get())
+            ny1 = _parse_float(ymax_var.get())
+
+            new_x0 = cur_x0 if nx0 is None else nx0
+            new_x1 = cur_x1 if nx1 is None else nx1
+            new_y0 = cur_y0 if ny0 is None else ny0
+            new_y1 = cur_y1 if ny1 is None else ny1
+
+            # Respect log axes (Bode): limits must be > 0
+            if ax.get_xscale() == "log":
+                if new_x0 <= 0 or new_x1 <= 0:
+                    # ignore invalid change
+                    _update_limit_entries()
+                    return
+            if ax.get_yscale() == "log":
+                if new_y0 <= 0 or new_y1 <= 0:
+                    _update_limit_entries()
+                    return
+
+            ax.set_xlim(new_x0, new_x1)
+            ax.set_ylim(new_y0, new_y1)
+
+            if is_nyquist:
+                ax.set_aspect("equal", adjustable="box")
+
+            canvas.draw_idle()
+            _update_limit_entries()
+
+        def reset_axes():
+            ax.set_xlim(*init_xlim)
+            ax.set_ylim(*init_ylim)
+            if is_nyquist:
+                ax.set_aspect("equal", adjustable="box")
+            canvas.draw_idle()
+            _update_limit_entries()
+
+        def autoscale_axes():
+            ax.relim()
+            ax.autoscale_view()
+            if is_nyquist:
+                ax.set_aspect("equal", adjustable="box")
+            canvas.draw_idle()
+            _update_limit_entries()
+
+        def apply_style():
+            if line is None:
+                return
+
+            # Color (allow any matplotlib color string)
+            c = color_var.get().strip()
+            if c:
+                line.set_color(c)
+
+            # Line style
+            ls = linestyle_var.get().strip()
+            line.set_linestyle("" if ls == "None" else ls)
+
+            # Marker
+            mk = marker_var.get().strip()
+            line.set_marker("" if mk == "None" else mk)
+
+            # Widths/sizes
+            try:
+                line.set_linewidth(float(lw_var.get()))
+            except Exception:
+                pass
+            try:
+                line.set_markersize(float(ms_var.get()))
+            except Exception:
+                pass
+
+            canvas.draw_idle()
+
+        def reset_style():
+            if line is None:
+                return
+            color_var.set(str(init_color))
+            marker_var.set(str(init_marker))
+            linestyle_var.set(str(init_ls))
+            lw_var.set(init_lw)
+            ms_var.set(init_ms)
+            apply_style()
+
+        def pick_color():
+            if line is None:
+                return
+            chosen = colorchooser.askcolor(title="Choose line color")
+            if chosen and chosen[1]:
+                color_var.set(chosen[1])
+                apply_style()
+
+        # ---------- Controls UI ----------
+        # AXES
+        axes_box = ttk.LabelFrame(ctrl_frame, text="Axes limits", padding=8)
+        axes_box.pack(fill="x", pady=(0, 10))
+
+        def _row(parent, r, label, var):
+            ttk.Label(parent, text=label, width=5).grid(row=r, column=0, sticky="w", padx=(0, 6), pady=2)
+            e = ttk.Entry(parent, textvariable=var, width=12)
+            e.grid(row=r, column=1, sticky="w", pady=2)
+            return e
+
+        _row(axes_box, 0, "Xmin", xmin_var)
+        _row(axes_box, 1, "Xmax", xmax_var)
+        _row(axes_box, 2, "Ymin", ymin_var)
+        _row(axes_box, 3, "Ymax", ymax_var)
+
+        btns_axes = ttk.Frame(axes_box)
+        btns_axes.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(btns_axes, text="Apply", command=apply_axes).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(btns_axes, text="Autoscale", command=autoscale_axes).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(btns_axes, text="Reset", command=reset_axes).pack(side="left", expand=True, fill="x")
+
+        # STYLE
+        style_box = ttk.LabelFrame(ctrl_frame, text="Style", padding=8)
+        style_box.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(style_box, text="Color").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(style_box, textvariable=color_var, width=12).grid(row=0, column=1, sticky="w", pady=2)
+        ttk.Button(style_box, text="Pick…", command=pick_color).grid(row=0, column=2, sticky="w", padx=(6, 0), pady=2)
+
+        ttk.Label(style_box, text="Line").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Combobox(style_box, textvariable=linestyle_var, values=linestyle_opts, width=9, state="readonly")\
+            .grid(row=1, column=1, sticky="w", pady=2)
+
+        ttk.Label(style_box, text="Marker").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Combobox(style_box, textvariable=marker_var, values=marker_opts, width=9, state="readonly")\
+            .grid(row=2, column=1, sticky="w", pady=2)
+
+        ttk.Label(style_box, text="LW").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Spinbox(style_box, from_=0.0, to=10.0, increment=0.1, textvariable=lw_var, width=10)\
+            .grid(row=3, column=1, sticky="w", pady=2)
+
+        ttk.Label(style_box, text="MS").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Spinbox(style_box, from_=0.0, to=20.0, increment=0.5, textvariable=ms_var, width=10)\
+            .grid(row=4, column=1, sticky="w", pady=2)
+
+        btns_style = ttk.Frame(style_box)
+        btns_style.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        ttk.Button(btns_style, text="Apply", command=apply_style).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(btns_style, text="Reset", command=reset_style).pack(side="left", expand=True, fill="x")
+
+        # If no line exists, disable style controls nicely
+        if line is None:
+            for child in style_box.winfo_children():
+                try:
+                    child.configure(state="disabled")
+                except Exception:
+                    pass
+
+        win._mpl_refs.append((canvas, toolbar, fig, ax, line))  # type: ignore[attr-defined]
+
+    # If this file is run standalone (no existing mainloop), start one.
+    if created_root:
+        win.mainloop()
 
 
 # ---------------------------------------------------------------------------
@@ -596,12 +798,20 @@ def export_folder(
         return []
 
     exported_xlsx: list[Path] = []
+    all_figs: list[tuple[str, Figure]] = []
+
     for dta_file in dta_files:
         parsed = parse_gamry_dta(dta_file)
 
         xlsx_path = output_dir / f"{dta_file.stem}.xlsx"
         export_to_xlsx(parsed, xlsx_path)
         exported_xlsx.append(xlsx_path)
+
+        # NEW: create figures instead of exporting .svg
+        all_figs.extend(build_figures(parsed, dta_file.stem, selected_options))
+    
+    # NEW: show one window with tabs for all figures
+    show_figures_tk(all_figs, window_title="EIS plots")
 
     return exported_xlsx
 
