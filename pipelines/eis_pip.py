@@ -1236,12 +1236,18 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         if not nyquist_sources:
             return
 
-        # If already open, just focus it
+        # If already open, bring to front
         existing = getattr(win, "_composer_win", None)
         if existing is not None and existing.winfo_exists():
             existing.lift()
             existing.focus_force()
             return
+
+        def _src_label(key: str) -> str:
+            # IMPORTANT: uses the *current* title of the source plot (user-editable)
+            ax_src = nyquist_sources[key]["ax"]
+            t = (ax_src.get_title() or "").strip()
+            return t if t else key
 
         comp = tk.Toplevel(win)
         win._composer_win = comp  # type: ignore[attr-defined]
@@ -1274,18 +1280,35 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         ctrl = ttk.Frame(outer, padding=10)
         ctrl.pack(side="right", fill="y")
 
-        # Source list
+        # ---- Sources list (show current title + key) ----
         src_box = ttk.LabelFrame(ctrl, text="Nyquist sources", padding=8)
         src_box.pack(fill="x", pady=(0, 10))
 
         lb = tk.Listbox(src_box, selectmode="extended", height=12, exportselection=False)
         lb.pack(fill="x", expand=False)
 
-        titles = sorted(nyquist_sources.keys())
-        for t in titles:
-            lb.insert("end", t)
+        # mapping listbox index -> key
+        idx_to_key: list[str] = []
 
-        # Composite line storage: title -> line
+        def _rebuild_listbox():
+            nonlocal idx_to_key
+            lb.delete(0, "end")
+            idx_to_key = []
+
+            # sort by label for nicer UX
+            keys = list(nyquist_sources.keys())
+            keys.sort(key=lambda k: _src_label(k).lower())
+
+            for k in keys:
+                lb.insert("end", f"{_src_label(k)}   [{k}]")
+                idx_to_key.append(k)
+
+        _rebuild_listbox()
+
+        def _selected_keys() -> list[str]:
+            return [idx_to_key[i] for i in lb.curselection()]
+
+        # ---- Composite line storage: key -> line ----
         comp_lines: dict[str, object] = {}
 
         legend_var = tk.BooleanVar(value=True)
@@ -1300,30 +1323,33 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             canvas.draw_idle()
 
         def _copy_style(src_line, dst_line):
-            # Copy current formatting from the source line
+            # Copy *current* formatting from source line
             dst_line.set_color(src_line.get_color())
             dst_line.set_linestyle(src_line.get_linestyle())
             dst_line.set_marker(src_line.get_marker())
             dst_line.set_linewidth(src_line.get_linewidth())
             dst_line.set_markersize(src_line.get_markersize())
 
-            # Keep hollow markers (your default)
+            # Also copy marker fill/edge if present
             try:
-                dst_line.set_markerfacecolor("none")
+                dst_line.set_markerfacecolor(src_line.get_markerfacecolor())
             except Exception:
                 pass
             try:
-                dst_line.set_markeredgecolor(dst_line.get_color())
+                dst_line.set_markeredgecolor(src_line.get_markeredgecolor())
+            except Exception:
+                pass
+            try:
+                dst_line.set_alpha(src_line.get_alpha())
             except Exception:
                 pass
 
         def _fit_all():
-            # Fit to union of all composite curves and keep Ymin=0 (nice for Nyquist)
             if not comp_lines:
                 return
 
-            xs = []
-            ys = []
+            xs: list[float] = []
+            ys: list[float] = []
             for ln in comp_lines.values():
                 x = list(ln.get_xdata(orig=False))
                 y = list(ln.get_ydata(orig=False))
@@ -1336,7 +1362,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             x0, x1 = min(xs), max(xs)
             y0, y1 = 0.0, max(ys)
 
-            # small padding
             dx = (x1 - x0) if x1 != x0 else (abs(x0) * 0.1 + 1.0)
             dy = (y1 - y0) if y1 != y0 else (abs(y1) * 0.1 + 1.0)
             pad_x = 0.05 * dx
@@ -1349,44 +1374,40 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             _sync_limit_entries()
 
         def add_selected():
-            sel = [lb.get(i) for i in lb.curselection()]
-            for title in sel:
-                if title in comp_lines:
+            for key in _selected_keys():
+                if key in comp_lines:
                     continue
-                src_line = nyquist_sources[title]["line"]
 
+                src_line = nyquist_sources[key]["line"]
                 x = list(src_line.get_xdata(orig=False))
                 y = list(src_line.get_ydata(orig=False))
 
-                # label = title (legend uses this)
-                (ln,) = axc.plot(x, y, label=title)
-
+                # label must match the *source plot title*
+                (ln,) = axc.plot(x, y, label=_src_label(key))
                 _copy_style(src_line, ln)
 
-                # If you want later hover freq on composite, keep freqs too:
+                # keep freqs too (future hover freq on composite)
                 freqs = getattr(src_line, "_eis_freq", None)
                 if freqs is not None:
                     ln._eis_freq = freqs  # type: ignore[attr-defined]
 
-                comp_lines[title] = ln
+                comp_lines[key] = ln
 
             axc.set_aspect("equal", adjustable="box")
             _apply_legend()
             _fit_all()
 
         def remove_selected():
-            sel = [lb.get(i) for i in lb.curselection()]
-            removed_any = False
-            for title in sel:
-                ln = comp_lines.pop(title, None)
+            removed = False
+            for key in _selected_keys():
+                ln = comp_lines.pop(key, None)
                 if ln is not None:
                     try:
                         ln.remove()
                     except Exception:
                         pass
-                    removed_any = True
-
-            if removed_any:
+                    removed = True
+            if removed:
                 _apply_legend()
                 _fit_all()
 
@@ -1401,15 +1422,30 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             canvas.draw_idle()
             _sync_limit_entries()
 
+        def refresh_formatting():
+            # Refresh BOTH style and legend labels from the current state of source tabs
+            for key, ln in comp_lines.items():
+                src = nyquist_sources.get(key)
+                if not src:
+                    continue
+                src_line = src["line"]
+                _copy_style(src_line, ln)
+                ln.set_label(_src_label(key))  # <-- ensures legend matches edited titles
+
+            _rebuild_listbox()
+            _apply_legend()
+            canvas.draw_idle()
+
         btns = ttk.Frame(src_box)
         btns.pack(fill="x", pady=(8, 0))
         ttk.Button(btns, text="Add", command=add_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
         ttk.Button(btns, text="Remove", command=remove_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
         ttk.Button(btns, text="Clear", command=clear_all).pack(side="left", expand=True, fill="x")
 
+        ttk.Button(src_box, text="Refresh formatting", command=refresh_formatting).pack(fill="x", pady=(8, 0))
         ttk.Checkbutton(ctrl, text="Legend", variable=legend_var, command=_apply_legend).pack(anchor="w", pady=(0, 10))
 
-        # Axis limits box (independent limits for composite)
+        # ---- Axis limits (independent in composite) ----
         lim_box = ttk.LabelFrame(ctrl, text="Axes limits", padding=8)
         lim_box.pack(fill="x", pady=(0, 10))
 
@@ -1466,7 +1502,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         eymin = _row(lim_box, 2, "Ymin", ymin_var)
         eymax = _row(lim_box, 3, "Ymax", ymax_var)
 
-        # Debounced auto-apply
         pending = {"id": None}
 
         def _schedule(_evt=None):
@@ -1482,7 +1517,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         b2 = ttk.Frame(lim_box)
         b2.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Button(b2, text="Fit all", command=_fit_all).pack(side="left", expand=True, fill="x", padx=(0, 6))
-        ttk.Button(b2, text="Reset", command=_sync_limit_entries).pack(side="left", expand=True, fill="x")
+        ttk.Button(b2, text="Refresh fields", command=_sync_limit_entries).pack(side="left", expand=True, fill="x")
 
         def _on_close():
             comp.destroy()
