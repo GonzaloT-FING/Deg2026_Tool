@@ -1281,6 +1281,14 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
         figc = _new_figure()
         axc = figc.add_subplot(111)
+
+        def _reset_composite_axes():
+            axc.set_aspect("equal", adjustable="box")
+            axc.grid(True)
+            axc.set_title("Composite - Nyquist")
+            axc.set_xlabel("Zreal")
+            axc.set_ylabel("-Zimag")
+
         axc.set_aspect("equal", adjustable="box")
         axc.grid(True)
         axc.set_title("Composite - Nyquist")
@@ -1383,12 +1391,24 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         legend_var = tk.BooleanVar(value=True)
 
         def _apply_legend():
-            if legend_var.get():
-                axc.legend(loc="best", fontsize=9)
-            else:
-                leg = axc.get_legend()
-                if leg is not None:
-                    leg.remove()
+            # Always remove existing legend first (prevents stacking / stale legends)
+            leg = axc.get_legend()
+            if leg is not None:
+                leg.remove()
+
+            if not legend_var.get():
+                canvas.draw_idle()
+                return
+
+            handles, labels = axc.get_legend_handles_labels()
+            # Keep only meaningful labels (ignore '_' internal ones)
+            pairs = [(h, l) for h, l in zip(handles, labels) if l and not l.startswith("_")]
+            if not pairs:
+                canvas.draw_idle()
+                return
+
+            h2, l2 = zip(*pairs)
+            axc.legend(h2, l2, loc="best", fontsize=9)
             canvas.draw_idle()
 
         def _copy_style(src_line, dst_line):
@@ -1419,26 +1439,29 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
             xs: list[float] = []
             ys: list[float] = []
+
             for ln in comp_lines.values():
-                x = list(ln.get_xdata(orig=False))
-                y = list(ln.get_ydata(orig=False))
-                xs.extend([float(v) for v in x])
-                ys.extend([float(v) for v in y])
+                x = [float(v) for v in ln.get_xdata(orig=False)]
+                y = [float(v) for v in ln.get_ydata(orig=False)]
+                xs.extend(x)
+                ys.extend(y)
 
             if not xs or not ys:
                 return
 
             x0, x1 = min(xs), max(xs)
-            y0, y1 = 0.0, max(ys)
+            y0, y1 = min(ys), max(ys)
 
             dx = (x1 - x0) if x1 != x0 else (abs(x0) * 0.1 + 1.0)
-            dy = (y1 - y0) if y1 != y0 else (abs(y1) * 0.1 + 1.0)
+            dy = (y1 - y0) if y1 != y0 else (abs(y0) * 0.1 + 1.0)
+
             pad_x = 0.05 * dx
             pad_y = 0.05 * dy
 
             axc.set_xlim(x0 - pad_x, x1 + pad_x)
-            axc.set_ylim(max(0.0, y0 - pad_y), y1 + pad_y)
+            axc.set_ylim(y0 - pad_y, y1 + pad_y)
             axc.set_aspect("equal", adjustable="box")
+
             canvas.draw_idle()
             _sync_limit_entries()
 
@@ -1483,17 +1506,31 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 _fit_all()
 
         def clear_all():
-            for ln in list(comp_lines.values()):
-                try:
-                    _clear_comp_labels(k)
-                    ln.remove()
-                except Exception:
-                    pass
-            comp_label_artists.clear()
+            # Clear our bookkeeping first
             comp_lines.clear()
-            _apply_legend()
+
+            # If you implemented composed freq labels:
+            try:
+                comp_label_artists.clear()  # type: ignore[name-defined]
+            except Exception:
+                pass
+
+            # Clear the axes in one shot (fast, removes lines + annotations + legend)
+            axc.cla()
+            _reset_composite_axes()
+
+            # Redraw + sync UI fields
             canvas.draw_idle()
             _sync_limit_entries()
+
+            # Optional: clear selection so user doesn't accidentally "Remove" nothing
+            try:
+                lb.selection_clear(0, "end")
+            except Exception:
+                pass
+
+            # Legend should now be empty (but keep checkbox state consistent)
+            _apply_legend()
 
         def refresh_formatting():
             # Refresh BOTH style and legend labels from the current state of source tabs
