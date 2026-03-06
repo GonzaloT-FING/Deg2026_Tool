@@ -1110,6 +1110,14 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     except Exception:
                         pass
                 static_artists = []
+
+                # NEW: clear metadata so composite knows there are no labels
+                try:
+                    line._freq_label_idxs = []        # type: ignore[attr-defined]
+                    line._freq_label_spec = None      # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
                 canvas.draw_idle()
 
             def _parse_float_or_none(s: str) -> float | None:
@@ -1150,6 +1158,16 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     target = fmin_use  # spec: nearest to Freqmin
                     idx = min(candidates, key=lambda i: abs(float(freqs[i]) - target))
                     idxs = [idx]
+                    # NEW: store label selection on the line (for composite import)
+                    try:
+                        line._freq_label_idxs = list(idxs)  # type: ignore[attr-defined]
+                        line._freq_label_spec = {           # type: ignore[attr-defined]
+                            "freqmin": fmin_use,
+                            "freqmax": fmax_use,
+                            "n": int(n),
+                        }
+                    except Exception:
+                        pass
                 else:
                     # evenly spaced in point number *within* candidates
                     m = len(candidates)
@@ -1310,6 +1328,57 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
         # ---- Composite line storage: key -> line ----
         comp_lines: dict[str, object] = {}
+        comp_label_artists: dict[str, list[object]] = {}  # NEW: per-curve annotations
+
+        def _fmt_freq_hz(v: float) -> str:
+            av = abs(v)
+            if av >= 1e6:
+                return f"{v/1e6:.3g} MHz"
+            if av >= 1e3:
+                return f"{v/1e3:.3g} kHz"
+            return f"{v:.3g} Hz"
+        
+        def _clear_comp_labels(key: str):
+            arts = comp_label_artists.pop(key, [])
+            for a in arts:
+                try:
+                    a.remove()
+                except Exception:
+                    pass
+
+        def _apply_comp_labels_from_source(key: str, dst_line):
+            # remove any old ones
+            _clear_comp_labels(key)
+
+            src_line = nyquist_sources[key]["line"]
+            idxs = getattr(src_line, "_freq_label_idxs", None)
+            freqs = getattr(src_line, "_eis_freq", None)
+
+            if not idxs or freqs is None:
+                return
+            # defensive: keep only valid indices
+            npts = len(list(dst_line.get_xdata(orig=False)))
+            idxs = [int(i) for i in idxs if 0 <= int(i) < npts]
+            if not idxs:
+                return
+
+            xdata = list(dst_line.get_xdata(orig=False))
+            ydata = list(dst_line.get_ydata(orig=False))
+
+            arts: list[object] = []
+            for i in idxs:
+                txt = _fmt_freq_hz(float(freqs[i]))
+                a = axc.annotate(
+                    txt,
+                    xy=(xdata[i], ydata[i]),
+                    xytext=(6, 6),
+                    textcoords="offset points",
+                    fontsize=8.5,
+                    bbox=dict(boxstyle="round,pad=0.15", fc="white", alpha=0.7),
+                )
+                arts.append(a)
+
+            comp_label_artists[key] = arts
 
         legend_var = tk.BooleanVar(value=True)
 
@@ -1392,6 +1461,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     ln._eis_freq = freqs  # type: ignore[attr-defined]
 
                 comp_lines[key] = ln
+                _apply_comp_labels_from_source(key, ln)   # NEW
 
             axc.set_aspect("equal", adjustable="box")
             _apply_legend()
@@ -1403,6 +1473,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 ln = comp_lines.pop(key, None)
                 if ln is not None:
                     try:
+                        _clear_comp_labels(key)   # NEW
                         ln.remove()
                     except Exception:
                         pass
@@ -1414,9 +1485,11 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         def clear_all():
             for ln in list(comp_lines.values()):
                 try:
+                    _clear_comp_labels(k)
                     ln.remove()
                 except Exception:
                     pass
+            comp_label_artists.clear()
             comp_lines.clear()
             _apply_legend()
             canvas.draw_idle()
@@ -1431,6 +1504,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 src_line = src["line"]
                 _copy_style(src_line, ln)
                 ln.set_label(_src_label(key))  # <-- ensures legend matches edited titles
+                _apply_comp_labels_from_source(key, ln)
 
             _rebuild_listbox()
             _apply_legend()
