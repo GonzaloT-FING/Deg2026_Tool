@@ -473,6 +473,21 @@ def fig_series_vs_pt(parsed: ParsedDTA) -> Figure | None:
     axV = axI.twinx()
     axT = axI.twinx()
     axT.spines["right"].set_position(("outward", 60))
+
+    # After:
+    # axV = axI.twinx()
+    # axT = axI.twinx()
+    # axT.spines["right"].set_position(("outward", 60))
+
+    axV.spines["left"].set_visible(False)
+    axT.spines["left"].set_visible(False)
+
+    # make sure their ticks are on the right (usually automatic, but explicit is fine)
+    axV.yaxis.tick_right()
+    axV.yaxis.set_label_position("right")
+    axT.yaxis.tick_right()
+    axT.yaxis.set_label_position("right")
+
     axes["V"] = axV
     axes["T"] = axT
 
@@ -597,24 +612,103 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
     compose_btn = ttk.Button(topbar, text="Componer")
     compose_btn.pack(side="left", padx=(8, 0))
 
-    def _sync_ygrid_ticks(base_ax, other_axes, nbins: int = 6):
-        # Choose "nice" ticks on base axis
-        y0, y1 = base_ax.get_ylim()
+    def _sync_y_ticks(master_ax, other_axes, nbins: int = 6):
+        # Ensure master has "nice" ticks
         loc = MaxNLocator(nbins=nbins)
-        ticks = list(loc.tick_values(y0, y1))
-        if len(ticks) >= 2:
-            base_ax.set_yticks(ticks)
+        master_ax.yaxis.set_major_locator(loc)
+        master_ax.figure.canvas.draw_idle()  # safe
 
-        # Compute tick positions as fractions of the base axis span
-        y0, y1 = base_ax.get_ylim()
+        ticks = list(master_ax.get_yticks())
+        if len(ticks) < 2:
+            return
+
+        y0, y1 = master_ax.get_ylim()
         span = (y1 - y0) if (y1 != y0) else 1.0
-        fracs = [(t - y0) / span for t in base_ax.get_yticks()]
+        fracs = [(t - y0) / span for t in ticks]
 
-        # Apply those fractions to the other axes
-        for ax in other_axes:
-            a0, a1 = ax.get_ylim()
+        for axk in other_axes:
+            a0, a1 = axk.get_ylim()
             aspan = (a1 - a0) if (a1 != a0) else 1.0
-            ax.set_yticks([a0 + f * aspan for f in fracs])
+            axk.set_yticks([a0 + f * aspan for f in fracs])
+
+    marker_opts = ["o", ".", "x", "+", "s", "^", "v", "D", "None"]
+    linestyle_opts = ["-", "--", "-.", ":", "None"]
+
+
+
+    def _apply_series_style(k: str):
+        ln = lines[k]
+        v = style_vars[k]
+
+        c = v["color"].get().strip()
+        if c:
+            ln.set_color(c)
+
+        ls = v["ls"].get()
+        mk = v["mk"].get()
+        ln.set_linestyle("" if ls == "None" else ls)
+        ln.set_marker("" if mk == "None" else mk)
+        ln.set_linewidth(float(v["lw"].get()))
+        ln.set_markersize(float(v["ms"].get()))
+
+        # keep hollow marker
+        if ln.get_marker() not in ("", None):
+            ln.set_markerfacecolor("none")
+            ln.set_markeredgecolor(ln.get_color())
+
+        _update_legend()
+        _refresh_axis_colors()
+        _autoscale_visible_axes()
+
+        # re-sync ticks if multiple series visible
+        _apply_visibility()
+
+    for k, title in (("I", "Idc"), ("V", "Vdc"), ("T", "Temp")):
+        if k not in lines:
+            continue
+        f = ttk.Frame(style_nb, padding=6)
+        style_nb.add(f, text=title)
+
+        ln = lines[k]
+        style_vars[k] = {
+            "color": tk.StringVar(value=str(ln.get_color())),
+            "ls": tk.StringVar(value=str(ln.get_linestyle() or "-") or "-"),
+            "mk": tk.StringVar(value=str(ln.get_marker() or "o") or "o"),
+            "lw": tk.DoubleVar(value=float(ln.get_linewidth())),
+            "ms": tk.DoubleVar(value=float(ln.get_markersize())),
+        }
+
+        ttk.Label(f, text="Color").grid(row=0, column=0, sticky="w")
+        ce = ttk.Entry(f, textvariable=style_vars[k]["color"], width=10)
+        ce.grid(row=0, column=1, sticky="w", padx=(6, 0))
+
+        ttk.Button(f, text="Pick…", command=lambda kk=k: _pick_series_color(kk)).grid(row=0, column=2, sticky="w", padx=(6, 0))
+
+        ttk.Label(f, text="Line").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        cb_ls = ttk.Combobox(f, textvariable=style_vars[k]["ls"], values=linestyle_opts, state="readonly", width=8)
+        cb_ls.grid(row=1, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+
+        ttk.Label(f, text="Marker").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        cb_mk = ttk.Combobox(f, textvariable=style_vars[k]["mk"], values=marker_opts, state="readonly", width=8)
+        cb_mk.grid(row=2, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+
+        ttk.Label(f, text="LW").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        sp_lw = ttk.Spinbox(f, from_=0.0, to=10.0, increment=0.1, textvariable=style_vars[k]["lw"], width=8)
+        sp_lw.grid(row=3, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+
+        ttk.Label(f, text="MS").grid(row=4, column=0, sticky="w", pady=(6, 0))
+        sp_ms = ttk.Spinbox(f, from_=0.0, to=20.0, increment=0.5, textvariable=style_vars[k]["ms"], width=8)
+        sp_ms.grid(row=4, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+
+        # auto-apply bindings
+        ce.bind("<Return>", lambda e, kk=k: _apply_series_style(kk))
+        ce.bind("<FocusOut>", lambda e, kk=k: _apply_series_style(kk))
+        cb_ls.bind("<<ComboboxSelected>>", lambda e, kk=k: _apply_series_style(kk))
+        cb_mk.bind("<<ComboboxSelected>>", lambda e, kk=k: _apply_series_style(kk))
+        sp_lw.configure(command=lambda kk=k: _apply_series_style(kk))
+        sp_ms.configure(command=lambda kk=k: _apply_series_style(kk))
+        sp_lw.bind("<KeyRelease>", lambda e, kk=k: _apply_series_style(kk))
+        sp_ms.bind("<KeyRelease>", lambda e, kk=k: _apply_series_style(kk))
 
     def _goto_selected(_evt=None):
         wanted = plot_names_var.get()
@@ -733,29 +827,44 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         # --- Pt Series controls (only on Series vs Pt figures) ---
         if getattr(fig, "_pt_series", False):
 
-            def _apply_axis_color(ax, color: str, enabled: bool):
-                if not enabled:
-                    ax.tick_params(axis="y", colors="black")
-                    ax.yaxis.label.set_color("black")
-                    ax.spines["left"].set_color("black") if ax.spines.get("left") else None
-                    ax.spines["right"].set_color("black") if ax.spines.get("right") else None
-                    return
+            def _apply_axis_color(ax, color: str, enabled: bool, side: str):
+                # side: "left" or "right"
+                c = color if enabled else "black"
 
-                ax.tick_params(axis="y", colors=color)
-                ax.yaxis.label.set_color(color)
-                if "left" in ax.spines:
-                    ax.spines["left"].set_color(color)
-                if "right" in ax.spines:
-                    ax.spines["right"].set_color(color)
+                if side == "left":
+                    ax.tick_params(axis="y", colors=c, labelleft=True, labelright=False)
+                    ax.yaxis.label.set_color(c)
+                    if "left" in ax.spines:
+                        ax.spines["left"].set_color(c)
+                    # do NOT touch right spine here
+                else:
+                    ax.tick_params(axis="y", colors=c, labelright=True, labelleft=False)
+                    ax.yaxis.label.set_color(c)
+                    if "right" in ax.spines:
+                        ax.spines["right"].set_color(c)
+                    # do NOT touch left spine here
 
             color_axes_var = tk.BooleanVar(value=True)
 
             def _refresh_axis_colors():
-                for k, ln in lines.items():
-                    axk = axes.get(k)
-                    if axk is None:
-                        continue
-                    _apply_axis_color(axk, ln.get_color(), enabled=(color_axes_var.get() and ln.get_visible()))
+                if "I" in lines and "I" in axes:
+                    _apply_axis_color(
+                        axes["I"], lines["I"].get_color(),
+                        enabled=(color_axes_var.get() and lines["I"].get_visible()),
+                        side="left",
+                    )
+                if "V" in lines and "V" in axes:
+                    _apply_axis_color(
+                        axes["V"], lines["V"].get_color(),
+                        enabled=(color_axes_var.get() and lines["V"].get_visible()),
+                        side="right",
+                    )
+                if "T" in lines and "T" in axes:
+                    _apply_axis_color(
+                        axes["T"], lines["T"].get_color(),
+                        enabled=(color_axes_var.get() and lines["T"].get_visible()),
+                        side="right",
+                    )
             
             def _pick_series_color(k: str):
                 if k not in lines:
@@ -779,6 +888,11 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
             lines = getattr(fig, "_pt_lines", {})
             ylabels = getattr(fig, "_pt_ylabels", {})
+
+            style_nb = ttk.Notebook(pt_box)
+            style_nb.pack(fill="x", pady=(8, 0))
+
+            style_vars = {}
 
             ttk.Checkbutton(pt_box, text="Color y-axes", variable=color_axes_var,
                 command=lambda: (_refresh_axis_colors(), canvas.draw_idle())).pack(anchor="w", pady=(6,0))
@@ -812,13 +926,36 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 if handles:
                     base_ax.legend(handles, labels, loc="best", fontsize=9)
 
+            def _autoscale_visible_axes():
+                for k, ln in lines.items():
+                    axk = axes.get(k)
+                    if axk is None:
+                        continue
+                    if ln.get_visible():
+                        axk.relim()
+                        axk.autoscale_view()
+
             def _apply_visibility():
                 if "I" in lines: lines["I"].set_visible(bool(show_I.get()))
                 if "V" in lines: lines["V"].set_visible(bool(show_V.get()))
                 if "T" in lines: lines["T"].set_visible(bool(show_T.get()))
 
-                ax.relim()
-                ax.autoscale_view()
+                _autoscale_visible_axes()
+
+                # Choose master for tick/grid alignment: first visible in I->V->T order
+                visible_keys = [k for k in ("I", "V", "T") if k in lines and lines[k].get_visible()]
+                if visible_keys:
+                    master_key = visible_keys[0]
+                    master_ax = axes[master_key]
+
+                    # grid only from master axis to avoid clutter
+                    for axx in axes.values():
+                        axx.grid(False)
+                    master_ax.grid(True)
+
+                    others = [axes[k] for k in visible_keys if k != master_key]
+                    _sync_y_ticks(master_ax, others, nbins=6)
+
                 _update_legend()
                 _refresh_axis_colors()
                 canvas.draw_idle()
