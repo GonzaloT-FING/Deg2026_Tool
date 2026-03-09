@@ -449,7 +449,7 @@ def figs_bode(parsed: ParsedDTA) -> list[tuple[str, Figure]]:
     if x2 and y2:
         fig = _new_figure()
         ax = fig.add_subplot(111)
-        ax.semilogx(x1, y1, marker="o", linestyle="-", markerfacecolor="none")
+        ax.semilogx(x2, y2, marker="o", linestyle="-", markerfacecolor="none")
         ax.set_title(f"{_technique_name(parsed)} - Bode (Zphz)")
         ax.set_xlabel(f"Frecuencia ({freq_unit})" if freq_unit else "Frecuencia")
         ax.set_ylabel(f"Zphz ({zphz_unit})" if zphz_unit else "Zphz")
@@ -1675,19 +1675,307 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         comp.protocol("WM_DELETE_WINDOW", _on_close)
 
     def open_composer_bode(kind: str):  # kind in {"zmod","zphz"}
-        sources = bode_sources[kind]
-        x0 = min(xs_pos); x1 = max(xs_pos)
-        axc.set_xlim(x0/1.2, x1*1.2)  # log-friendly padding
-        # build window like Nyquist composer:
-        # - listbox of sources
-        # - Add/Remove/Clear
-        # - Legend with label = source ax.get_title()
-        # - Refresh formatting copies style + updates legend labels
-        #
-        # plot creation:
-        #   (ln,) = axc.plot(x, y, label=_src_label(key))
-        #   axc.set_xscale("log")
-        #   axc.grid(True, which="both")
+        import tkinter as tk
+        from tkinter import ttk
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+
+        sources = bode_sources.get(kind, {})
+        if not sources:
+            return
+
+        win_attr = f"_composer_win_bode_{kind}"
+        existing = getattr(win, win_attr, None)
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            existing.focus_force()
+            return
+
+        def _src_label(key: str) -> str:
+            ax_src = sources[key]["ax"]
+            t = (ax_src.get_title() or "").strip()
+            return t if t else key
+
+        # Use first source labels for composite axes labels (keeps units)
+        any_key = next(iter(sources.keys()))
+        src_ax0 = sources[any_key]["ax"]
+        default_xlabel = src_ax0.get_xlabel() or "Frecuencia"
+        default_ylabel = src_ax0.get_ylabel() or ("Zmod" if kind == "zmod" else "Zphz")
+        default_title = f"Composite - Bode ({'Zmod' if kind == 'zmod' else 'Zphz'})"
+
+        comp = tk.Toplevel(win)
+        setattr(win, win_attr, comp)
+        comp.title(f"Composite (Bode - {'Zmod' if kind == 'zmod' else 'Zphz'})")
+        comp.geometry("1250x780")
+
+        outer = ttk.Frame(comp)
+        outer.pack(fill="both", expand=True)
+
+        plot_frame = ttk.Frame(outer)
+        plot_frame.pack(side="left", fill="both", expand=True)
+
+        figc = _new_figure()
+        axc = figc.add_subplot(111)
+
+        def _reset_axes():
+            axc.set_xscale("log")
+            axc.grid(True, which="both")
+            axc.set_title(default_title)
+            axc.set_xlabel(default_xlabel)
+            axc.set_ylabel(default_ylabel)
+
+        _reset_axes()
+
+        canvas = FigureCanvasTkAgg(figc, master=plot_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        toolbar = NavigationToolbar2Tk(canvas, plot_frame)
+        toolbar.update()
+
+        ctrl = ttk.Frame(outer, padding=10)
+        ctrl.pack(side="right", fill="y")
+
+        # -------- source list --------
+        src_box = ttk.LabelFrame(ctrl, text="Bode sources", padding=8)
+        src_box.pack(fill="x", pady=(0, 10))
+
+        lb = tk.Listbox(src_box, selectmode="extended", height=12, exportselection=False)
+        lb.pack(fill="x", expand=False)
+
+        idx_to_key: list[str] = []
+
+        def _rebuild_listbox():
+            nonlocal idx_to_key
+            lb.delete(0, "end")
+            idx_to_key = []
+            keys = list(sources.keys())
+            keys.sort(key=lambda k: _src_label(k).lower())
+            for k in keys:
+                lb.insert("end", f"{_src_label(k)}   [{k}]")
+                idx_to_key.append(k)
+
+        _rebuild_listbox()
+
+        def _selected_keys() -> list[str]:
+            return [idx_to_key[i] for i in lb.curselection()]
+
+        # -------- composite lines --------
+        comp_lines: dict[str, object] = {}
+        legend_var = tk.BooleanVar(value=True)
+
+        def _apply_legend():
+            leg = axc.get_legend()
+            if leg is not None:
+                leg.remove()
+
+            if not legend_var.get():
+                canvas.draw_idle()
+                return
+
+            handles, labels = axc.get_legend_handles_labels()
+            pairs = [(h, l) for h, l in zip(handles, labels) if l and not l.startswith("_")]
+            if not pairs:
+                canvas.draw_idle()
+                return
+
+            h2, l2 = zip(*pairs)
+            axc.legend(h2, l2, loc="best", fontsize=9)
+            canvas.draw_idle()
+
+        def _copy_style(src_line, dst_line):
+            dst_line.set_color(src_line.get_color())
+            dst_line.set_linestyle(src_line.get_linestyle())
+            dst_line.set_marker(src_line.get_marker())
+            dst_line.set_linewidth(src_line.get_linewidth())
+            dst_line.set_markersize(src_line.get_markersize())
+            try:
+                dst_line.set_markerfacecolor(src_line.get_markerfacecolor())
+            except Exception:
+                pass
+            try:
+                dst_line.set_markeredgecolor(src_line.get_markeredgecolor())
+            except Exception:
+                pass
+            try:
+                dst_line.set_alpha(src_line.get_alpha())
+            except Exception:
+                pass
+
+        def _fit_all():
+            if not comp_lines:
+                return
+
+            xs: list[float] = []
+            ys: list[float] = []
+            for ln in comp_lines.values():
+                x = [float(v) for v in ln.get_xdata(orig=False)]
+                y = [float(v) for v in ln.get_ydata(orig=False)]
+                for xv, yv in zip(x, y):
+                    if xv > 0:
+                        xs.append(xv)
+                        ys.append(yv)
+
+            if not xs or not ys:
+                return
+
+            x0, x1 = min(xs), max(xs)
+            y0, y1 = min(ys), max(ys)
+
+            # log-friendly padding on x, linear padding on y
+            axc.set_xlim(x0 / 1.2, x1 * 1.2)
+
+            dy = (y1 - y0) if y1 != y0 else (abs(y0) * 0.1 + 1.0)
+            pad_y = 0.05 * dy
+            axc.set_ylim(y0 - pad_y, y1 + pad_y)
+
+            canvas.draw_idle()
+            _sync_limit_entries()
+
+        def add_selected():
+            for key in _selected_keys():
+                if key in comp_lines:
+                    continue
+                src_line = sources[key]["line"]
+                x = list(src_line.get_xdata(orig=False))
+                y = list(src_line.get_ydata(orig=False))
+                (ln,) = axc.plot(x, y, label=_src_label(key))
+                _copy_style(src_line, ln)
+                comp_lines[key] = ln
+
+            _apply_legend()
+            _fit_all()
+
+        def remove_selected():
+            removed = False
+            for key in _selected_keys():
+                ln = comp_lines.pop(key, None)
+                if ln is not None:
+                    try:
+                        ln.remove()
+                    except Exception:
+                        pass
+                    removed = True
+            if removed:
+                _apply_legend()
+                _fit_all()
+
+        def clear_all():
+            comp_lines.clear()
+            axc.cla()
+            _reset_axes()
+            canvas.draw_idle()
+            _sync_limit_entries()
+            _apply_legend()
+
+        def refresh_formatting():
+            # refresh BOTH style and legend labels (titles may have been edited)
+            for key, ln in comp_lines.items():
+                src_line = sources[key]["line"]
+                _copy_style(src_line, ln)
+                ln.set_label(_src_label(key))
+            _rebuild_listbox()
+            _apply_legend()
+            canvas.draw_idle()
+
+        btns = ttk.Frame(src_box)
+        btns.pack(fill="x", pady=(8, 0))
+        ttk.Button(btns, text="Add", command=add_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(btns, text="Remove", command=remove_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(btns, text="Clear", command=clear_all).pack(side="left", expand=True, fill="x")
+
+        ttk.Button(src_box, text="Refresh formatting", command=refresh_formatting).pack(fill="x", pady=(8, 0))
+        ttk.Checkbutton(ctrl, text="Legend", variable=legend_var, command=_apply_legend).pack(anchor="w", pady=(0, 10))
+
+        # -------- axis limits UI --------
+        lim_box = ttk.LabelFrame(ctrl, text="Axes limits", padding=8)
+        lim_box.pack(fill="x", pady=(0, 10))
+
+        def _fmt(v: float) -> str:
+            return f"{v:.6g}"
+
+        xmin_var = tk.StringVar()
+        xmax_var = tk.StringVar()
+        ymin_var = tk.StringVar()
+        ymax_var = tk.StringVar()
+
+        def _sync_limit_entries():
+            x0, x1 = axc.get_xlim()
+            y0, y1 = axc.get_ylim()
+            xmin_var.set(_fmt(x0))
+            xmax_var.set(_fmt(x1))
+            ymin_var.set(_fmt(y0))
+            ymax_var.set(_fmt(y1))
+
+        _sync_limit_entries()
+
+        def _parse_float(s: str) -> float | None:
+            s = s.strip()
+            if not s:
+                return None
+            try:
+                return float(s)
+            except ValueError:
+                return None
+
+        def apply_limits():
+            cx0, cx1 = axc.get_xlim()
+            cy0, cy1 = axc.get_ylim()
+
+            nx0 = _parse_float(xmin_var.get())
+            nx1 = _parse_float(xmax_var.get())
+            ny0 = _parse_float(ymin_var.get())
+            ny1 = _parse_float(ymax_var.get())
+
+            new_x0 = cx0 if nx0 is None else nx0
+            new_x1 = cx1 if nx1 is None else nx1
+
+            # log-x must be > 0
+            if new_x0 <= 0 or new_x1 <= 0:
+                _sync_limit_entries()
+                return
+
+            axc.set_xlim(new_x0, new_x1)
+            axc.set_ylim(cy0 if ny0 is None else ny0, cy1 if ny1 is None else ny1)
+
+            canvas.draw_idle()
+            _sync_limit_entries()
+
+        def _row(parent, r, label, var):
+            ttk.Label(parent, text=label, width=5).grid(row=r, column=0, sticky="w", padx=(0, 6), pady=2)
+            e = ttk.Entry(parent, textvariable=var, width=12)
+            e.grid(row=r, column=1, sticky="w", pady=2)
+            return e
+
+        exmin = _row(lim_box, 0, "Xmin", xmin_var)
+        exmax = _row(lim_box, 1, "Xmax", xmax_var)
+        eymin = _row(lim_box, 2, "Ymin", ymin_var)
+        eymax = _row(lim_box, 3, "Ymax", ymax_var)
+
+        pending = {"id": None}
+
+        def _schedule(_evt=None):
+            if pending["id"] is not None:
+                comp.after_cancel(pending["id"])
+            pending["id"] = comp.after(300, apply_limits)
+
+        for e in (exmin, exmax, eymin, eymax):
+            e.bind("<Return>", lambda ev: apply_limits())
+            e.bind("<FocusOut>", lambda ev: apply_limits())
+            e.bind("<KeyRelease>", _schedule)
+
+        b2 = ttk.Frame(lim_box)
+        b2.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(b2, text="Fit all", command=_fit_all).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(b2, text="Refresh fields", command=_sync_limit_entries).pack(side="left", expand=True, fill="x")
+
+        def _on_close():
+            comp.destroy()
+            try:
+                delattr(win, win_attr)
+            except Exception:
+                pass
+
+        comp.protocol("WM_DELETE_WINDOW", _on_close)
 
     def open_composer_for_current():
         key = plot_names_var.get().lower()
