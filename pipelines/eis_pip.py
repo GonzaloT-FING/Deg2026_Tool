@@ -27,6 +27,7 @@ import re
 import math
 
 from matplotlib.figure import Figure
+from matplotlib.ticker import MaxNLocator
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
@@ -459,64 +460,73 @@ def figs_bode(parsed: ParsedDTA) -> list[tuple[str, Figure]]:
 
     return out
 
-def fig_idc_vs_pt(parsed: ParsedDTA) -> Figure | None:
-    x, y, f = _triplet_series(parsed, "Pt", "Idc", "Freq")
-    if not x or not y or not f:
+
+def fig_series_vs_pt(parsed: ParsedDTA) -> Figure | None:
+    fig = _new_figure()
+    axI = fig.add_subplot(111)
+
+    lines: dict[str, object] = {}
+    axes: dict[str, object] = {"I": axI}
+    ylabels: dict[str, str] = {}
+
+    # Create extra axes (always created; lines may or may not exist)
+    axV = axI.twinx()
+    axT = axI.twinx()
+    axT.spines["right"].set_position(("outward", 60))
+    axes["V"] = axV
+    axes["T"] = axT
+
+    # X label
+    x_unit = _column_unit(parsed, "Pt")
+    axI.set_xlabel(f"Pt ({x_unit})" if x_unit else "Pt")
+
+    # Grid only on base axis to avoid clutter
+    axI.grid(True)
+    axV.grid(False)
+    axT.grid(False)
+
+    def _add_series(key: str, col: str, label: str, ax):
+        x, y, f = _triplet_series(parsed, "Pt", col, "Freq")
+        if not x or not y or not f:
+            return
+
+        unit = _column_unit(parsed, col)
+        lab = f"{label} ({unit})" if unit else label
+
+        (ln,) = ax.plot(x, y, marker="o", linestyle="-", markerfacecolor="none", label=lab)
+        ln._eis_freq = f
+        lines[key] = ln
+        ylabels[key] = lab
+
+    _add_series("I", "Idc", "Idc", axI)
+    _add_series("V", "Vdc", "Vdc", axV)
+    _add_series("T", "Temp", "Temp", axT)
+
+    if not lines:
         return None
 
-    x_unit = _column_unit(parsed, "Pt")
-    y_unit = _column_unit(parsed, "Idc")
+    # Default visibility: show only Idc if present, else first available
+    for k, ln in lines.items():
+        ln.set_visible(False)
 
-    fig = _new_figure()
-    ax = fig.add_subplot(111)
-    (line,) = ax.plot(x, y, marker="o", linestyle="-", markerfacecolor="none")
-    line._eis_freq = f
+    base_key = "I" if "I" in lines else next(iter(lines.keys()))
+    lines[base_key].set_visible(True)
 
-    ax.set_title(f"{_technique_name(parsed)} - Idc vs Pt")
-    ax.set_xlabel(f"Pt ({x_unit})" if x_unit else "Pt")
-    ax.set_ylabel(f"Idc ({y_unit})" if y_unit else "Idc")
-    ax.grid(True)
-    fig.tight_layout()
-    return fig
+    # Set ylabels for each axis (they can be colored later in UI)
+    if "I" in lines: axI.set_ylabel(ylabels["I"])
+    if "V" in lines: axV.set_ylabel(ylabels["V"])
+    if "T" in lines: axT.set_ylabel(ylabels["T"])
 
+    # Title
+    axI.set_title(f"{_technique_name(parsed)} - Series vs Pt")
 
-def fig_temp_vs_pt(parsed: ParsedDTA) -> Figure | None:
-    x, y, f = _triplet_series(parsed, "Pt", "Temp", "Freq")
-    if not x or not y or not f:
-        return None
+    # Save metadata for the UI
+    fig._pt_series = True
+    fig._pt_lines = lines
+    fig._pt_axes = axes
+    fig._pt_ylabels = ylabels
+    fig._pt_base_key = base_key  # which axis drives the grid/tick alignment
 
-    x_unit = _column_unit(parsed, "Pt")
-    y_unit = _column_unit(parsed, "Temp")
-
-    fig = _new_figure()
-    ax = fig.add_subplot(111)
-    (line,) = ax.plot(x, y, marker="o", linestyle="-", markerfacecolor="none")
-    line._eis_freq = f
-
-    ax.set_title(f"{_technique_name(parsed)} - Temp vs Pt")
-    ax.set_xlabel(f"Pt ({x_unit})" if x_unit else "Pt")
-    ax.set_ylabel(f"Temperatura ({y_unit})" if y_unit else "Temperatura")
-    ax.grid(True)
-    fig.tight_layout()
-    return fig
-
-def fig_vdc_vs_pt(parsed: ParsedDTA) -> Figure | None:
-    x, y, f = _triplet_series(parsed, "Pt", "Vdc", "Freq")
-    if not x or not y or not f:
-        return None
-
-    x_unit = _column_unit(parsed, "Pt")
-    y_unit = _column_unit(parsed, "Vdc")
-
-    fig = _new_figure()
-    ax = fig.add_subplot(111)
-    (line,) = ax.plot(x, y, marker="o", linestyle="-", markerfacecolor="none")
-    line._eis_freq = f  # <-- enables hover + labels in the UI
-
-    ax.set_title(f"{_technique_name(parsed)} - Vdc vs Pt")
-    ax.set_xlabel(f"Pt ({x_unit})" if x_unit else "Pt")
-    ax.set_ylabel(f"Vdc ({y_unit})" if y_unit else "Vdc")
-    ax.grid(True)
     fig.tight_layout()
     return fig
 
@@ -538,17 +548,9 @@ def build_figures(parsed: ParsedDTA, base_name: str, selected_options: Iterable[
             figs.append((f"{base_name} — {label}", f))
 
     if "Series by Pt" in chosen:
-        f = fig_idc_vs_pt(parsed)
-        if f is not None:
-            figs.append((f"{base_name} — Idc vs Pt", f))
-
-        f = fig_vdc_vs_pt(parsed)
-        if f is not None:
-            figs.append((f"{base_name} — Vdc vs Pt", f))
-
-        f = fig_temp_vs_pt(parsed)
-        if f is not None:
-            figs.append((f"{base_name} — Temp vs Pt", f))
+        f = fig_series_vs_pt(parsed)
+    if f is not None:
+        figs.append((f"{base_name} — Series vs Pt", f))
 
     # "Equivalent circuit fit" is listed in GUI but not implemented here yet.
     return figs
@@ -557,8 +559,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
     tab_id_by_title: dict[str, str] = {}
     title_by_tab_id: dict[str, str] = {}
-
-    pt_tabs: dict[str, list[str]] = {"I": [], "V": [], "T": []}  # stores tab_ids
 
     if not figures:
         return
@@ -596,6 +596,25 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
     compose_btn = ttk.Button(topbar, text="Componer")
     compose_btn.pack(side="left", padx=(8, 0))
+
+    def _sync_ygrid_ticks(base_ax, other_axes, nbins: int = 6):
+        # Choose "nice" ticks on base axis
+        y0, y1 = base_ax.get_ylim()
+        loc = MaxNLocator(nbins=nbins)
+        ticks = list(loc.tick_values(y0, y1))
+        if len(ticks) >= 2:
+            base_ax.set_yticks(ticks)
+
+        # Compute tick positions as fractions of the base axis span
+        y0, y1 = base_ax.get_ylim()
+        span = (y1 - y0) if (y1 != y0) else 1.0
+        fracs = [(t - y0) / span for t in base_ax.get_yticks()]
+
+        # Apply those fractions to the other axes
+        for ax in other_axes:
+            a0, a1 = ax.get_ylim()
+            aspan = (a1 - a0) if (a1 != a0) else 1.0
+            ax.set_yticks([a0 + f * aspan for f in fracs])
 
     def _goto_selected(_evt=None):
         wanted = plot_names_var.get()
@@ -683,31 +702,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 plot_names_var.set(visible_titles[0])
                 nb.select(tab_id_by_title[visible_titles[0]])
 
-        def _apply_pt_visibility():
-            for tab_id in pt_tabs["I"]:
-                nb.tab(tab_id, state=("normal" if show_I_var.get() else "hidden"))
-            for tab_id in pt_tabs["V"]:
-                nb.tab(tab_id, state=("normal" if show_V_var.get() else "hidden"))
-            for tab_id in pt_tabs["T"]:
-                nb.tab(tab_id, state=("normal" if show_T_var.get() else "hidden"))
-
-            _refresh_plot_dropdown()
-
-        def refresh_plot_select_values():
-            visible_titles = []
-            visible_frames = []
-            for frame in nb.tabs():
-                if nb.tab(frame, "state") != "hidden":
-                    visible_frames.append(frame)
-                    visible_titles.append(tab_title_by_frame[frame])
-
-            plot_select["values"] = visible_titles
-
-            # if current selection is hidden, move to first visible
-            if plot_names_var.get() not in visible_titles and visible_titles:
-                plot_names_var.set(visible_titles[0])
-                nb.select(visible_frames[0])
-
         # right after nb.add(tab, text=...)
         current = list(plot_select["values"])
         current.append(tab_title)
@@ -735,6 +729,68 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
         ax = fig.axes[0] if fig.axes else fig.add_subplot(111)
         line = ax.lines[0] if ax.lines else None
+
+        # --- Pt Series controls (only on Series vs Pt figures) ---
+        if getattr(fig, "_pt_series", False):
+
+            def _apply_axis_color(ax, color: str, enabled: bool):
+                if not enabled:
+                    ax.tick_params(axis="y", colors="black")
+                    ax.yaxis.label.set_color("black")
+                    ax.spines["left"].set_color("black") if ax.spines.get("left") else None
+                    ax.spines["right"].set_color("black") if ax.spines.get("right") else None
+                    return
+
+                ax.tick_params(axis="y", colors=color)
+                ax.yaxis.label.set_color(color)
+                if "left" in ax.spines:
+                    ax.spines["left"].set_color(color)
+                if "right" in ax.spines:
+                    ax.spines["right"].set_color(color)
+            pt_box = ttk.LabelFrame(ctrl_frame, text="Series vs Pt", padding=8)
+            pt_box.pack(fill="x", pady=(0, 10))
+
+            lines = getattr(fig, "_pt_lines", {})
+            ylabels = getattr(fig, "_pt_ylabels", {})
+
+            show_I = tk.BooleanVar(value=("I" in lines and lines["I"].get_visible()))
+            show_V = tk.BooleanVar(value=("V" in lines and lines["V"].get_visible()))
+            show_T = tk.BooleanVar(value=("T" in lines and lines["T"].get_visible()))
+
+            def _update_ylabel_and_legend():
+                # Choose ylabel if exactly one line is visible; otherwise generic
+                vis = [k for k, ln in lines.items() if ln.get_visible()]
+                if len(vis) == 1:
+                    ax.set_ylabel(ylabels.get(vis[0], "Value"))
+                else:
+                    ax.set_ylabel("Value")
+
+                # Legend: keep only visible handles
+                handles = []
+                labels = []
+                for ln in ax.lines:
+                    if ln.get_visible():
+                        handles.append(ln)
+                        labels.append(ln.get_label())
+                leg = ax.get_legend()
+                if leg is not None:
+                    leg.remove()
+                if handles:
+                    ax.legend(handles, labels, loc="best", fontsize=9)
+
+            def _apply_visibility():
+                if "I" in lines: lines["I"].set_visible(bool(show_I.get()))
+                if "V" in lines: lines["V"].set_visible(bool(show_V.get()))
+                if "T" in lines: lines["T"].set_visible(bool(show_T.get()))
+
+                ax.relim()
+                ax.autoscale_view()
+                _update_ylabel_and_legend()
+                canvas.draw_idle()
+
+            ttk.Checkbutton(pt_box, text="Idc", variable=show_I, command=_apply_visibility).pack(anchor="w")
+            ttk.Checkbutton(pt_box, text="Vdc", variable=show_V, command=_apply_visibility).pack(anchor="w")
+            ttk.Checkbutton(pt_box, text="Temp", variable=show_T, command=_apply_visibility).pack(anchor="w")
 
         tlow = tab_title.lower()
         if line is not None:
