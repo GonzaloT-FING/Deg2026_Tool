@@ -449,7 +449,7 @@ def figs_bode(parsed: ParsedDTA) -> list[tuple[str, Figure]]:
     if x2 and y2:
         fig = _new_figure()
         ax = fig.add_subplot(111)
-        ax.semilogx(x2, y2, marker="o")
+        ax.semilogx(x1, y1, marker="o", linestyle="-", markerfacecolor="none")
         ax.set_title(f"{_technique_name(parsed)} - Bode (Zphz)")
         ax.set_xlabel(f"Frecuencia ({freq_unit})" if freq_unit else "Frecuencia")
         ax.set_ylabel(f"Zphz ({zphz_unit})" if zphz_unit else "Zphz")
