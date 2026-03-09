@@ -554,6 +554,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
     ttk.Label(topbar, text="Select plot:").pack(side="left")
 
     nyquist_sources: dict[str, dict] = {}
+    bode_sources = {"zmod": {}, "zphz": {}}
 
     plot_names_var = tk.StringVar()
     plot_select = ttk.Combobox(topbar, textvariable=plot_names_var, state="readonly", width=55)
@@ -649,6 +650,15 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
         ax = fig.axes[0] if fig.axes else fig.add_subplot(111)
         line = ax.lines[0] if ax.lines else None
+
+        tlow = tab_title.lower()
+        if line is not None:
+            if "nyquist" in tlow:
+                nyquist_sources[tab_title] = {"line": line, "ax": ax, "fig": fig}
+            elif "bode" in tlow and "zmod" in tlow:
+                bode_sources["zmod"][tab_title] = {"line": line, "ax": ax, "fig": fig}
+            elif "bode" in tlow and "zphz" in tlow:
+                bode_sources["zphz"][tab_title] = {"line": line, "ax": ax, "fig": fig}
 
         if is_nyquist and line is not None:
             nyquist_sources[tab_title] = {
@@ -1271,7 +1281,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
         win._mpl_refs.append((canvas, toolbar, fig, ax, line))  # type: ignore[attr-defined]
 
-    def open_composer():
+    def open_composer_nyquist():
         import tkinter as tk
         from tkinter import ttk
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
@@ -1663,8 +1673,42 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 pass
 
         comp.protocol("WM_DELETE_WINDOW", _on_close)
-    
-    compose_btn.configure(command=open_composer)
+
+    def open_composer_bode(kind: str):  # kind in {"zmod","zphz"}
+        sources = bode_sources[kind]
+        x0 = min(xs_pos); x1 = max(xs_pos)
+        axc.set_xlim(x0/1.2, x1*1.2)  # log-friendly padding
+        # build window like Nyquist composer:
+        # - listbox of sources
+        # - Add/Remove/Clear
+        # - Legend with label = source ax.get_title()
+        # - Refresh formatting copies style + updates legend labels
+        #
+        # plot creation:
+        #   (ln,) = axc.plot(x, y, label=_src_label(key))
+        #   axc.set_xscale("log")
+        #   axc.grid(True, which="both")
+
+    def open_composer_for_current():
+        key = plot_names_var.get().lower()
+
+        if "nyquist" in key:
+            open_composer_nyquist()
+            return
+
+        if "bode" in key and "zmod" in key:
+            open_composer_bode(kind="zmod")
+            return
+
+        if "bode" in key and "zphz" in key:
+            open_composer_bode(kind="zphz")
+            return
+
+        # optional: small message
+        import tkinter.messagebox as mb
+        mb.showinfo("Componer", "Composer is available for Nyquist and Bode plots only.")
+
+    compose_btn.configure(command=open_composer_for_current)
 
     for tab_title, fig in figures:
         _add_tab(tab_title, fig)
