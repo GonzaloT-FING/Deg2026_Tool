@@ -437,7 +437,7 @@ def figs_bode(parsed: ParsedDTA) -> list[tuple[str, Figure]]:
     if x1 and y1:
         fig = _new_figure()
         ax = fig.add_subplot(111)
-        ax.semilogx(x1, y1, marker="o")
+        ax.semilogx(x1, y1, marker="o", linestyle="-", markerfacecolor="none")
         ax.set_title(f"{_technique_name(parsed)} - Bode (Zmod)")
         ax.set_xlabel(f"Frecuencia ({freq_unit})" if freq_unit else "Frecuencia")
         ax.set_ylabel(f"Zmod ({zmod_unit})" if zmod_unit else "Zmod")
@@ -794,6 +794,29 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             canvas.draw_idle()
             _update_limit_entries()
 
+        def _safe_fg_for_bg(bg: str) -> str:
+            # bg like "#RRGGBB"; returns black/white for readability
+            if not (isinstance(bg, str) and bg.startswith("#") and len(bg) == 7):
+                return "black"
+            try:
+                r = int(bg[1:3], 16)
+                g = int(bg[3:5], 16)
+                b = int(bg[5:7], 16)
+            except ValueError:
+                return "black"
+            # perceived luminance
+            lum = 0.2126*r + 0.7152*g + 0.0722*b
+            return "black" if lum > 140 else "white"
+
+        def _update_color_entry_bg():
+            c = color_var.get().strip()
+            if c.startswith("#") and len(c) == 7:
+                try:
+                    color_entry.configure(background=c, foreground=_safe_fg_for_bg(c))
+                except Exception:
+                    # ttk.Entry may ignore background on some themes; fallback below
+                    pass
+
         def apply_style():
             if line is None:
                 return
@@ -821,7 +844,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 line.set_markersize(float(ms_var.get()))
             except Exception:
                 pass
-
+            _update_color_entry_bg()
             canvas.draw_idle()
 
         def reset_style():
@@ -958,8 +981,10 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         ttk.Button(btns_fonts, text="Reset", command=reset_fonts).pack(side="left", expand=True, fill="x")
 
         ttk.Label(style_box, text="Color").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
-        color_entry = ttk.Entry(style_box, textvariable=color_var, width=12)
+
+        color_entry = tk.Entry(style_box, textvariable=color_var, width=12)
         color_entry.grid(row=0, column=1, sticky="w", pady=2)
+        _update_color_entry_bg()
         ttk.Button(style_box, text="Pick…", command=pick_color).grid(row=0, column=2, sticky="w", padx=(6, 0), pady=2)
 
         ttk.Label(style_box, text="Line").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
