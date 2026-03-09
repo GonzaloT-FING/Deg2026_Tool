@@ -554,6 +554,12 @@ def build_figures(parsed: ParsedDTA, base_name: str, selected_options: Iterable[
     return figs
 
 def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS plots") -> None:
+
+    tab_id_by_title: dict[str, str] = {}
+    title_by_tab_id: dict[str, str] = {}
+
+    pt_tabs: dict[str, list[str]] = {"I": [], "V": [], "T": []}  # stores tab_ids
+
     if not figures:
         return
 
@@ -593,18 +599,17 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
     def _goto_selected(_evt=None):
         wanted = plot_names_var.get()
-        vals = list(plot_select["values"])
-        if wanted in vals:
-            i = vals.index(wanted)
-            nb.select(i)
+        tab_id = tab_id_by_title.get(wanted)
+        if tab_id is not None:
+            nb.select(tab_id)
 
     plot_select.bind("<<ComboboxSelected>>", _goto_selected)
 
     def _sync_combo(_evt=None):
-        i = nb.index("current")
-        vals = list(plot_select["values"])
-        if 0 <= i < len(vals):
-            plot_names_var.set(vals[i])
+        tab_id = nb.select()
+        title = title_by_tab_id.get(tab_id)
+        if title:
+            plot_names_var.set(title)
 
     nb.bind("<<NotebookTabChanged>>", _sync_combo)
 
@@ -650,8 +655,43 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         tab = ttk.Frame(nb)
         nb.add(tab, text=tab_title[:28] + ("…" if len(tab_title) > 28 else ""))
 
-        nb.tab(frame, state="hidden")  # hide
-        nb.tab(frame, state="normal")  # show
+        tab_id = str(tab)  # notebook tab identifier
+        tab_id_by_title[tab_title] = tab_id
+        title_by_tab_id[tab_id] = tab_title
+
+        tlow = tab_title.lower()
+        if "vs pt" in tlow:
+            if "idc" in tlow:
+                pt_tabs["I"].append(tab_id)
+            elif "vdc" in tlow:
+                pt_tabs["V"].append(tab_id)
+            elif "temp" in tlow:
+                pt_tabs["T"].append(tab_id)
+
+        def _refresh_plot_dropdown():
+            visible_titles = []
+            for tab_id in nb.tabs():
+                if nb.tab(tab_id, "state") != "hidden":
+                    title = title_by_tab_id.get(tab_id)
+                    if title:
+                        visible_titles.append(title)
+
+            plot_select["values"] = visible_titles
+
+            # if current selection got hidden, jump to first visible
+            if plot_names_var.get() not in visible_titles and visible_titles:
+                plot_names_var.set(visible_titles[0])
+                nb.select(tab_id_by_title[visible_titles[0]])
+
+        def _apply_pt_visibility():
+            for tab_id in pt_tabs["I"]:
+                nb.tab(tab_id, state=("normal" if show_I_var.get() else "hidden"))
+            for tab_id in pt_tabs["V"]:
+                nb.tab(tab_id, state=("normal" if show_V_var.get() else "hidden"))
+            for tab_id in pt_tabs["T"]:
+                nb.tab(tab_id, state=("normal" if show_T_var.get() else "hidden"))
+
+            _refresh_plot_dropdown()
 
         def refresh_plot_select_values():
             visible_titles = []
