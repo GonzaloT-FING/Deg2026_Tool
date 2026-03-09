@@ -6,7 +6,7 @@ from tkinter import filedialog, ttk
 
 
 PIPELINE_OPTIONS = {
-    "EIS": ["Nyquist plot", "Bode plot", "I vs pt", "T vs pt", "Equivalent circuit fit"],
+    "EIS": ["Nyquist plot", "Bode plot", "I vs pt", "Equivalent circuit fit"],
     "CV": ["I vs t", "Peak current", "Onset potential"],
     "PC": ["V vs I completo", "V vs I last", "V vs t", "I vs t", "T vs t", "dV/dI", "Step Stability"],
     "OCP": ["V vs t", "V final", "Drift", "DeltaV"],
