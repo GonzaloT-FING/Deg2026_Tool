@@ -564,8 +564,8 @@ def build_figures(parsed: ParsedDTA, base_name: str, selected_options: Iterable[
 
     if "Series by Pt" in chosen:
         f = fig_series_vs_pt(parsed)
-    if f is not None:
-        figs.append((f"{base_name} — Series vs Pt", f))
+        if f is not None:
+            figs.append((f"{base_name} — Series vs Pt", f))
 
     # "Equivalent circuit fit" is listed in GUI but not implemented here yet.
     return figs
@@ -630,85 +630,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             a0, a1 = axk.get_ylim()
             aspan = (a1 - a0) if (a1 != a0) else 1.0
             axk.set_yticks([a0 + f * aspan for f in fracs])
-
-    marker_opts = ["o", ".", "x", "+", "s", "^", "v", "D", "None"]
-    linestyle_opts = ["-", "--", "-.", ":", "None"]
-
-
-
-    def _apply_series_style(k: str):
-        ln = lines[k]
-        v = style_vars[k]
-
-        c = v["color"].get().strip()
-        if c:
-            ln.set_color(c)
-
-        ls = v["ls"].get()
-        mk = v["mk"].get()
-        ln.set_linestyle("" if ls == "None" else ls)
-        ln.set_marker("" if mk == "None" else mk)
-        ln.set_linewidth(float(v["lw"].get()))
-        ln.set_markersize(float(v["ms"].get()))
-
-        # keep hollow marker
-        if ln.get_marker() not in ("", None):
-            ln.set_markerfacecolor("none")
-            ln.set_markeredgecolor(ln.get_color())
-
-        _update_legend()
-        _refresh_axis_colors()
-        _autoscale_visible_axes()
-
-        # re-sync ticks if multiple series visible
-        _apply_visibility()
-
-    for k, title in (("I", "Idc"), ("V", "Vdc"), ("T", "Temp")):
-        if k not in lines:
-            continue
-        f = ttk.Frame(style_nb, padding=6)
-        style_nb.add(f, text=title)
-
-        ln = lines[k]
-        style_vars[k] = {
-            "color": tk.StringVar(value=str(ln.get_color())),
-            "ls": tk.StringVar(value=str(ln.get_linestyle() or "-") or "-"),
-            "mk": tk.StringVar(value=str(ln.get_marker() or "o") or "o"),
-            "lw": tk.DoubleVar(value=float(ln.get_linewidth())),
-            "ms": tk.DoubleVar(value=float(ln.get_markersize())),
-        }
-
-        ttk.Label(f, text="Color").grid(row=0, column=0, sticky="w")
-        ce = ttk.Entry(f, textvariable=style_vars[k]["color"], width=10)
-        ce.grid(row=0, column=1, sticky="w", padx=(6, 0))
-
-        ttk.Button(f, text="Pick…", command=lambda kk=k: _pick_series_color(kk)).grid(row=0, column=2, sticky="w", padx=(6, 0))
-
-        ttk.Label(f, text="Line").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        cb_ls = ttk.Combobox(f, textvariable=style_vars[k]["ls"], values=linestyle_opts, state="readonly", width=8)
-        cb_ls.grid(row=1, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
-
-        ttk.Label(f, text="Marker").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        cb_mk = ttk.Combobox(f, textvariable=style_vars[k]["mk"], values=marker_opts, state="readonly", width=8)
-        cb_mk.grid(row=2, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
-
-        ttk.Label(f, text="LW").grid(row=3, column=0, sticky="w", pady=(6, 0))
-        sp_lw = ttk.Spinbox(f, from_=0.0, to=10.0, increment=0.1, textvariable=style_vars[k]["lw"], width=8)
-        sp_lw.grid(row=3, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
-
-        ttk.Label(f, text="MS").grid(row=4, column=0, sticky="w", pady=(6, 0))
-        sp_ms = ttk.Spinbox(f, from_=0.0, to=20.0, increment=0.5, textvariable=style_vars[k]["ms"], width=8)
-        sp_ms.grid(row=4, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
-
-        # auto-apply bindings
-        ce.bind("<Return>", lambda e, kk=k: _apply_series_style(kk))
-        ce.bind("<FocusOut>", lambda e, kk=k: _apply_series_style(kk))
-        cb_ls.bind("<<ComboboxSelected>>", lambda e, kk=k: _apply_series_style(kk))
-        cb_mk.bind("<<ComboboxSelected>>", lambda e, kk=k: _apply_series_style(kk))
-        sp_lw.configure(command=lambda kk=k: _apply_series_style(kk))
-        sp_ms.configure(command=lambda kk=k: _apply_series_style(kk))
-        sp_lw.bind("<KeyRelease>", lambda e, kk=k: _apply_series_style(kk))
-        sp_ms.bind("<KeyRelease>", lambda e, kk=k: _apply_series_style(kk))
 
     def _goto_selected(_evt=None):
         wanted = plot_names_var.get()
@@ -784,13 +705,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             # - tick sync / axis coloring helpers
 
         tlow = tab_title.lower()
-        if "vs pt" in tlow:
-            if "idc" in tlow:
-                pt_tabs["I"].append(tab_id)
-            elif "vdc" in tlow:
-                pt_tabs["V"].append(tab_id)
-            elif "temp" in tlow:
-                pt_tabs["T"].append(tab_id)
 
         def _refresh_plot_dropdown():
             visible_titles = []
@@ -971,11 +885,92 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 _refresh_axis_colors()
                 canvas.draw_idle()
 
+            marker_opts = ["o", ".", "x", "+", "s", "^", "v", "D", "None"]
+            linestyle_opts = ["-", "--", "-.", ":", "None"]
+
+            style_nb = ttk.Notebook(pt_box)
+            style_nb.pack(fill="x", pady=(8, 0))
+
+            style_vars = {}
+
+            def _apply_series_style(k: str):
+                ln = lines[k]
+                v = style_vars[k]
+
+                c = v["color"].get().strip()
+                if c:
+                    ln.set_color(c)
+
+                ls = v["ls"].get()
+                mk = v["mk"].get()
+                ln.set_linestyle("" if ls == "None" else ls)
+                ln.set_marker("" if mk == "None" else mk)
+                ln.set_linewidth(float(v["lw"].get()))
+                ln.set_markersize(float(v["ms"].get()))
+
+                # keep hollow marker
+                if ln.get_marker() not in ("", None):
+                    ln.set_markerfacecolor("none")
+                    ln.set_markeredgecolor(ln.get_color())
+
+                _update_legend()
+                _refresh_axis_colors()
+                _autoscale_visible_axes()
+
+                # re-sync ticks if multiple series visible
+                _apply_visibility()
+
+            for k, title in (("I", "Idc"), ("V", "Vdc"), ("T", "Temp")):
+                if k not in lines:
+                    continue
+                f = ttk.Frame(style_nb, padding=6)
+                style_nb.add(f, text=title)
+
+                ln = lines[k]
+                style_vars[k] = {
+                    "color": tk.StringVar(value=str(ln.get_color())),
+                    "ls": tk.StringVar(value=str(ln.get_linestyle() or "-") or "-"),
+                    "mk": tk.StringVar(value=str(ln.get_marker() or "o") or "o"),
+                    "lw": tk.DoubleVar(value=float(ln.get_linewidth())),
+                    "ms": tk.DoubleVar(value=float(ln.get_markersize())),
+                }
+
+                ttk.Label(f, text="Color").grid(row=0, column=0, sticky="w")
+                ce = ttk.Entry(f, textvariable=style_vars[k]["color"], width=10)
+                ce.grid(row=0, column=1, sticky="w", padx=(6, 0))
+
+                ttk.Button(f, text="Pick…", command=lambda kk=k: _pick_series_color(kk)).grid(row=0, column=2, sticky="w", padx=(6, 0))
+
+                ttk.Label(f, text="Line").grid(row=1, column=0, sticky="w", pady=(6, 0))
+                cb_ls = ttk.Combobox(f, textvariable=style_vars[k]["ls"], values=linestyle_opts, state="readonly", width=8)
+                cb_ls.grid(row=1, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+
+                ttk.Label(f, text="Marker").grid(row=2, column=0, sticky="w", pady=(6, 0))
+                cb_mk = ttk.Combobox(f, textvariable=style_vars[k]["mk"], values=marker_opts, state="readonly", width=8)
+                cb_mk.grid(row=2, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+
+                ttk.Label(f, text="LW").grid(row=3, column=0, sticky="w", pady=(6, 0))
+                sp_lw = ttk.Spinbox(f, from_=0.0, to=10.0, increment=0.1, textvariable=style_vars[k]["lw"], width=8)
+                sp_lw.grid(row=3, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+
+                ttk.Label(f, text="MS").grid(row=4, column=0, sticky="w", pady=(6, 0))
+                sp_ms = ttk.Spinbox(f, from_=0.0, to=20.0, increment=0.5, textvariable=style_vars[k]["ms"], width=8)
+                sp_ms.grid(row=4, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+
+                # auto-apply bindings
+                ce.bind("<Return>", lambda e, kk=k: _apply_series_style(kk))
+                ce.bind("<FocusOut>", lambda e, kk=k: _apply_series_style(kk))
+                cb_ls.bind("<<ComboboxSelected>>", lambda e, kk=k: _apply_series_style(kk))
+                cb_mk.bind("<<ComboboxSelected>>", lambda e, kk=k: _apply_series_style(kk))
+                sp_lw.configure(command=lambda kk=k: _apply_series_style(kk))
+                sp_ms.configure(command=lambda kk=k: _apply_series_style(kk))
+                sp_lw.bind("<KeyRelease>", lambda e, kk=k: _apply_series_style(kk))
+                sp_ms.bind("<KeyRelease>", lambda e, kk=k: _apply_series_style(kk))
+
             ttk.Checkbutton(pt_box, text="Idc", variable=show_I, command=_apply_visibility).pack(anchor="w")
             ttk.Checkbutton(pt_box, text="Vdc", variable=show_V, command=_apply_visibility).pack(anchor="w")
             ttk.Checkbutton(pt_box, text="Temp", variable=show_T, command=_apply_visibility).pack(anchor="w")
 
-        tlow = tab_title.lower()
         if line is not None:
             if "nyquist" in tlow:
                 nyquist_sources[tab_title] = {"line": line, "ax": ax, "fig": fig}
