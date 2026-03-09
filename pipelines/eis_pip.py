@@ -885,12 +885,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 _refresh_axis_colors()
                 canvas.draw_idle()
 
-            marker_opts = ["o", ".", "x", "+", "s", "^", "v", "D", "None"]
-            linestyle_opts = ["-", "--", "-.", ":", "None"]
-
-            style_nb = ttk.Notebook(pt_box)
-            style_nb.pack(fill="x", pady=(8, 0))
-
+            # ---- Per-series style notebook (Idc / Vdc / Temp) ----
             style_vars = {}
 
             def _apply_series_style(k: str):
@@ -908,21 +903,19 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 ln.set_linewidth(float(v["lw"].get()))
                 ln.set_markersize(float(v["ms"].get()))
 
-                # keep hollow marker
+                # keep hollow markers
                 if ln.get_marker() not in ("", None):
                     ln.set_markerfacecolor("none")
                     ln.set_markeredgecolor(ln.get_color())
 
                 _update_legend()
                 _refresh_axis_colors()
-                _autoscale_visible_axes()
-
-                # re-sync ticks if multiple series visible
-                _apply_visibility()
+                canvas.draw_idle()
 
             for k, title in (("I", "Idc"), ("V", "Vdc"), ("T", "Temp")):
                 if k not in lines:
                     continue
+
                 f = ttk.Frame(style_nb, padding=6)
                 style_nb.add(f, text=title)
 
@@ -938,7 +931,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 ttk.Label(f, text="Color").grid(row=0, column=0, sticky="w")
                 ce = ttk.Entry(f, textvariable=style_vars[k]["color"], width=10)
                 ce.grid(row=0, column=1, sticky="w", padx=(6, 0))
-
                 ttk.Button(f, text="Pick…", command=lambda kk=k: _pick_series_color(kk)).grid(row=0, column=2, sticky="w", padx=(6, 0))
 
                 ttk.Label(f, text="Line").grid(row=1, column=0, sticky="w", pady=(6, 0))
@@ -956,6 +948,16 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 ttk.Label(f, text="MS").grid(row=4, column=0, sticky="w", pady=(6, 0))
                 sp_ms = ttk.Spinbox(f, from_=0.0, to=20.0, increment=0.5, textvariable=style_vars[k]["ms"], width=8)
                 sp_ms.grid(row=4, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+
+                # auto-apply
+                ce.bind("<Return>", lambda e, kk=k: _apply_series_style(kk))
+                ce.bind("<FocusOut>", lambda e, kk=k: _apply_series_style(kk))
+                cb_ls.bind("<<ComboboxSelected>>", lambda e, kk=k: _apply_series_style(kk))
+                cb_mk.bind("<<ComboboxSelected>>", lambda e, kk=k: _apply_series_style(kk))
+                sp_lw.configure(command=lambda kk=k: _apply_series_style(kk))
+                sp_ms.configure(command=lambda kk=k: _apply_series_style(kk))
+                sp_lw.bind("<KeyRelease>", lambda e, kk=k: _apply_series_style(kk))
+                sp_ms.bind("<KeyRelease>", lambda e, kk=k: _apply_series_style(kk))
 
                 # auto-apply bindings
                 ce.bind("<Return>", lambda e, kk=k: _apply_series_style(kk))
