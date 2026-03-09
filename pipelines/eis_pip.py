@@ -747,36 +747,70 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     ax.spines["left"].set_color(color)
                 if "right" in ax.spines:
                     ax.spines["right"].set_color(color)
+
+            color_axes_var = tk.BooleanVar(value=True)
+
+            def _refresh_axis_colors():
+                for k, ln in lines.items():
+                    axk = axes.get(k)
+                    if axk is None:
+                        continue
+                    _apply_axis_color(axk, ln.get_color(), enabled=(color_axes_var.get() and ln.get_visible()))
+            
+            def _pick_series_color(k: str):
+                if k not in lines:
+                    return
+                chosen = colorchooser.askcolor(title=f"Choose color for {k}")
+                if chosen and chosen[1]:
+                    ln = lines[k]
+                    ln.set_color(chosen[1])
+                    # keep hollow marker consistent
+                    try:
+                        ln.set_markerfacecolor("none")
+                        ln.set_markeredgecolor(chosen[1])
+                    except Exception:
+                        pass
+                    _refresh_axis_colors()
+                    _update_legend()
+                    canvas.draw_idle()
+
             pt_box = ttk.LabelFrame(ctrl_frame, text="Series vs Pt", padding=8)
             pt_box.pack(fill="x", pady=(0, 10))
 
             lines = getattr(fig, "_pt_lines", {})
             ylabels = getattr(fig, "_pt_ylabels", {})
 
+            ttk.Checkbutton(pt_box, text="Color y-axes", variable=color_axes_var,
+                command=lambda: (_refresh_axis_colors(), canvas.draw_idle())).pack(anchor="w", pady=(6,0))
+            
+            row = ttk.Frame(pt_box)
+            row.pack(fill="x", pady=(6,0))
+            if "I" in lines: ttk.Button(row, text="Color Idc", command=lambda: _pick_series_color("I")).pack(side="left", padx=(0,6))
+            if "V" in lines: ttk.Button(row, text="Color Vdc", command=lambda: _pick_series_color("V")).pack(side="left", padx=(0,6))
+            if "T" in lines: ttk.Button(row, text="Color Temp", command=lambda: _pick_series_color("T")).pack(side="left")
+
             show_I = tk.BooleanVar(value=("I" in lines and lines["I"].get_visible()))
             show_V = tk.BooleanVar(value=("V" in lines and lines["V"].get_visible()))
             show_T = tk.BooleanVar(value=("T" in lines and lines["T"].get_visible()))
 
-            def _update_ylabel_and_legend():
-                # Choose ylabel if exactly one line is visible; otherwise generic
-                vis = [k for k, ln in lines.items() if ln.get_visible()]
-                if len(vis) == 1:
-                    ax.set_ylabel(ylabels.get(vis[0], "Value"))
-                else:
-                    ax.set_ylabel("Value")
+            axes = getattr(fig, "_pt_axes", {})          # {"I": axI, "V": axV, "T": axT}
+            base_key = getattr(fig, "_pt_base_key", "I")
+            base_ax = axes.get(base_key, ax)
 
-                # Legend: keep only visible handles
+            def _update_legend():
                 handles = []
                 labels = []
-                for ln in ax.lines:
+                for k, ln in lines.items():
                     if ln.get_visible():
                         handles.append(ln)
                         labels.append(ln.get_label())
-                leg = ax.get_legend()
+
+                leg = base_ax.get_legend()
                 if leg is not None:
                     leg.remove()
+
                 if handles:
-                    ax.legend(handles, labels, loc="best", fontsize=9)
+                    base_ax.legend(handles, labels, loc="best", fontsize=9)
 
             def _apply_visibility():
                 if "I" in lines: lines["I"].set_visible(bool(show_I.get()))
@@ -785,7 +819,8 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
                 ax.relim()
                 ax.autoscale_view()
-                _update_ylabel_and_legend()
+                _update_legend()
+                _refresh_axis_colors()
                 canvas.draw_idle()
 
             ttk.Checkbutton(pt_box, text="Idc", variable=show_I, command=_apply_visibility).pack(anchor="w")
