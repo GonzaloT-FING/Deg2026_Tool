@@ -772,6 +772,17 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         tab_id_by_title[tab_title] = tab_id
         title_by_tab_id[tab_id] = tab_title
 
+        is_pt_series = bool(getattr(fig, "_pt_series", False))
+
+        if is_pt_series:
+            lines = getattr(fig, "_pt_lines", {})   # dict like {"I": line, "V": line, "T": line}
+            axes  = getattr(fig, "_pt_axes",  {})
+            # ✅ EVERYTHING that uses `lines` must be inside this block:
+            # - Idc/Vdc/Temp checkboxes
+            # - color buttons
+            # - style notebook (linestyle/marker/lw/ms per series)
+            # - tick sync / axis coloring helpers
+
         tlow = tab_title.lower()
         if "vs pt" in tlow:
             if "idc" in tlow:
