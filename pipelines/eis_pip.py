@@ -460,8 +460,8 @@ def figs_bode(parsed: ParsedDTA) -> list[tuple[str, Figure]]:
     return out
 
 def fig_idc_vs_pt(parsed: ParsedDTA) -> Figure | None:
-    x, y = _paired_series(parsed, "Pt", "Idc")
-    if not x or not y:
+    x, y, f = _triplet_series(parsed, "Pt", "Idc", "Freq")
+    if not x or not y or not f:
         return None
 
     x_unit = _column_unit(parsed, "Pt")
@@ -469,7 +469,9 @@ def fig_idc_vs_pt(parsed: ParsedDTA) -> Figure | None:
 
     fig = _new_figure()
     ax = fig.add_subplot(111)
-    ax.plot(x, y, marker="o")
+    (line,) = ax.plot(x, y, marker="o", linestyle="-", markerfacecolor="none")
+    line._eis_freq = f
+
     ax.set_title(f"{_technique_name(parsed)} - Idc vs Pt")
     ax.set_xlabel(f"Pt ({x_unit})" if x_unit else "Pt")
     ax.set_ylabel(f"Idc ({y_unit})" if y_unit else "Idc")
@@ -477,9 +479,10 @@ def fig_idc_vs_pt(parsed: ParsedDTA) -> Figure | None:
     fig.tight_layout()
     return fig
 
+
 def fig_temp_vs_pt(parsed: ParsedDTA) -> Figure | None:
-    x, y = _paired_series(parsed, "Pt", "Temp")
-    if not x or not y:
+    x, y, f = _triplet_series(parsed, "Pt", "Temp", "Freq")
+    if not x or not y or not f:
         return None
 
     x_unit = _column_unit(parsed, "Pt")
@@ -487,10 +490,32 @@ def fig_temp_vs_pt(parsed: ParsedDTA) -> Figure | None:
 
     fig = _new_figure()
     ax = fig.add_subplot(111)
-    ax.plot(x, y, marker="o")
-    ax.set_title(f"{_technique_name(parsed)} - Temperatura vs Pt")
+    (line,) = ax.plot(x, y, marker="o", linestyle="-", markerfacecolor="none")
+    line._eis_freq = f
+
+    ax.set_title(f"{_technique_name(parsed)} - Temp vs Pt")
     ax.set_xlabel(f"Pt ({x_unit})" if x_unit else "Pt")
     ax.set_ylabel(f"Temperatura ({y_unit})" if y_unit else "Temperatura")
+    ax.grid(True)
+    fig.tight_layout()
+    return fig
+
+def fig_vdc_vs_pt(parsed: ParsedDTA) -> Figure | None:
+    x, y, f = _triplet_series(parsed, "Pt", "Vdc", "Freq")
+    if not x or not y or not f:
+        return None
+
+    x_unit = _column_unit(parsed, "Pt")
+    y_unit = _column_unit(parsed, "Vdc")
+
+    fig = _new_figure()
+    ax = fig.add_subplot(111)
+    (line,) = ax.plot(x, y, marker="o", linestyle="-", markerfacecolor="none")
+    line._eis_freq = f  # <-- enables hover + labels in the UI
+
+    ax.set_title(f"{_technique_name(parsed)} - Vdc vs Pt")
+    ax.set_xlabel(f"Pt ({x_unit})" if x_unit else "Pt")
+    ax.set_ylabel(f"Vdc ({y_unit})" if y_unit else "Vdc")
     ax.grid(True)
     fig.tight_layout()
     return fig
@@ -512,12 +537,15 @@ def build_figures(parsed: ParsedDTA, base_name: str, selected_options: Iterable[
         for label, f in figs_bode(parsed):
             figs.append((f"{base_name} — {label}", f))
 
-    if "I vs pt" in chosen:
+    if "Series by Pt" in chosen:
         f = fig_idc_vs_pt(parsed)
         if f is not None:
             figs.append((f"{base_name} — Idc vs Pt", f))
 
-    if "T vs pt" in chosen or "T vs t" in chosen:
+        f = fig_vdc_vs_pt(parsed)
+        if f is not None:
+            figs.append((f"{base_name} — Vdc vs Pt", f))
+
         f = fig_temp_vs_pt(parsed)
         if f is not None:
             figs.append((f"{base_name} — Temp vs Pt", f))
@@ -619,9 +647,26 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
     def _add_tab(tab_title: str, fig: Figure) -> None:
         is_nyquist = ("nyquist" in tab_title.lower())
-
         tab = ttk.Frame(nb)
         nb.add(tab, text=tab_title[:28] + ("…" if len(tab_title) > 28 else ""))
+
+        nb.tab(frame, state="hidden")  # hide
+        nb.tab(frame, state="normal")  # show
+
+        def refresh_plot_select_values():
+            visible_titles = []
+            visible_frames = []
+            for frame in nb.tabs():
+                if nb.tab(frame, "state") != "hidden":
+                    visible_frames.append(frame)
+                    visible_titles.append(tab_title_by_frame[frame])
+
+            plot_select["values"] = visible_titles
+
+            # if current selection is hidden, move to first visible
+            if plot_names_var.get() not in visible_titles and visible_titles:
+                plot_names_var.set(visible_titles[0])
+                nb.select(visible_frames[0])
 
         # right after nb.add(tab, text=...)
         current = list(plot_select["values"])
@@ -659,6 +704,16 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 bode_sources["zmod"][tab_title] = {"line": line, "ax": ax, "fig": fig}
             elif "bode" in tlow and "zphz" in tlow:
                 bode_sources["zphz"][tab_title] = {"line": line, "ax": ax, "fig": fig}
+
+        cat = None
+        if "vs pt" in tlow:
+            if "idc" in tlow:
+                cat = "pt_i"
+            elif "vdc" in tlow:
+                cat = "pt_v"
+            elif "temp" in tlow:
+                cat = "pt_t"
+        
 
         if is_nyquist and line is not None:
             nyquist_sources[tab_title] = {
