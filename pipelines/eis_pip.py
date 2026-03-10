@@ -464,49 +464,28 @@ def figs_bode(parsed: ParsedDTA) -> list[tuple[str, Figure]]:
 
     return out
 
-def _update_right_axis_spacing():
-    # Only makes sense if both right axes exist
-    if "V" not in axes or "T" not in axes:
+def _update_right_axis_spacing(fig, canvas, axes):
+    axV = axes.get("V")
+    axT = axes.get("T")
+    if axV is None or axT is None:
         return
 
-    axV = axes["V"]
-    axT = axes["T"]
-
-    # Ensure a draw so text extents are accurate
     canvas.draw()
     renderer = canvas.get_renderer()
 
     def _max_width_px(ax_):
         w = 0.0
-        # tick labels
         for t in ax_.get_yticklabels():
             if t.get_visible() and t.get_text():
-                bb = t.get_window_extent(renderer=renderer)
-                w = max(w, bb.width)
-        # axis label
+                w = max(w, t.get_window_extent(renderer=renderer).width)
         lab = ax_.yaxis.label
         if lab.get_visible() and lab.get_text():
-            bb = lab.get_window_extent(renderer=renderer)
-            w = max(w, bb.width)
+            w = max(w, lab.get_window_extent(renderer=renderer).width)
         return w
 
     wV = _max_width_px(axV)
-
-    # padding in pixels
-    pad_px = 12.0
-    # convert pixels -> points (spine outward uses points)
-    offset_pts = (wV + pad_px) / fig.dpi * 72.0
-
+    offset_pts = (wV + 28.0) / fig.dpi * 72.0
     axT.spines["right"].set_position(("outward", offset_pts))
-
-    # also ensure there is enough right margin so labels don't clip
-    fig_w_in = fig.get_size_inches()[0]
-    extra_in = offset_pts / 72.0
-    right = 1.0 - min(0.35, extra_in / fig_w_in + 0.06)  # cap so it doesn't go crazy
-    try:
-        fig.subplots_adjust(right=right)
-    except Exception:
-        pass
 
 def fig_series_vs_pt(parsed: ParsedDTA) -> Figure | None:
     fig = _new_figure()
@@ -952,7 +931,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     _sync_ygrid_ticks(master_ax, other_axes, nbins=6)
                 _sync_ygrid_ticks(master_ax, other_axes, nbins=6)
 
-                _update_right_axis_spacing()
+                _update_right_axis_spacing(fig, canvas, axes)
 
                 _update_legend()
                 _refresh_axis_colors()
