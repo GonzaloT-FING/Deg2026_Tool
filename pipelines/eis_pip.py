@@ -855,28 +855,56 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     if ln.get_visible():
                         axk.relim()
                         axk.autoscale_view()
+            
+
+            def _sync_ygrid_ticks(master_ax, other_axes, nbins: int = 6):
+                # 1) Freeze master ticks to prevent later redraws from changing them
+                y0, y1 = master_ax.get_ylim()
+                loc = MaxNLocator(nbins=nbins)
+                ticks = list(loc.tick_values(y0, y1))
+                if len(ticks) < 2:
+                    return
+
+                master_ax.set_yticks(ticks)  # <-- this locks ticks (FixedLocator)
+
+                # 2) Map tick positions to fractions of the master axis span
+                y0, y1 = master_ax.get_ylim()
+                span = (y1 - y0) if (y1 != y0) else 1.0
+                fracs = [(t - y0) / span for t in master_ax.get_yticks()]
+
+                # 3) Apply those fractions to other axes
+                for axk in other_axes:
+                    a0, a1 = axk.get_ylim()
+                    aspan = (a1 - a0) if (a1 != a0) else 1.0
+                    axk.set_yticks([a0 + f * aspan for f in fracs])
 
             def _apply_visibility():
                 if "I" in lines: lines["I"].set_visible(bool(show_I.get()))
                 if "V" in lines: lines["V"].set_visible(bool(show_V.get()))
                 if "T" in lines: lines["T"].set_visible(bool(show_T.get()))
 
-                _autoscale_visible_axes()
+                # autoscale EACH visible axis first
+                for k, ln in lines.items():
+                    axk = axes.get(k)
+                    if axk is None:
+                        continue
+                    if ln.get_visible():
+                        axk.relim()
+                        axk.autoscale_view()
 
-                # choose master axis: prefer Idc if visible, else first visible
+                # decide master (Idc preferred)
                 visible_keys = [k for k in ("I", "V", "T") if k in lines and lines[k].get_visible()]
                 if visible_keys:
-                    master_key = "I" if ("I" in visible_keys) else visible_keys[0]
+                    master_key = "I" if "I" in visible_keys else visible_keys[0]
                     master_ax = axes[master_key]
                     other_axes = [axes[k] for k in visible_keys if k != master_key]
 
-                    # grid only on master (avoids clutter)
+                    # grid only from master
                     for axx in axes.values():
                         axx.grid(False)
                     master_ax.grid(True)
 
-                    # you already have _sync_ygrid_ticks in show_figures_tk()
-                    _sync_y_ticks(master_ax, other_axes, nbins=6)
+                    _sync_ygrid_ticks(master_ax, other_axes, nbins=6)
 
                 _update_legend()
                 _refresh_axis_colors()
