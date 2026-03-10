@@ -695,21 +695,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
         is_pt_series = bool(getattr(fig, "_pt_series", False))            
 
-        if is_pt_series:
-            lines = getattr(fig, "_pt_lines", {})   # dict like {"I": line, "V": line, "T": line}
-            axes  = getattr(fig, "_pt_axes",  {})
-            # ✅ EVERYTHING that uses `lines` must be inside this block:
-            # - Idc/Vdc/Temp checkboxes
-            # - color buttons
-            # - style notebook (linestyle/marker/lw/ms per series)
-            # - tick sync / axis coloring helpers
-            # Disable generic style controls for Pt-series tabs
-            for child in style_box.winfo_children():
-                try:
-                    child.configure(state="disabled")
-                except Exception:
-                    pass
-
         tlow = tab_title.lower()
 
         def _refresh_plot_dropdown():
@@ -1291,7 +1276,9 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         ttk.Button(btns_axes, text="Reset", command=reset_axes).pack(side="left", expand=True, fill="x")
 
         style_box = ttk.LabelFrame(ctrl_frame, text="Style", padding=8)
-        style_box.pack(fill="x", pady=(0, 10))
+        if not is_pt_series:
+            style_box.pack(fill="x", pady=(0, 10))
+        # else: don’t pack it (it won’t appear, but code stays safe)
 
         fonts_box = ttk.LabelFrame(ctrl_frame, text="Fonts", padding=8)
         fonts_box.pack(fill="x", pady=(0, 10))
