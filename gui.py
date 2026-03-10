@@ -1,6 +1,7 @@
 import tkinter as tk
 import pathlib
 from pipelines.eis_pip import export_folder
+from pipelines.pol_cur_pip import export_folder as export_pc_folder
 from tkinter import filedialog, ttk
 
 
@@ -8,7 +9,7 @@ from tkinter import filedialog, ttk
 PIPELINE_OPTIONS = {
     "EIS": ["Nyquist plot", "Bode plot", "Series by Pt", "Equivalent circuit fit"],
     "CV": ["I vs t", "Peak current", "Onset potential"],
-    "PC": ["V vs I completo", "V vs I last", "V vs t", "I vs t", "T vs t", "dV/dI", "Step Stability"],
+    "PC": ["V vs I", "Series vs time", "dV/dI", "Step Stability"],
     "OCP": ["V vs t", "V final", "Drift", "DeltaV"],
     "Deg": ["V vs t", "I vs t", "T vs t", "dV/dt", "dV/dt final", "Trend", "Degradation rate"],
     "Activacion": ["V vs t", "I vs t", "T vs t", "dV/dt", "dV/dt final", "Trend", "Degradation rate"],
@@ -194,6 +195,25 @@ class GamryProtocolApp:
 
                 self.options_window.destroy()
                 self.options_window = None
+            elif selected_pipeline == "PC":
+                try:
+                    input_dir = pathlib.Path(self.input_entry.get().strip())
+                    output_dir = pathlib.Path(self.output_entry.get().strip())
+                    exported_files = export_pc_folder(input_dir, output_dir, selected)
+
+                    if exported_files:
+                        self.set_status(
+                            f"PC exportado: {len(exported_files)} archivo(s) .xlsx creado(s)."
+                        )
+                    else:
+                        self.set_status(
+                            "No se encontraron archivos .DTA con 'Curva_Polarizacion_' en la carpeta de entrada."
+                        )
+
+                except Exception as e:
+                    import traceback
+                    print(traceback.format_exc())
+                    self.set_status(f"Error en PC: {type(e).__name__}: {e}")
 
         ttk.Button(
             self.options_window,
