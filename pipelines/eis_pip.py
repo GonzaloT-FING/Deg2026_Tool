@@ -110,6 +110,10 @@ def _extract_meta_unit(key: str, description: str) -> str:
 
     return ""
 
+def _is_incomplete_number(s: str) -> bool:
+    s = s.strip()
+    return s in {"-", "+", ".", "-.", "+."}
+
 
 # ---------------------------------------------------------------------------
 # Parsed container
@@ -789,6 +793,11 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 if chosen and chosen[1]:
                     ln = lines[k]
                     ln.set_color(chosen[1])
+                    # keep the UI var in sync (prevents "reset to default" on next style change)
+                    try:
+                        style_vars[k]["color"].set(chosen[1])
+                    except Exception:
+                        pass
                     # keep hollow marker consistent
                     try:
                         ln.set_markerfacecolor("none")
@@ -829,12 +838,14 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                         handles.append(ln)
                         labels.append(ln.get_label())
 
+                legend_fs = float(base_ax.xaxis.label.get_fontsize())  # ties to your label size control
+
                 leg = base_ax.get_legend()
                 if leg is not None:
                     leg.remove()
 
                 if handles:
-                    base_ax.legend(handles, labels, loc="best", fontsize=9)
+                    base_ax.legend(handles, labels, loc="best", fontsize=legend_fs)
 
             def _autoscale_visible_axes():
                 for k, ln in lines.items():
@@ -852,19 +863,20 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
                 _autoscale_visible_axes()
 
-                # Choose master for tick/grid alignment: first visible in I->V->T order
+                # choose master axis: prefer Idc if visible, else first visible
                 visible_keys = [k for k in ("I", "V", "T") if k in lines and lines[k].get_visible()]
                 if visible_keys:
-                    master_key = visible_keys[0]
+                    master_key = "I" if ("I" in visible_keys) else visible_keys[0]
                     master_ax = axes[master_key]
+                    other_axes = [axes[k] for k in visible_keys if k != master_key]
 
-                    # grid only from master axis to avoid clutter
+                    # grid only on master (avoids clutter)
                     for axx in axes.values():
                         axx.grid(False)
                     master_ax.grid(True)
 
-                    others = [axes[k] for k in visible_keys if k != master_key]
-                    _sync_y_ticks(master_ax, others, nbins=6)
+                    # you already have _sync_ygrid_ticks in show_figures_tk()
+                    _sync_ygrid_ticks(master_ax, other_axes, nbins=6)
 
                 _update_legend()
                 _refresh_axis_colors()
@@ -877,9 +889,12 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 ln = lines[k]
                 v = style_vars[k]
 
-                c = v["color"].get().strip()
+                c = style_vars[k]["color"].get().strip()
                 if c:
-                    ln.set_color(c)
+                    try:
+                        ln.set_color(c)
+                    except Exception:
+                        pass  # keep current color if user typed something invalid
 
                 ls = v["ls"].get()
                 mk = v["mk"].get()
@@ -1042,6 +1057,10 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 return None
 
         def apply_axes():
+
+            raws = [xmin_var.get(), xmax_var.get(), ymin_var.get(), ymax_var.get()]
+            if any(_is_incomplete_number(r) for r in raws):
+                return  # don't apply AND don't refresh the fields
             cur_x0, cur_x1 = ax.get_xlim()
             cur_y0, cur_y1 = ax.get_ylim()
 
@@ -1218,6 +1237,11 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 ax_.xaxis.label.set_fontsize(lfs)
                 ax_.yaxis.label.set_fontsize(lfs)
                 ax_.title.set_fontsize(hfs)
+                leg = ax_.get_legend()
+                if leg is not None:
+                    for t in leg.get_texts():
+                        t.set_fontsize(float(label_fs_var.get()))
+                
 
             # Layout may need refresh when fonts change
             try:
@@ -1266,9 +1290,19 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             pending["id"] = tab.after(300, apply_axes)
 
         for e in (exmin, exmax, eymin, eymax):
-            e.bind("<Return>", apply_axes)
-            e.bind("<FocusOut>", apply_axes)
-            e.bind("<KeyRelease>", _schedule_apply_axes)
+            DEBOUNCE_MS = 900  # try 900–1200
+
+            pending_axes = {"id": None}
+
+            def _schedule_apply_axes(_evt=None):
+                if pending_axes["id"] is not None:
+                    tab.after_cancel(pending_axes["id"])
+                pending_axes["id"] = tab.after(DEBOUNCE_MS, apply_axes)
+
+            for e in (exmin, exmax, eymin, eymax):
+                e.bind("<KeyRelease>", _schedule_apply_axes)
+                e.bind("<Return>", lambda ev: apply_axes())  # optional: instant apply on Enter
+                # remove FocusOut apply
 
         btns_axes = ttk.Frame(axes_box)
         btns_axes.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -1483,6 +1517,10 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     return None
 
             def _apply_static_labels():
+                raws = [freqmin_var.get(), freqmax_var.get()]
+                if any(_is_incomplete_number(r) for r in raws):
+                    return
+
                 _clear_static()
 
                 n = int(nlabels_var.get())
