@@ -876,7 +876,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     master_ax.grid(True)
 
                     # you already have _sync_ygrid_ticks in show_figures_tk()
-                    _sync_ygrid_ticks(master_ax, other_axes, nbins=6)
+                    _sync_y_ticks(master_ax, other_axes, nbins=6)
 
                 _update_legend()
                 _refresh_axis_colors()
