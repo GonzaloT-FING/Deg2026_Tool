@@ -464,14 +464,18 @@ def figs_bode(parsed: ParsedDTA) -> list[tuple[str, Figure]]:
 
     return out
 
-def _update_right_axis_spacing(fig, canvas, axes):
+def _update_right_axis_spacing(fig, canvas, axes, pad_pt: float = 10.0, min_outward_pt: float = 30.0):
     axV = axes.get("V")
     axT = axes.get("T")
     if axV is None or axT is None:
         return
 
+    # Force a draw so text extents are current
     canvas.draw()
     renderer = canvas.get_renderer()
+
+    # Pixels per point (handles Windows scaling correctly)
+    px_per_pt = float(renderer.points_to_pixels(1.0))
 
     def _max_width_px(ax_):
         w = 0.0
@@ -483,9 +487,38 @@ def _update_right_axis_spacing(fig, canvas, axes):
             w = max(w, lab.get_window_extent(renderer=renderer).width)
         return w
 
-    wV = _max_width_px(axV)
-    offset_pts = (wV + 28.0) / fig.dpi * 72.0
-    axT.spines["right"].set_position(("outward", offset_pts))
+    # How much horizontal space axV needs (in points)
+    wV_pt = _max_width_px(axV) / px_per_pt
+
+    # Put axT to the right of axV labels
+    outward_pt = max(min_outward_pt, wV_pt + pad_pt)
+    axT.spines["right"].set_position(("outward", outward_pt))
+
+    # Optional: ensure there is enough right margin (avoid clipping)
+    # Reset right margin before adjusting (prevents it from shrinking forever)
+    default_right = getattr(fig, "_default_right_margin", None)
+    if default_right is None:
+        fig._default_right_margin = fig.subplotpars.right
+        default_right = fig.subplotpars.right
+    fig.subplots_adjust(right=default_right)
+
+    canvas.draw()
+    renderer = canvas.get_renderer()
+
+    # Find rightmost pixel used by axT labels
+    right_px = 0.0
+    for t in axT.get_yticklabels():
+        if t.get_visible() and t.get_text():
+            right_px = max(right_px, t.get_window_extent(renderer=renderer).x1)
+    lab = axT.yaxis.label
+    if lab.get_visible() and lab.get_text():
+        right_px = max(right_px, lab.get_window_extent(renderer=renderer).x1)
+
+    fig_px = fig.get_size_inches()[0] * fig.dpi
+    overflow_px = right_px - (fig_px - 8.0)  # 8px padding
+    if overflow_px > 0:
+        extra = overflow_px / fig_px
+        fig.subplots_adjust(right=max(0.50, default_right - extra))
 
 def fig_series_vs_pt(parsed: ParsedDTA) -> Figure | None:
     fig = _new_figure()
@@ -1300,6 +1333,11 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         title_fs_var = tk.DoubleVar(value=init_title_fs)
 
         def apply_fonts():
+
+            if getattr(fig, "_pt_series", False):
+                axes = getattr(fig, "_pt_axes", {})
+                _update_right_axis_spacing(fig, canvas, axes)
+
             # Apply to all axes in the figure (safe even if later you add multi-axes figs)
             try:
                 tfs = float(tick_fs_var.get())
