@@ -24,7 +24,6 @@ import re
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
-from openpyxl.chart import ScatterChart, Reference, Series
 
 
 # ---------------------------------------------------------------------------
@@ -471,29 +470,6 @@ def _write_data_sheet(ws, rows: list[dict[str, float]], include_step: bool = Fal
     ws.freeze_panes = "A3"
 
 
-def _add_last_point_chart(ws, title: str, include_step: bool) -> None:
-    if ws.max_row < 4:
-        return
-
-    current_col = 5 if include_step else 4
-    voltage_col = 4 if include_step else 3
-
-    chart = ScatterChart()
-    chart.title = title
-    chart.style = 2
-    chart.x_axis.title = "Corriente (A)"
-    chart.y_axis.title = "Voltaje (V)"
-    chart.height = 8
-    chart.width = 14
-
-    xvalues = Reference(ws, min_col=current_col, min_row=3, max_row=ws.max_row)
-    yvalues = Reference(ws, min_col=voltage_col, min_row=3, max_row=ws.max_row)
-    series = Series(yvalues, xvalues, title="Puntos estabilizados")
-    chart.series.append(series)
-
-    ws.add_chart(chart, "J2")
-
-
 def _auto_format_sheet(ws) -> None:
     for col_num in range(1, ws.max_column + 1):
         max_len = 0
@@ -537,11 +513,9 @@ def export_curve_bundle(bundle: CurveBundle, out_path: Path) -> None:
 
     ws_asc_last = wb.create_sheet("Asc_last")
     _write_data_sheet(ws_asc_last, asc_last_rows, include_step=True)
-    _add_last_point_chart(ws_asc_last, "Asc - puntos estabilizados", include_step=True)
 
     ws_dsc_last = wb.create_sheet("Dsc_last")
     _write_data_sheet(ws_dsc_last, dsc_last_rows, include_step=True)
-    _add_last_point_chart(ws_dsc_last, "Dsc - puntos estabilizados", include_step=True)
 
     for ws in (ws_meta, ws_asc, ws_dsc, ws_asc_last, ws_dsc_last):
         _auto_format_sheet(ws)

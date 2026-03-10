@@ -9,7 +9,7 @@ from tkinter import filedialog, ttk
 PIPELINE_OPTIONS = {
     "EIS": ["Nyquist plot", "Bode plot", "Series by Pt", "Equivalent circuit fit"],
     "CV": ["I vs t", "Peak current", "Onset potential"],
-    "PC": ["V vs I", "Series vs time", "dV/dI", "Step Stability"],
+    "PC": ["V vs I", "Series by time", "dV/dI", "Step Stability"],
     "OCP": ["V vs t", "V final", "Drift", "DeltaV"],
     "Deg": ["V vs t", "I vs t", "T vs t", "dV/dt", "dV/dt final", "Trend", "Degradation rate"],
     "Activacion": ["V vs t", "I vs t", "T vs t", "dV/dt", "dV/dt final", "Trend", "Degradation rate"],
