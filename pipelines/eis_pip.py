@@ -464,6 +464,49 @@ def figs_bode(parsed: ParsedDTA) -> list[tuple[str, Figure]]:
 
     return out
 
+def _update_right_axis_spacing():
+    # Only makes sense if both right axes exist
+    if "V" not in axes or "T" not in axes:
+        return
+
+    axV = axes["V"]
+    axT = axes["T"]
+
+    # Ensure a draw so text extents are accurate
+    canvas.draw()
+    renderer = canvas.get_renderer()
+
+    def _max_width_px(ax_):
+        w = 0.0
+        # tick labels
+        for t in ax_.get_yticklabels():
+            if t.get_visible() and t.get_text():
+                bb = t.get_window_extent(renderer=renderer)
+                w = max(w, bb.width)
+        # axis label
+        lab = ax_.yaxis.label
+        if lab.get_visible() and lab.get_text():
+            bb = lab.get_window_extent(renderer=renderer)
+            w = max(w, bb.width)
+        return w
+
+    wV = _max_width_px(axV)
+
+    # padding in pixels
+    pad_px = 12.0
+    # convert pixels -> points (spine outward uses points)
+    offset_pts = (wV + pad_px) / fig.dpi * 72.0
+
+    axT.spines["right"].set_position(("outward", offset_pts))
+
+    # also ensure there is enough right margin so labels don't clip
+    fig_w_in = fig.get_size_inches()[0]
+    extra_in = offset_pts / 72.0
+    right = 1.0 - min(0.35, extra_in / fig_w_in + 0.06)  # cap so it doesn't go crazy
+    try:
+        fig.subplots_adjust(right=right)
+    except Exception:
+        pass
 
 def fig_series_vs_pt(parsed: ParsedDTA) -> Figure | None:
     fig = _new_figure()
@@ -615,25 +658,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
     compose_btn = ttk.Button(topbar, text="Componer")
     compose_btn.pack(side="left", padx=(8, 0))
-
-    def _sync_y_ticks(master_ax, other_axes, nbins: int = 6):
-        # Ensure master has "nice" ticks
-        loc = MaxNLocator(nbins=nbins)
-        master_ax.yaxis.set_major_locator(loc)
-        master_ax.figure.canvas.draw_idle()  # safe
-
-        ticks = list(master_ax.get_yticks())
-        if len(ticks) < 2:
-            return
-
-        y0, y1 = master_ax.get_ylim()
-        span = (y1 - y0) if (y1 != y0) else 1.0
-        fracs = [(t - y0) / span for t in ticks]
-
-        for axk in other_axes:
-            a0, a1 = axk.get_ylim()
-            aspan = (a1 - a0) if (a1 != a0) else 1.0
-            axk.set_yticks([a0 + f * aspan for f in fracs])
 
     def _goto_selected(_evt=None):
         wanted = plot_names_var.get()
@@ -926,6 +950,9 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     master_ax.grid(True)
 
                     _sync_ygrid_ticks(master_ax, other_axes, nbins=6)
+                _sync_ygrid_ticks(master_ax, other_axes, nbins=6)
+
+                _update_right_axis_spacing()
 
                 _update_legend()
                 _refresh_axis_colors()
@@ -961,6 +988,23 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 _refresh_axis_colors()
                 canvas.draw_idle()
 
+            def _safe_fg_for_bg(bg: str) -> str:
+                if not (isinstance(bg, str) and bg.startswith("#") and len(bg) == 7):
+                    return "black"
+                try:
+                    r = int(bg[1:3], 16); g = int(bg[3:5], 16); b = int(bg[5:7], 16)
+                except ValueError:
+                    return "black"
+                lum = 0.2126*r + 0.7152*g + 0.0722*b
+                return "black" if lum > 140 else "white"
+
+            def _update_color_entry(entry, color: str):
+                c = (color or "").strip()
+                if c.startswith("#") and len(c) == 7:
+                    entry.configure(bg=c, fg=_safe_fg_for_bg(c))
+                else:
+                    entry.configure(bg="white", fg="black")
+
             for k, title in (("I", "Idc"), ("V", "Vdc"), ("T", "Temp")):
                 if k not in lines:
                     continue
@@ -978,8 +1022,12 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 }
 
                 ttk.Label(f, text="Color").grid(row=0, column=0, sticky="w")
-                ce = ttk.Entry(f, textvariable=style_vars[k]["color"], width=10)
+                ce = tk.Entry(f, textvariable=style_vars[k]["color"], width=10)
                 ce.grid(row=0, column=1, sticky="w", padx=(6, 0))
+
+                # initialize + keep it updated as user types or picker sets value
+                _update_color_entry(ce, style_vars[k]["color"].get())
+                style_vars[k]["color"].trace_add("write", lambda *_ , kk=k, e=ce: _update_color_entry(e, style_vars[kk]["color"].get()))
                 ttk.Button(f, text="Pick…", command=lambda kk=k: _pick_series_color(kk)).grid(row=0, column=2, sticky="w", padx=(6, 0))
 
                 ttk.Label(f, text="Line").grid(row=1, column=0, sticky="w", pady=(6, 0))
