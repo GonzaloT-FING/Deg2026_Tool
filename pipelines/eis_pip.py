@@ -855,7 +855,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     if ln.get_visible():
                         axk.relim()
                         axk.autoscale_view()
-            
+
 
             def _sync_ygrid_ticks(master_ax, other_axes, nbins: int = 6):
                 # 1) Freeze master ticks to prevent later redraws from changing them
@@ -877,6 +877,27 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     a0, a1 = axk.get_ylim()
                     aspan = (a1 - a0) if (a1 != a0) else 1.0
                     axk.set_yticks([a0 + f * aspan for f in fracs])
+
+            _in_sync = {"busy": False}
+
+            def _resync_on_ylim_change(_ax):
+                if _in_sync["busy"]:
+                    return
+                _in_sync["busy"] = True
+                try:
+                    visible_keys = [k for k in ("I", "V", "T") if k in lines and lines[k].get_visible()]
+                    if not visible_keys:
+                        return
+                    master_key = "I" if "I" in visible_keys else visible_keys[0]
+                    master_ax = axes[master_key]
+                    other_axes = [axes[k] for k in visible_keys if k != master_key]
+                    _sync_ygrid_ticks(master_ax, other_axes, nbins=6)
+                    canvas.draw_idle()
+                finally:
+                    _in_sync["busy"] = False
+
+            # connect only once
+            axes["I"].callbacks.connect("ylim_changed", _resync_on_ylim_change)
 
             def _apply_visibility():
                 if "I" in lines: lines["I"].set_visible(bool(show_I.get()))
