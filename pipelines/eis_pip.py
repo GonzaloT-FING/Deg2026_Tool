@@ -464,61 +464,73 @@ def figs_bode(parsed: ParsedDTA) -> list[tuple[str, Figure]]:
 
     return out
 
-def _update_right_axis_spacing(fig, canvas, axes, pad_pt: float = 10.0, min_outward_pt: float = 30.0):
+def _update_right_axis_spacing(fig, canvas, axes, pad_px: float = 12.0, min_outward_pt: float = 30.0):
     axV = axes.get("V")
     axT = axes.get("T")
     if axV is None or axT is None:
         return
 
-    # Force a draw so text extents are current
+    # Force a draw so text extents are up-to-date
     canvas.draw()
     renderer = canvas.get_renderer()
-
-    # Pixels per point (handles Windows scaling correctly)
     px_per_pt = float(renderer.points_to_pixels(1.0))
 
-    def _max_width_px(ax_):
-        w = 0.0
+    # Right edge (in display px) of the *base* right spine (x=1 in axes coords)
+    base_right_x = axV.transAxes.transform((1.0, 0.0))[0]
+
+    def _rightmost_x1_of_v_axis(ax_):
+        x1 = base_right_x
+
+        # tick labels
         for t in ax_.get_yticklabels():
             if t.get_visible() and t.get_text():
-                w = max(w, t.get_window_extent(renderer=renderer).width)
+                bb = t.get_window_extent(renderer=renderer)
+                x1 = max(x1, bb.x1)
+
+        # y-axis label
         lab = ax_.yaxis.label
         if lab.get_visible() and lab.get_text():
-            w = max(w, lab.get_window_extent(renderer=renderer).width)
-        return w
+            bb = lab.get_window_extent(renderer=renderer)
+            x1 = max(x1, bb.x1)
 
-    # How much horizontal space axV needs (in points)
-    wV_pt = _max_width_px(axV) / px_per_pt
+        return x1
 
-    # Put axT to the right of axV labels
-    outward_pt = max(min_outward_pt, wV_pt + pad_pt)
+    # How far to the right the V-axis content reaches (ticks + ylabel)
+    v_rightmost_x1 = _rightmost_x1_of_v_axis(axV)
+
+    # Required outward shift in pixels so the Temp spine is beyond V content
+    required_px = (v_rightmost_x1 - base_right_x) + pad_px
+    outward_pt = max(min_outward_pt, required_px / px_per_pt)
+
     axT.spines["right"].set_position(("outward", outward_pt))
 
-    # Optional: ensure there is enough right margin (avoid clipping)
-    # Reset right margin before adjusting (prevents it from shrinking forever)
-    default_right = getattr(fig, "_default_right_margin", None)
-    if default_right is None:
+    # Optional: ensure figure margin doesn't clip the outer axis label/ticks
+    # Store a baseline right margin once so it doesn't "ratchet" smaller over time.
+    if not hasattr(fig, "_default_right_margin"):
         fig._default_right_margin = fig.subplotpars.right
-        default_right = fig.subplotpars.right
-    fig.subplots_adjust(right=default_right)
+    fig.subplots_adjust(right=fig._default_right_margin)
 
     canvas.draw()
     renderer = canvas.get_renderer()
 
-    # Find rightmost pixel used by axT labels
-    right_px = 0.0
+    # Check if Temp axis content clips beyond figure width; if so, reduce right margin.
+    fig_px = fig.get_size_inches()[0] * fig.dpi
+    t_rightmost = base_right_x
+
     for t in axT.get_yticklabels():
         if t.get_visible() and t.get_text():
-            right_px = max(right_px, t.get_window_extent(renderer=renderer).x1)
-    lab = axT.yaxis.label
-    if lab.get_visible() and lab.get_text():
-        right_px = max(right_px, lab.get_window_extent(renderer=renderer).x1)
+            bb = t.get_window_extent(renderer=renderer)
+            t_rightmost = max(t_rightmost, bb.x1)
 
-    fig_px = fig.get_size_inches()[0] * fig.dpi
-    overflow_px = right_px - (fig_px - 8.0)  # 8px padding
-    if overflow_px > 0:
-        extra = overflow_px / fig_px
-        fig.subplots_adjust(right=max(0.50, default_right - extra))
+    labT = axT.yaxis.label
+    if labT.get_visible() and labT.get_text():
+        bb = labT.get_window_extent(renderer=renderer)
+        t_rightmost = max(t_rightmost, bb.x1)
+
+    overflow = t_rightmost - (fig_px - 8.0)  # 8px padding
+    if overflow > 0:
+        extra = overflow / fig_px
+        fig.subplots_adjust(right=max(0.50, fig._default_right_margin - extra))
 
 def fig_series_vs_pt(parsed: ParsedDTA) -> Figure | None:
     fig = _new_figure()
@@ -540,7 +552,6 @@ def fig_series_vs_pt(parsed: ParsedDTA) -> Figure | None:
 
     axV.spines["left"].set_visible(False)
     axT.spines["left"].set_visible(False)
-
     # make sure their ticks are on the right (usually automatic, but explicit is fine)
     axV.yaxis.tick_right()
     axV.yaxis.set_label_position("right")
