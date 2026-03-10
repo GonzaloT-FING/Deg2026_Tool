@@ -693,7 +693,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         tab_id_by_title[tab_title] = tab_id
         title_by_tab_id[tab_id] = tab_title
 
-        is_pt_series = bool(getattr(fig, "_pt_series", False))
+        is_pt_series = bool(getattr(fig, "_pt_series", False))            
 
         if is_pt_series:
             lines = getattr(fig, "_pt_lines", {})   # dict like {"I": line, "V": line, "T": line}
@@ -703,6 +703,12 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             # - color buttons
             # - style notebook (linestyle/marker/lw/ms per series)
             # - tick sync / axis coloring helpers
+            # Disable generic style controls for Pt-series tabs
+            for child in style_box.winfo_children():
+                try:
+                    child.configure(state="disabled")
+                except Exception:
+                    pass
 
         tlow = tab_title.lower()
 
@@ -821,12 +827,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
             ttk.Checkbutton(pt_box, text="Color y-axes", variable=color_axes_var,
                 command=lambda: (_refresh_axis_colors(), canvas.draw_idle())).pack(anchor="w", pady=(6,0))
-            
-            row = ttk.Frame(pt_box)
-            row.pack(fill="x", pady=(6,0))
-            if "I" in lines: ttk.Button(row, text="Color Idc", command=lambda: _pick_series_color("I")).pack(side="left", padx=(0,6))
-            if "V" in lines: ttk.Button(row, text="Color Vdc", command=lambda: _pick_series_color("V")).pack(side="left", padx=(0,6))
-            if "T" in lines: ttk.Button(row, text="Color Temp", command=lambda: _pick_series_color("T")).pack(side="left")
 
             show_I = tk.BooleanVar(value=("I" in lines and lines["I"].get_visible()))
             show_V = tk.BooleanVar(value=("V" in lines and lines["V"].get_visible()))
