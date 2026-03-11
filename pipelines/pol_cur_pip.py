@@ -177,7 +177,59 @@ def infer_current_tolerance(files: list[PolarizationFile]) -> float:
         if step_delta is not None and step_delta > 0:
             return max(min(step_delta * 0.1, 1e-3), 1e-5)
     return 1e-5
+def _format_limit_value(value: float | None) -> str:
+    if value is None:
+        return ""
+    return f"{value:.6g}"
 
+
+def _padded_limits(values: list[float], rel_pad: float = 0.05) -> tuple[float | None, float | None]:
+    if not values:
+        return None, None
+
+    vmin = min(values)
+    vmax = max(values)
+
+    if vmin == vmax:
+        pad = max(abs(vmin) * rel_pad, 1e-6)
+    else:
+        pad = (vmax - vmin) * rel_pad
+
+    return vmin - pad, vmax + pad
+
+
+def compute_default_v_vs_i_limits(bundle: CurveBundle) -> dict[str, str]:
+    curve_data = build_curve_bundle_data(bundle)
+
+    asc_rows = (
+        select_fractional_point_per_step(curve_data["asc_rows"], curve_data["asc_tol"], 1.0)
+        if curve_data["asc_rows"] else []
+    )
+    dsc_rows = (
+        select_fractional_point_per_step(curve_data["dsc_rows"], curve_data["dsc_tol"], 1.0)
+        if curve_data["dsc_rows"] else []
+    )
+
+    rows = asc_rows + dsc_rows
+    if not rows:
+        return {
+            "x_min": "", "x_max": "",
+            "v_min": "", "v_max": "",
+            "t_min": "", "t_max": "",
+        }
+
+    x_min, x_max = _padded_limits([r["Corriente"] for r in rows])
+    v_min, v_max = _padded_limits([r["Voltaje"] for r in rows])
+    t_min, t_max = _padded_limits([r["Temperatura"] for r in rows])
+
+    return {
+        "x_min": _format_limit_value(x_min),
+        "x_max": _format_limit_value(x_max),
+        "v_min": _format_limit_value(v_min),
+        "v_max": _format_limit_value(v_max),
+        "t_min": _format_limit_value(t_min),
+        "t_max": _format_limit_value(t_max),
+    }
 
 # ---------------------------------------------------------------------------
 # File discovery and grouping
@@ -615,8 +667,9 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     if not bundles:
         raise ValueError("No se encontraron curvas de polarización válidas.")
 
-    # According to your workflow, there should be only one valid curve per folder.
     bundle = bundles[0]
+
+    default_limits = compute_default_v_vs_i_limits(bundle)
 
     win = tk.Toplevel()
     win.title(f"PC - V vs I - {bundle.description} #{bundle.curve_id}")
@@ -634,21 +687,34 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     canvas_frame = ttk.Frame(plot_outer)
     canvas_frame.pack(side="top", fill="both", expand=True)
 
-    status_var = tk.StringVar(value="Configure y presione Plot.")
+    status_var = tk.StringVar(value="Listo.")
 
     asc_var = tk.BooleanVar(value=True)
     dsc_var = tk.BooleanVar(value=True)
     voltage_var = tk.BooleanVar(value=True)
     temperature_var = tk.BooleanVar(value=False)
-
     point_fraction_var = tk.DoubleVar(value=1.0)
 
-    x_min_var = tk.StringVar(value="")
-    x_max_var = tk.StringVar(value="")
-    v_min_var = tk.StringVar(value="")
-    v_max_var = tk.StringVar(value="")
-    t_min_var = tk.StringVar(value="")
-    t_max_var = tk.StringVar(value="")
+    x_min_var = tk.StringVar(value=default_limits["x_min"])
+    x_max_var = tk.StringVar(value=default_limits["x_max"])
+    v_min_var = tk.StringVar(value=default_limits["v_min"])
+    v_max_var = tk.StringVar(value=default_limits["v_max"])
+    t_min_var = tk.StringVar(value=default_limits["t_min"])
+    t_max_var = tk.StringVar(value=default_limits["t_max"])
+
+    initial_state = {
+        "asc": True,
+        "dsc": True,
+        "voltage": True,
+        "temperature": False,
+        "fraction": 1.0,
+        "x_min": default_limits["x_min"],
+        "x_max": default_limits["x_max"],
+        "v_min": default_limits["v_min"],
+        "v_max": default_limits["v_max"],
+        "t_min": default_limits["t_min"],
+        "t_max": default_limits["t_max"],
+    }
 
     ttk.Label(
         controls_frame,
@@ -659,72 +725,37 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     series_box = ttk.LabelFrame(controls_frame, text="Series")
     series_box.pack(fill="x", pady=5)
 
-    ttk.Checkbutton(series_box, text="Asc", variable=asc_var).pack(anchor="w", padx=8, pady=2)
-    ttk.Checkbutton(series_box, text="Dsc", variable=dsc_var).pack(anchor="w", padx=8, pady=2)
-    ttk.Checkbutton(series_box, text="Voltaje", variable=voltage_var).pack(anchor="w", padx=8, pady=2)
-    ttk.Checkbutton(series_box, text="Temperatura", variable=temperature_var).pack(anchor="w", padx=8, pady=2)
-
     point_box = ttk.LabelFrame(controls_frame, text="Punto dentro de cada step")
     point_box.pack(fill="x", pady=5)
-
-    point_value_label = ttk.Label(point_box, text="1.00")
-    point_value_label.pack(anchor="e", padx=8, pady=(4, 0))
-
-    def _update_point_label(_value=None):
-        point_value_label.config(text=f"{point_fraction_var.get():.2f}")
-
-    point_scale = ttk.Scale(
-        point_box,
-        from_=0.0,
-        to=1.0,
-        orient="horizontal",
-        variable=point_fraction_var,
-        command=_update_point_label,
-    )
-    point_scale.pack(fill="x", padx=8, pady=6)
-
-    ttk.Label(
-        point_box,
-        text="0 = primer punto, 1 = último punto",
-    ).pack(anchor="w", padx=8, pady=(0, 6))
 
     limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
     limits_box.pack(fill="x", pady=5)
 
-    limit_rows = [
-        ("I min", x_min_var),
-        ("I max", x_max_var),
-        ("V min", v_min_var),
-        ("V max", v_max_var),
-        ("T min", t_min_var),
-        ("T max", t_max_var),
-    ]
-
-    for row_idx, (label, var) in enumerate(limit_rows):
-        ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
-        ttk.Entry(limits_box, textvariable=var, width=12).grid(
-            row=row_idx, column=1, sticky="w", padx=8, pady=3
-        )
-
-    ttk.Label(
-        controls_frame,
-        textvariable=status_var,
-        wraplength=260,
-        justify="left",
-    ).pack(anchor="w", fill="x", pady=(10, 10))
-
     canvas_ref = {"canvas": None, "toolbar": None}
+    plot_job = {"id": None}
+    suspend_events = {"value": False}
 
     def _clear_canvas():
         if canvas_ref["toolbar"] is not None:
             canvas_ref["toolbar"].destroy()
             canvas_ref["toolbar"] = None
-
         if canvas_ref["canvas"] is not None:
             canvas_ref["canvas"].get_tk_widget().destroy()
             canvas_ref["canvas"] = None
 
+    def _collect_limits():
+        return dict(
+            x_min=_optional_float(x_min_var.get()),
+            x_max=_optional_float(x_max_var.get()),
+            v_min=_optional_float(v_min_var.get()),
+            v_max=_optional_float(v_max_var.get()),
+            t_min=_optional_float(t_min_var.get()),
+            t_max=_optional_float(t_max_var.get()),
+        )
+
     def _plot():
+        plot_job["id"] = None
+
         try:
             fig = build_v_vs_i_figure(
                 bundle=bundle,
@@ -733,12 +764,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
                 show_voltage=voltage_var.get(),
                 show_temperature=temperature_var.get(),
                 point_fraction=point_fraction_var.get(),
-                x_min=_optional_float(x_min_var.get()),
-                x_max=_optional_float(x_max_var.get()),
-                v_min=_optional_float(v_min_var.get()),
-                v_max=_optional_float(v_max_var.get()),
-                t_min=_optional_float(t_min_var.get()),
-                t_max=_optional_float(t_max_var.get()),
+                **_collect_limits(),
             )
         except ValueError as exc:
             status_var.set(f"Error: {exc}")
@@ -763,10 +789,105 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         canvas_ref["toolbar"] = toolbar
         status_var.set("Gráfico actualizado.")
 
+    def _schedule_plot(*_args):
+        if suspend_events["value"]:
+            return
+        if plot_job["id"] is not None:
+            win.after_cancel(plot_job["id"])
+        plot_job["id"] = win.after(250, _plot)
+
+    def _update_point_label(_event=None):
+        point_value_label.config(text=f"{point_fraction_var.get():.2f}")
+
+    def _on_scale_move(_value=None):
+        _update_point_label()
+
+    def _on_scale_release(_event=None):
+        _schedule_plot()
+
+    def _reset():
+        suspend_events["value"] = True
+        try:
+            asc_var.set(initial_state["asc"])
+            dsc_var.set(initial_state["dsc"])
+            voltage_var.set(initial_state["voltage"])
+            temperature_var.set(initial_state["temperature"])
+            point_fraction_var.set(initial_state["fraction"])
+
+            x_min_var.set(initial_state["x_min"])
+            x_max_var.set(initial_state["x_max"])
+            v_min_var.set(initial_state["v_min"])
+            v_max_var.set(initial_state["v_max"])
+            t_min_var.set(initial_state["t_min"])
+            t_max_var.set(initial_state["t_max"])
+            _update_point_label()
+        finally:
+            suspend_events["value"] = False
+
+        _plot()
+        status_var.set("Valores restaurados.")
+
+    ttk.Checkbutton(series_box, text="Asc", variable=asc_var, command=_schedule_plot).pack(
+        anchor="w", padx=8, pady=2
+    )
+    ttk.Checkbutton(series_box, text="Dsc", variable=dsc_var, command=_schedule_plot).pack(
+        anchor="w", padx=8, pady=2
+    )
+    ttk.Checkbutton(series_box, text="Voltaje", variable=voltage_var, command=_schedule_plot).pack(
+        anchor="w", padx=8, pady=2
+    )
+    ttk.Checkbutton(series_box, text="Temperatura", variable=temperature_var, command=_schedule_plot).pack(
+        anchor="w", padx=8, pady=2
+    )
+
+    point_value_label = ttk.Label(point_box, text="1.00")
+    point_value_label.pack(anchor="e", padx=8, pady=(4, 0))
+
+    point_scale = ttk.Scale(
+        point_box,
+        from_=0.0,
+        to=1.0,
+        orient="horizontal",
+        variable=point_fraction_var,
+        command=_on_scale_move,
+    )
+    point_scale.pack(fill="x", padx=8, pady=6)
+    point_scale.bind("<ButtonRelease-1>", _on_scale_release)
+
+    ttk.Label(point_box, text="0 = primer punto, 1 = último punto").pack(
+        anchor="w", padx=8, pady=(0, 6)
+    )
+
+    limit_specs = [
+        ("I min", x_min_var),
+        ("I max", x_max_var),
+        ("V min", v_min_var),
+        ("V max", v_max_var),
+        ("T min", t_min_var),
+        ("T max", t_max_var),
+    ]
+
+    entry_widgets = []
+    for row_idx, (label, var) in enumerate(limit_specs):
+        ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        entry = ttk.Entry(limits_box, textvariable=var, width=12)
+        entry.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        entry.bind("<KeyRelease>", _schedule_plot)
+        entry.bind("<FocusOut>", _schedule_plot)
+        entry.bind("<Return>", _schedule_plot)
+        entry_widgets.append(entry)
+
+    ttk.Label(
+        controls_frame,
+        textvariable=status_var,
+        wraplength=260,
+        justify="left",
+    ).pack(anchor="w", fill="x", pady=(10, 10))
+
     buttons_frame = ttk.Frame(controls_frame)
     buttons_frame.pack(fill="x", pady=(5, 0))
 
-    ttk.Button(buttons_frame, text="Plot", command=_plot).pack(side="left", padx=(0, 6))
+    ttk.Button(buttons_frame, text="Reset", command=_reset).pack(side="left", padx=(0, 6))
     ttk.Button(buttons_frame, text="Cerrar", command=win.destroy).pack(side="left")
 
     _update_point_label()
