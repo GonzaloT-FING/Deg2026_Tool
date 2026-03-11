@@ -60,6 +60,16 @@ FILE_RE = re.compile(
     re.IGNORECASE,
 )
 
+MARKER_OPTIONS = ["none", "^", "v", "o", "s", "d", "x", "+"]
+LINESTYLE_OPTIONS = ["none", "-", "--", ":", "-."]
+
+PC_PLOT_COLORS = {
+    "asc_voltage": "#4460db",
+    "dsc_voltage": "#2b3d8c",
+    "asc_temperature": "#e04c41",
+    "dsc_temperature": "#ab3030",
+}
+
 
 # ---------------------------------------------------------------------------
 # Data containers
@@ -239,6 +249,10 @@ def draw_v_vs_i_on_figure(
     show_voltage: bool,
     show_temperature: bool,
     point_fraction: float,
+    asc_marker: str,
+    dsc_marker: str,
+    voltage_linestyle: str,
+    temperature_linestyle: str,
     x_min: float | None = None,
     x_max: float | None = None,
     v_min: float | None = None,
@@ -284,42 +298,70 @@ def draw_v_vs_i_on_figure(
     if show_voltage and show_temperature:
         ax_temp = ax_main.twinx()
 
+    asc_marker_mpl = _mpl_marker(asc_marker)
+    dsc_marker_mpl = _mpl_marker(dsc_marker)
+    voltage_ls_mpl = _mpl_linestyle(voltage_linestyle)
+    temp_ls_mpl = _mpl_linestyle(temperature_linestyle)
+
+    def _series_visible(marker_value: str, line_value: str) -> bool:
+        return not (marker_value == "none" and line_value == "none")
+
+    # Voltage on main axis
     if show_voltage:
-        if asc_rows:
+        if asc_rows and _series_visible(asc_marker, voltage_linestyle):
             ax_main.plot(
                 [r["Corriente"] for r in asc_rows],
                 [r["Voltaje"] for r in asc_rows],
-                marker="o",
+                color=PC_PLOT_COLORS["asc_voltage"],
+                marker=asc_marker_mpl,
+                linestyle=voltage_ls_mpl,
                 label="Asc V",
             )
-        if dsc_rows:
+        if dsc_rows and _series_visible(dsc_marker, voltage_linestyle):
             ax_main.plot(
                 [r["Corriente"] for r in dsc_rows],
                 [r["Voltaje"] for r in dsc_rows],
-                marker="s",
+                color=PC_PLOT_COLORS["dsc_voltage"],
+                marker=dsc_marker_mpl,
+                linestyle=voltage_ls_mpl,
                 label="Dsc V",
             )
         ax_main.set_ylabel("Voltaje (V)")
 
+    # Temperature on second axis if needed
     if show_temperature:
         target_ax = ax_temp if ax_temp is not None else ax_main
-        if asc_rows:
+
+        if asc_rows and _series_visible(asc_marker, temperature_linestyle):
             target_ax.plot(
                 [r["Corriente"] for r in asc_rows],
                 [r["Temperatura"] for r in asc_rows],
-                marker="o",
-                linestyle="--",
+                color=PC_PLOT_COLORS["asc_temperature"],
+                marker=asc_marker_mpl,
+                linestyle=temp_ls_mpl,
                 label="Asc T",
             )
-        if dsc_rows:
+        if dsc_rows and _series_visible(dsc_marker, temperature_linestyle):
             target_ax.plot(
                 [r["Corriente"] for r in dsc_rows],
                 [r["Temperatura"] for r in dsc_rows],
-                marker="s",
-                linestyle="--",
+                color=PC_PLOT_COLORS["dsc_temperature"],
+                marker=dsc_marker_mpl,
+                linestyle=temp_ls_mpl,
                 label="Dsc T",
             )
         target_ax.set_ylabel("Temperatura (°C)")
+
+    # If nothing ended up being drawable, return no plot
+    handles, labels = ax_main.get_legend_handles_labels()
+    if ax_temp is not None:
+        h2, l2 = ax_temp.get_legend_handles_labels()
+        handles += h2
+        labels += l2
+
+    if not handles:
+        fig.clear()
+        return False
 
     ax_main.set_xlabel("Corriente (A)")
     ax_main.set_title(
@@ -339,16 +381,18 @@ def draw_v_vs_i_on_figure(
         if t_min is not None or t_max is not None:
             target_ax.set_ylim(bottom=t_min, top=t_max)
 
-    handles, labels = ax_main.get_legend_handles_labels()
-    if ax_temp is not None:
-        h2, l2 = ax_temp.get_legend_handles_labels()
-        handles += h2
-        labels += l2
-    if handles:
-        ax_main.legend(handles, labels)
-
+    ax_main.legend(handles, labels)
     fig.tight_layout()
     return True
+
+def _mpl_marker(value: str) -> str:
+    return "None" if value == "none" else value
+
+
+def _mpl_linestyle(value: str) -> str:
+    return "None" if value == "none" else value
+
+
 # ---------------------------------------------------------------------------
 # File discovery and grouping
 # ---------------------------------------------------------------------------
@@ -822,6 +866,11 @@ def open_v_vs_i_window(input_dir: Path) -> None:
 
     status_var = tk.StringVar(value="Listo.")
 
+    asc_marker_var = tk.StringVar(value="^")
+    dsc_marker_var = tk.StringVar(value="v")
+    voltage_line_var = tk.StringVar(value="-")
+    temperature_line_var = tk.StringVar(value="--")
+
     asc_var = tk.BooleanVar(value=True)
     dsc_var = tk.BooleanVar(value=True)
     voltage_var = tk.BooleanVar(value=True)
@@ -847,6 +896,10 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         "v_max": default_limits["v_max"],
         "t_min": default_limits["t_min"],
         "t_max": default_limits["t_max"],
+        "asc_marker": "^",
+        "dsc_marker": "v",
+        "voltage_line": "-",
+        "temperature_line": "--",
     }
 
     ttk.Label(
@@ -857,6 +910,54 @@ def open_v_vs_i_window(input_dir: Path) -> None:
 
     series_box = ttk.LabelFrame(controls_frame, text="Series")
     series_box.pack(fill="x", pady=5)
+
+    style_box = ttk.LabelFrame(controls_frame, text="Estilo")
+    style_box.pack(fill="x", pady=5)
+
+    ttk.Label(style_box, text="Asc marker").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    asc_marker_combo = ttk.Combobox(
+        style_box,
+        textvariable=asc_marker_var,
+        values=MARKER_OPTIONS,
+        state="readonly",
+        width=10,
+    )
+    asc_marker_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(style_box, text="Dsc marker").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    dsc_marker_combo = ttk.Combobox(
+        style_box,
+        textvariable=dsc_marker_var,
+        values=MARKER_OPTIONS,
+        state="readonly",
+        width=10,
+    )
+    dsc_marker_combo.grid(row=1, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(style_box, text="Voltaje line").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    voltage_line_combo = ttk.Combobox(
+        style_box,
+        textvariable=voltage_line_var,
+        values=LINESTYLE_OPTIONS,
+        state="readonly",
+        width=10,
+    )
+    voltage_line_combo.grid(row=2, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(style_box, text="Temperatura line").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    temperature_line_combo = ttk.Combobox(
+        style_box,
+        textvariable=temperature_line_var,
+        values=LINESTYLE_OPTIONS,
+        state="readonly",
+        width=10,
+    )
+    temperature_line_combo.grid(row=3, column=1, sticky="w", padx=8, pady=3)
+
+    asc_marker_combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    dsc_marker_combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    voltage_line_combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    temperature_line_combo.bind("<<ComboboxSelected>>", _schedule_plot)
 
     point_box = ttk.LabelFrame(controls_frame, text="Punto dentro de cada step")
     point_box.pack(fill="x", pady=5)
@@ -886,6 +987,10 @@ def open_v_vs_i_window(input_dir: Path) -> None:
                 bundle=bundle,
                 show_asc=asc_var.get(),
                 show_dsc=dsc_var.get(),
+                asc_marker=asc_marker_var.get(),
+                dsc_marker=dsc_marker_var.get(),
+                voltage_linestyle=voltage_line_var.get(),
+                temperature_linestyle=temperature_line_var.get(),
                 show_voltage=voltage_var.get(),
                 show_temperature=temperature_var.get(),
                 point_fraction=point_fraction_var.get(),
@@ -925,6 +1030,10 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         try:
             asc_var.set(initial_state["asc"])
             dsc_var.set(initial_state["dsc"])
+            asc_marker_var.set(initial_state["asc_marker"])
+            dsc_marker_var.set(initial_state["dsc_marker"])
+            voltage_line_var.set(initial_state["voltage_line"])
+            temperature_line_var.set(initial_state["temperature_line"])
             voltage_var.set(initial_state["voltage"])
             temperature_var.set(initial_state["temperature"])
             point_fraction_var.set(initial_state["fraction"])
