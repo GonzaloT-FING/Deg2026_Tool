@@ -2491,43 +2491,56 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 # Folder export
 # ---------------------------------------------------------------------------
 
-def export_folder(
-    input_dir: Path,
-    output_dir: Path,
-    selected_options: Iterable[str] | None = None,
-) -> list[Path]:
-    """Find all EISPOT .DTA files in input_dir and export them to output_dir.
-
-    Returns the list of created .xlsx files.
-    Plot files are also created as side effects when selected_options is provided.
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    dta_files = sorted(
+def find_eis_files(input_dir: Path) -> list[Path]:
+    return sorted(
         [
             p for p in input_dir.iterdir()
             if p.is_file() and p.suffix.lower() == ".dta" and "EISPOT" in p.name
         ]
     )
 
+def export_folder(input_dir: Path, output_dir: Path) -> list[Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    dta_files = find_eis_files(input_dir)
     if not dta_files:
         return []
 
     exported_xlsx: list[Path] = []
-    all_figs: list[tuple[str, Figure]] = []
 
     for dta_file in dta_files:
         parsed = parse_gamry_dta(dta_file)
-
         xlsx_path = output_dir / f"{dta_file.stem}.xlsx"
         export_to_xlsx(parsed, xlsx_path)
         exported_xlsx.append(xlsx_path)
 
-        # NEW: create figures instead of exporting .svg
-        all_figs.extend(build_figures(parsed, dta_file.stem, selected_options))
-    
-    # NEW: show one window with tabs for all figures
-    show_figures_tk(all_figs, window_title="EIS plots")
+    return exported_xlsx
+
+def run_pipeline(
+    input_dir: Path,
+    output_dir: Path,
+    selected_options: Iterable[str] | None = None,
+) -> list[Path]:
+    input_dir = Path(input_dir)
+    output_dir = Path(output_dir)
+
+    exported_xlsx = export_folder(input_dir, output_dir)
+
+    if not exported_xlsx:
+        return []
+
+    chosen = set(selected_options or [])
+    if not chosen:
+        return exported_xlsx
+
+    all_figs: list[tuple[str, Figure]] = []
+
+    for dta_file in find_eis_files(input_dir):
+        parsed = parse_gamry_dta(dta_file)
+        all_figs.extend(build_figures(parsed, dta_file.stem, chosen))
+
+    if all_figs:
+        show_figures_tk(all_figs, window_title="EIS plots")
 
     return exported_xlsx
 

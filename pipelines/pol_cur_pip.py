@@ -527,19 +527,7 @@ def export_curve_bundle(bundle: CurveBundle, out_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Public entry point (GUI-compatible)
 # ---------------------------------------------------------------------------
-def export_folder(
-    input_dir: Path,
-    output_dir: Path,
-    selected_options: list[str] | None = None,
-) -> list[Path]:
-    """Export one .xlsx per detected polarization-curve bundle.
-
-    The selected_options argument is intentionally accepted so gui.py can call
-    this function in the same style it already uses for EIS.
-    This first version does not use the options yet.
-    """
-    del selected_options  # intentionally unused for now
-
+def export_folder(input_dir: Path, output_dir: Path) -> list[Path]:
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
 
@@ -553,6 +541,38 @@ def export_folder(
         exported_files.append(out_path)
 
     return exported_files
+
+def run_pipeline(
+    input_dir: Path,
+    output_dir: Path,
+    selected_options: list[str] | None = None,
+) -> list[Path]:
+    input_dir = Path(input_dir)
+    output_dir = Path(output_dir)
+
+    exported_files = export_folder(input_dir, output_dir)
+    if not exported_files:
+        return []
+
+    chosen = set(selected_options or [])
+
+    if "V vs I" in chosen:
+        open_v_vs_i_window(input_dir)
+
+    if "Series by time" in chosen:
+        open_series_by_time_window(input_dir)
+
+    if "dV/dI" in chosen:
+        open_dv_di_window(input_dir)
+
+    if "Step Stability" in chosen:
+        open_step_stability_window(input_dir)
+
+    return exported_files
+
+def open_series_by_time_window(input_dir: Path) -> None:
+    import tkinter.messagebox as mb
+    mb.showinfo("PC", "Series by time aún no está implementado.")
 
 
 if __name__ == "__main__":

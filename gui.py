@@ -1,7 +1,9 @@
 import tkinter as tk
 import pathlib
-from pipelines.eis_pip import export_folder
-from pipelines.pol_cur_pip import export_folder as export_pc_folder
+#from pipelines.eis_pip import export_folder
+#from pipelines.pol_cur_pip import export_folder as export_pc_folder
+from pipelines.eis_pip import run_pipeline as run_eis_pipeline
+from pipelines.pol_cur_pip import run_pipeline as run_pc_pipeline
 from tkinter import filedialog, ttk
 
 
@@ -14,6 +16,16 @@ PIPELINE_OPTIONS = {
     "Deg": ["V vs t", "I vs t", "T vs t", "dV/dt", "dV/dt final", "Trend", "Degradation rate"],
     "Activacion": ["V vs t", "I vs t", "T vs t", "dV/dt", "dV/dt final", "Trend", "Degradation rate"],
     "Análisis multiple": ["EIS", "CV", "PC", "OCP", "Deg"]
+}
+
+RUNNERS = {
+    "EIS": run_eis_pipeline,
+    "PC": run_pc_pipeline,
+}
+
+NOT_FOUND_MSG = {
+    "EIS": "No se encontraron archivos .DTA con 'EISPOT' en la carpeta de entrada.",
+    "PC": "No se encontraron archivos .DTA con 'Curva_Polarizacion_' en la carpeta de entrada.",
 }
 
 
@@ -172,48 +184,32 @@ class GamryProtocolApp:
             else:
                 self.set_status(f"{selected_pipeline}: no se seleccionaron opciones.")
 
-            # Run the EIS export only for the EIS pipeline
-            if selected_pipeline == "EIS":
-                try:
-                    input_dir = pathlib.Path(self.input_entry.get().strip())
-                    output_dir = pathlib.Path(self.output_entry.get().strip())
+            runner = RUNNERS.get(selected_pipeline)
+            if runner is None:
+                self.set_status(f"{selected_pipeline}: pipeline no implementado aún.")
+                return
 
-                    exported_files = export_folder(input_dir, output_dir, selected)
+            try:
+                input_dir = pathlib.Path(self.input_entry.get().strip())
+                output_dir = pathlib.Path(self.output_entry.get().strip())
 
-                    if exported_files:
-                        self.set_status(
-                            f"EIS exportado: {len(exported_files)} archivo(s) .xlsx creado(s). "
-                            f"Se generaron también los gráficos seleccionados."
-                        )
-                    else:
-                        self.set_status("No se encontraron archivos .DTA con 'EISPOT' en la carpeta de entrada.")
+                exported_files = runner(input_dir, output_dir, selected)
 
-                except Exception as e:
-                    import traceback
-                    print(traceback.format_exc())
-                    self.set_status(f"Error en EIS: {type(e).__name__}: {e}")
+                if exported_files:
+                    self.set_status(
+                        f"{selected_pipeline} ejecutado: {len(exported_files)} archivo(s) .xlsx creado(s)."
+                    )
+                else:
+                    self.set_status(NOT_FOUND_MSG.get(selected_pipeline, "No se encontraron archivos."))
 
-                self.options_window.destroy()
-                self.options_window = None
-            elif selected_pipeline == "PC":
-                try:
-                    input_dir = pathlib.Path(self.input_entry.get().strip())
-                    output_dir = pathlib.Path(self.output_entry.get().strip())
-                    exported_files = export_pc_folder(input_dir, output_dir, selected)
-
-                    if exported_files:
-                        self.set_status(
-                            f"PC exportado: {len(exported_files)} archivo(s) .xlsx creado(s)."
-                        )
-                    else:
-                        self.set_status(
-                            "No se encontraron archivos .DTA con 'Curva_Polarizacion_' en la carpeta de entrada."
-                        )
-
-                except Exception as e:
-                    import traceback
-                    print(traceback.format_exc())
-                    self.set_status(f"Error en PC: {type(e).__name__}: {e}")
+            except Exception as e:
+                import traceback
+                print(traceback.format_exc())
+                self.set_status(f"Error en {selected_pipeline}: {type(e).__name__}: {e}")
+            finally:
+                if self.options_window is not None and self.options_window.winfo_exists():
+                    self.options_window.destroy()
+                    self.options_window = None
 
         ttk.Button(
             self.options_window,
