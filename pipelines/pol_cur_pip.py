@@ -810,6 +810,16 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     canvas_frame = ttk.Frame(plot_outer)
     canvas_frame.pack(side="top", fill="both", expand=True)
 
+    fig = Figure(figsize=(9, 5.5), dpi=100)
+
+    canvas = FigureCanvasTkAgg(fig, master=canvas_frame)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    toolbar = NavigationToolbar2Tk(canvas, toolbar_frame, pack_toolbar=False)
+    toolbar.update()
+    toolbar.pack(side="left", fill="x")
+
     status_var = tk.StringVar(value="Listo.")
 
     asc_var = tk.BooleanVar(value=True)
@@ -854,17 +864,8 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
     limits_box.pack(fill="x", pady=5)
 
-    canvas_ref = {"canvas": None, "toolbar": None}
     plot_job = {"id": None}
     suspend_events = {"value": False}
-
-    def _clear_canvas():
-        if canvas_ref["toolbar"] is not None:
-            canvas_ref["toolbar"].destroy()
-            canvas_ref["toolbar"] = None
-        if canvas_ref["canvas"] is not None:
-            canvas_ref["canvas"].get_tk_widget().destroy()
-            canvas_ref["canvas"] = None
 
     def _collect_limits():
         return dict(
@@ -908,7 +909,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
             return
         if plot_job["id"] is not None:
             win.after_cancel(plot_job["id"])
-        plot_job["id"] = win.after(250, _plot)
+        plot_job["id"] = win.after(50, _plot)
 
     def _update_point_label(_event=None):
         point_value_label.config(text=f"{point_fraction_var.get():.2f}")
@@ -987,6 +988,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         entry = ttk.Entry(limits_box, textvariable=var, width=12)
         entry.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
         entry.bind("<KP_Enter>", _schedule_plot)
+        entry.bind("<FocusOut>", _schedule_plot)
         entry.bind("<Return>", _schedule_plot)
         entry_widgets.append(entry)
 
