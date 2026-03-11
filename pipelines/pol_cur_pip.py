@@ -21,6 +21,8 @@ from pathlib import Path
 from collections import defaultdict
 import re
 
+from math import floor, ceil
+
 import tkinter as tk
 from tkinter import ttk, messagebox
 from matplotlib.figure import Figure
@@ -391,6 +393,73 @@ def _mpl_marker(value: str) -> str:
 
 def _mpl_linestyle(value: str) -> str:
     return "None" if value == "none" else value
+
+def compute_autofit_v_vs_i_limits(
+    bundle: CurveBundle,
+    show_asc: bool,
+    show_dsc: bool,
+    show_voltage: bool,
+    show_temperature: bool,
+    point_fraction: float,
+) -> dict[str, str]:
+    if not (show_asc or show_dsc):
+        raise ValueError("Debe seleccionar Asc y/o Dsc para usar Autofit.")
+
+    if not (show_voltage or show_temperature):
+        raise ValueError("Debe seleccionar Voltaje y/o Temperatura para usar Autofit.")
+
+    curve_data = build_curve_bundle_data(bundle)
+
+    asc_rows = (
+        select_fractional_point_per_step(
+            curve_data["asc_rows"],
+            curve_data["asc_tol"],
+            point_fraction,
+        )
+        if show_asc and curve_data["asc_rows"]
+        else []
+    )
+
+    dsc_rows = (
+        select_fractional_point_per_step(
+            curve_data["dsc_rows"],
+            curve_data["dsc_tol"],
+            point_fraction,
+        )
+        if show_dsc and curve_data["dsc_rows"]
+        else []
+    )
+
+    rows = asc_rows + dsc_rows
+    if not rows:
+        raise ValueError("No hay datos válidos para ajustar los ejes.")
+
+    out = {
+        "x_min": "0",
+        "x_max": "",
+        "v_min": "",
+        "v_max": "",
+        "t_min": "",
+        "t_max": "",
+    }
+
+    currents = [r["Corriente"] for r in rows]
+    if currents:
+        out["x_max"] = str(int(ceil(max(currents))))
+
+    if show_voltage:
+        voltages = [r["Voltaje"] for r in rows]
+        if voltages:
+            out["v_min"] = str(int(floor(min(voltages))))
+            out["v_max"] = str(int(ceil(max(voltages))))
+
+    if show_temperature:
+        temps = [r["Temperatura"] for r in rows]
+        if temps:
+            out["t_min"] = str(int(floor(min(temps))))
+            out["t_max"] = str(int(ceil(max(temps))))
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1020,6 +1089,38 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     def _on_scale_release(_event=None):
         _schedule_plot()
 
+    def _autofit():
+        try:
+            fitted = compute_autofit_v_vs_i_limits(
+                bundle=bundle,
+                show_asc=asc_var.get(),
+                show_dsc=dsc_var.get(),
+                show_voltage=voltage_var.get(),
+                show_temperature=temperature_var.get(),
+                point_fraction=point_fraction_var.get(),
+            )
+        except ValueError as exc:
+            status_var.set(f"Error: {exc}")
+            return
+
+        suspend_events["value"] = True
+        try:
+            x_min_var.set(fitted["x_min"])
+            x_max_var.set(fitted["x_max"])
+
+            if fitted["v_min"] != "" or fitted["v_max"] != "":
+                v_min_var.set(fitted["v_min"])
+                v_max_var.set(fitted["v_max"])
+
+            if fitted["t_min"] != "" or fitted["t_max"] != "":
+                t_min_var.set(fitted["t_min"])
+                t_max_var.set(fitted["t_max"])
+        finally:
+            suspend_events["value"] = False
+
+        _plot()
+        status_var.set("Autofit aplicado.")
+
     def _reset():
         suspend_events["value"] = True
         try:
@@ -1112,7 +1213,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     buttons_frame.pack(fill="x", pady=(5, 0))
 
     ttk.Button(buttons_frame, text="Reset", command=_reset).pack(side="left", padx=(0, 6))
-    ttk.Button(buttons_frame, text="Cerrar", command=win.destroy).pack(side="left")
+    ttk.Button(buttons_frame, text="Autofit", command=_autofit).pack(side="left")
 
     _update_point_label()
     _plot()
