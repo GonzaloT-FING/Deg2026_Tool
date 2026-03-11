@@ -231,6 +231,124 @@ def compute_default_v_vs_i_limits(bundle: CurveBundle) -> dict[str, str]:
         "t_max": _format_limit_value(t_max),
     }
 
+def draw_v_vs_i_on_figure(
+    fig: Figure,
+    bundle: CurveBundle,
+    show_asc: bool,
+    show_dsc: bool,
+    show_voltage: bool,
+    show_temperature: bool,
+    point_fraction: float,
+    x_min: float | None = None,
+    x_max: float | None = None,
+    v_min: float | None = None,
+    v_max: float | None = None,
+    t_min: float | None = None,
+    t_max: float | None = None,
+) -> bool:
+    fig.clear()
+
+    if not (show_asc or show_dsc):
+        return False
+    if not (show_voltage or show_temperature):
+        return False
+
+    curve_data = build_curve_bundle_data(bundle)
+
+    asc_rows = (
+        select_fractional_point_per_step(
+            curve_data["asc_rows"],
+            curve_data["asc_tol"],
+            point_fraction,
+        )
+        if show_asc and curve_data["asc_rows"]
+        else []
+    )
+
+    dsc_rows = (
+        select_fractional_point_per_step(
+            curve_data["dsc_rows"],
+            curve_data["dsc_tol"],
+            point_fraction,
+        )
+        if show_dsc and curve_data["dsc_rows"]
+        else []
+    )
+
+    if not asc_rows and not dsc_rows:
+        return False
+
+    ax_main = fig.add_subplot(111)
+    ax_temp = None
+
+    if show_voltage and show_temperature:
+        ax_temp = ax_main.twinx()
+
+    if show_voltage:
+        if asc_rows:
+            ax_main.plot(
+                [r["Corriente"] for r in asc_rows],
+                [r["Voltaje"] for r in asc_rows],
+                marker="o",
+                label="Asc V",
+            )
+        if dsc_rows:
+            ax_main.plot(
+                [r["Corriente"] for r in dsc_rows],
+                [r["Voltaje"] for r in dsc_rows],
+                marker="s",
+                label="Dsc V",
+            )
+        ax_main.set_ylabel("Voltaje (V)")
+
+    if show_temperature:
+        target_ax = ax_temp if ax_temp is not None else ax_main
+        if asc_rows:
+            target_ax.plot(
+                [r["Corriente"] for r in asc_rows],
+                [r["Temperatura"] for r in asc_rows],
+                marker="o",
+                linestyle="--",
+                label="Asc T",
+            )
+        if dsc_rows:
+            target_ax.plot(
+                [r["Corriente"] for r in dsc_rows],
+                [r["Temperatura"] for r in dsc_rows],
+                marker="s",
+                linestyle="--",
+                label="Dsc T",
+            )
+        target_ax.set_ylabel("Temperatura (°C)")
+
+    ax_main.set_xlabel("Corriente (A)")
+    ax_main.set_title(
+        f"V vs I - {bundle.description} #{bundle.curve_id} "
+        f"(punto step = {point_fraction:.2f})"
+    )
+    ax_main.grid(True)
+
+    if x_min is not None or x_max is not None:
+        ax_main.set_xlim(left=x_min, right=x_max)
+
+    if show_voltage and (v_min is not None or v_max is not None):
+        ax_main.set_ylim(bottom=v_min, top=v_max)
+
+    if show_temperature:
+        target_ax = ax_temp if ax_temp is not None else ax_main
+        if t_min is not None or t_max is not None:
+            target_ax.set_ylim(bottom=t_min, top=t_max)
+
+    handles, labels = ax_main.get_legend_handles_labels()
+    if ax_temp is not None:
+        h2, l2 = ax_temp.get_legend_handles_labels()
+        handles += h2
+        labels += l2
+    if handles:
+        ax_main.legend(handles, labels)
+
+    fig.tight_layout()
+    return True
 # ---------------------------------------------------------------------------
 # File discovery and grouping
 # ---------------------------------------------------------------------------
@@ -585,8 +703,13 @@ def build_v_vs_i_figure(
         return None
 
     fig = Figure(figsize=(9, 5.5), dpi=100)
-    ax_main = fig.add_subplot(111)
-    ax_temp = None
+    canvas = FigureCanvasTkAgg(fig, master=canvas_frame)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    toolbar = NavigationToolbar2Tk(canvas, toolbar_frame, pack_toolbar=False)
+    toolbar.update()
+    toolbar.pack(side="left", fill="x")
 
     # If both are requested, use dual axis.
     # If only one is requested, use the main axis only.
@@ -757,7 +880,8 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         plot_job["id"] = None
 
         try:
-            fig = build_v_vs_i_figure(
+            has_plot = draw_v_vs_i_on_figure(
+                fig=fig,
                 bundle=bundle,
                 show_asc=asc_var.get(),
                 show_dsc=dsc_var.get(),
@@ -770,23 +894,13 @@ def open_v_vs_i_window(input_dir: Path) -> None:
             status_var.set(f"Error: {exc}")
             return
 
-        if fig is None:
-            _clear_canvas()
+        if not has_plot:
+            fig.clear()
+            canvas.draw_idle()
             status_var.set("No se muestra gráfico: seleccione al menos una dirección y una magnitud.")
             return
 
-        _clear_canvas()
-
-        canvas = FigureCanvasTkAgg(fig, master=canvas_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
-
-        toolbar = NavigationToolbar2Tk(canvas, toolbar_frame, pack_toolbar=False)
-        toolbar.update()
-        toolbar.pack(side="left", fill="x")
-
-        canvas_ref["canvas"] = canvas
-        canvas_ref["toolbar"] = toolbar
+        canvas.draw_idle()
         status_var.set("Gráfico actualizado.")
 
     def _schedule_plot(*_args):
@@ -872,8 +986,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
         entry = ttk.Entry(limits_box, textvariable=var, width=12)
         entry.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
-        entry.bind("<KeyRelease>", _schedule_plot)
-        entry.bind("<FocusOut>", _schedule_plot)
+        entry.bind("<KP_Enter>", _schedule_plot)
         entry.bind("<Return>", _schedule_plot)
         entry_widgets.append(entry)
 
