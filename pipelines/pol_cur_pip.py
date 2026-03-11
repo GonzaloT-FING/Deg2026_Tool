@@ -954,11 +954,6 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     )
     temperature_line_combo.grid(row=3, column=1, sticky="w", padx=8, pady=3)
 
-    asc_marker_combo.bind("<<ComboboxSelected>>", _schedule_plot)
-    dsc_marker_combo.bind("<<ComboboxSelected>>", _schedule_plot)
-    voltage_line_combo.bind("<<ComboboxSelected>>", _schedule_plot)
-    temperature_line_combo.bind("<<ComboboxSelected>>", _schedule_plot)
-
     point_box = ttk.LabelFrame(controls_frame, text="Punto dentro de cada step")
     point_box.pack(fill="x", pady=5)
 
@@ -977,7 +972,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
             t_min=_optional_float(t_min_var.get()),
             t_max=_optional_float(t_max_var.get()),
         )
-
+    
     def _plot():
         plot_job["id"] = None
 
@@ -1050,6 +1045,11 @@ def open_v_vs_i_window(input_dir: Path) -> None:
 
         _plot()
         status_var.set("Valores restaurados.")
+
+    asc_marker_combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    dsc_marker_combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    voltage_line_combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    temperature_line_combo.bind("<<ComboboxSelected>>", _schedule_plot)
 
     ttk.Checkbutton(series_box, text="Asc", variable=asc_var, command=_schedule_plot).pack(
         anchor="w", padx=8, pady=2
