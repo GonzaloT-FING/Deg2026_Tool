@@ -1105,13 +1105,14 @@ def open_v_vs_i_window(input_dir: Path) -> None:
             return
         if plot_job["id"] is not None:
             win.after_cancel(plot_job["id"])
-        plot_job["id"] = win.after(50, _plot)
+        plot_job["id"] = win.after(20, _plot)
 
     def _update_point_label(_event=None):
         point_value_label.config(text=f"{point_fraction_var.get():.2f}")
 
     def _on_scale_move(_value=None):
         _update_point_label()
+        _plot()
 
     def _on_scale_release(_event=None):
         _schedule_plot()
@@ -1192,6 +1193,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
 
     point_value_label = ttk.Label(point_box, text="1.00")
     point_value_label.pack(anchor="e", padx=8, pady=(4, 0))
+    
 
     point_scale = ttk.Scale(
         point_box,
@@ -1202,7 +1204,6 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         command=_on_scale_move,
     )
     point_scale.pack(fill="x", padx=8, pady=6)
-    point_scale.bind("<ButtonRelease-1>", _on_scale_release)
 
     ttk.Label(point_box, text="0 = primer punto, 1 = último punto").pack(
         anchor="w", padx=8, pady=(0, 6)
