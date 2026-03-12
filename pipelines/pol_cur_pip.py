@@ -66,9 +66,9 @@ MARKER_OPTIONS = ["none", "^", "v", "o", "s", "d", "x", "+"]
 LINESTYLE_OPTIONS = ["none", "-", "--", ":", "-."]
 
 PC_PLOT_COLORS = {
-    "asc_voltage": "#4460db",
+    "asc_voltage": "#06a8c2",
     "dsc_voltage": "#2b3d8c",
-    "asc_temperature": "#e04c41",
+    "asc_temperature": "#cf9a32",
     "dsc_temperature": "#ab3030",
 }
 
@@ -933,8 +933,6 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     x_max_var = tk.StringVar(value=default_limits["x_max"])
     v_min_var = tk.StringVar(value=default_limits["v_min"])
     v_max_var = tk.StringVar(value=default_limits["v_max"])
-    t_min_var = tk.StringVar(value=default_limits["t_min"])
-    t_max_var = tk.StringVar(value=default_limits["t_max"])
 
     initial_state = {
         "asc": True,
