@@ -394,6 +394,7 @@ def draw_v_vs_i_on_figure(
         apply_temperature_axis_scaling(
             ax_temp=ax_temp,
             temp_values=temp_values,
+            tick_count=tick_count,
         )
 
     
@@ -968,7 +969,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     v_min_var = tk.StringVar(value=default_limits["v_min"])
     v_max_var = tk.StringVar(value=default_limits["v_max"])
 
-    tick_count_var = tk.IntVar(value=5)
+    tick_count_var = tk.IntVar(value=6)
 
     initial_state = {
         "asc": True,
@@ -1037,6 +1038,17 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         state="readonly",
         width=10,
     )
+
+    ttk.Label(style_box, text="Ticks").grid(row=4, column=0, sticky="w", padx=8, pady=3)
+
+    tick_spin = tk.Spinbox(
+        style_box,
+        from_=2,
+        to=10,
+        textvariable=tick_count_var,
+        width=8,
+    )
+    tick_spin.grid(row=4, column=1, sticky="w", padx=8, pady=3)
     temperature_line_combo.grid(row=3, column=1, sticky="w", padx=8, pady=3)
 
     point_box = ttk.LabelFrame(controls_frame, text="Punto dentro de cada step")
@@ -1161,6 +1173,9 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     dsc_marker_combo.bind("<<ComboboxSelected>>", _schedule_plot)
     voltage_line_combo.bind("<<ComboboxSelected>>", _schedule_plot)
     temperature_line_combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    tick_spin.bind("<Return>", _schedule_plot)
+    tick_spin.bind("<FocusOut>", _schedule_plot)
+    tick_spin.config(command=_schedule_plot)
 
     ttk.Checkbutton(series_box, text="Asc", variable=asc_var, command=_schedule_plot).pack(
         anchor="w", padx=8, pady=2
