@@ -28,7 +28,8 @@ from tkinter import ttk, messagebox
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-from matplotlib.ticker import LinearLocator
+from matplotlib.ticker import LinearLocator, MaxNLocator, FormatStrFormatter, StrMethodFormatter
+from math import floor, ceil
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
@@ -255,6 +256,7 @@ def draw_v_vs_i_on_figure(
     dsc_marker: str,
     voltage_linestyle: str,
     temperature_linestyle: str,
+    tick_count: int = 6,
     x_min: float | None = None,
     x_max: float | None = None,
     v_min: float | None = None,
@@ -294,7 +296,7 @@ def draw_v_vs_i_on_figure(
 
     ax_main = fig.add_subplot(111)
     ax_temp = None
-
+    
     if show_voltage and show_temperature:
         ax_temp = ax_main.twinx()
 
@@ -374,17 +376,27 @@ def draw_v_vs_i_on_figure(
     if x_min is not None or x_max is not None:
         ax_main.set_xlim(left=x_min, right=x_max)
 
+    # Voltage manual limits, if provided
     if show_voltage and (v_min is not None or v_max is not None):
         ax_main.set_ylim(bottom=v_min, top=v_max)
 
-        # Force ticks to include the exact voltage limits
-        tick_count = 6
+        # Force left axis ticks to include exact bounds
         ax_main.yaxis.set_major_locator(LinearLocator(tick_count))
 
+    # Temperature autoscale, but rounded and cleaner
+    # Temperature autoscale with rounded limits and evenly spaced ticks
     if ax_temp is not None:
-        left_tick_count = len(ax_main.yaxis.get_majorticklocs())
-        if left_tick_count >= 2:
-            ax_temp.yaxis.set_major_locator(LinearLocator(left_tick_count))
+        temp_lines = ax_temp.get_lines()
+        temp_values = []
+        for line in temp_lines:
+            temp_values.extend(line.get_ydata())
+
+        apply_temperature_axis_scaling(
+            ax_temp=ax_temp,
+            temp_values=temp_values,
+        )
+
+    
 
     ax_main.legend(handles, labels)
     fig.tight_layout()
@@ -456,6 +468,21 @@ def compute_autofit_v_vs_i_limits(
 
     return out
 
+def apply_temperature_axis_scaling(ax_temp, temp_values: list[float], tick_count: int) -> None:
+    if not temp_values:
+        return
+
+    t_lo = floor(min(temp_values))
+    t_hi = ceil(max(temp_values))
+
+    if t_lo == t_hi:
+        t_hi = t_lo + 1
+
+    tick_count = max(2, int(tick_count))
+
+    ax_temp.set_ylim(t_lo, t_hi)
+    ax_temp.yaxis.set_major_locator(LinearLocator(tick_count))
+    ax_temp.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
 # ---------------------------------------------------------------------------
 # File discovery and grouping
@@ -941,6 +968,8 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     v_min_var = tk.StringVar(value=default_limits["v_min"])
     v_max_var = tk.StringVar(value=default_limits["v_max"])
 
+    tick_count_var = tk.IntVar(value=5)
+
     initial_state = {
         "asc": True,
         "dsc": True,
@@ -955,6 +984,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         "dsc_marker": "v",
         "voltage_line": "-",
         "temperature_line": "--",
+        "tick_count": 6,
     }
 
     ttk.Label(
@@ -1042,6 +1072,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
                 show_voltage=voltage_var.get(),
                 show_temperature=temperature_var.get(),
                 point_fraction=point_fraction_var.get(),
+                tick_count=tick_count_var.get(),
                 **_collect_limits(),
             )
         except ValueError as exc:
@@ -1113,6 +1144,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
             voltage_var.set(initial_state["voltage"])
             temperature_var.set(initial_state["temperature"])
             point_fraction_var.set(initial_state["fraction"])
+            tick_count_var.set(initial_state["tick_count"])
 
             x_min_var.set(initial_state["x_min"])
             x_max_var.set(initial_state["x_max"])
