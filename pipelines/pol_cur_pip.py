@@ -225,22 +225,20 @@ def compute_default_v_vs_i_limits(bundle: CurveBundle) -> dict[str, str]:
     rows = asc_rows + dsc_rows
     if not rows:
         return {
-            "x_min": "", "x_max": "",
-            "v_min": "", "v_max": "",
-            "t_min": "", "t_max": "",
+            "x_min": "",
+            "x_max": "",
+            "v_min": "",
+            "v_max": "",
         }
 
     x_min, x_max = _padded_limits([r["Corriente"] for r in rows])
     v_min, v_max = _padded_limits([r["Voltaje"] for r in rows])
-    t_min, t_max = _padded_limits([r["Temperatura"] for r in rows])
 
     return {
         "x_min": _format_limit_value(x_min),
         "x_max": _format_limit_value(x_max),
         "v_min": _format_limit_value(v_min),
         "v_max": _format_limit_value(v_max),
-        "t_min": _format_limit_value(t_min),
-        "t_max": _format_limit_value(t_max),
     }
 
 def draw_v_vs_i_on_figure(
@@ -259,8 +257,6 @@ def draw_v_vs_i_on_figure(
     x_max: float | None = None,
     v_min: float | None = None,
     v_max: float | None = None,
-    t_min: float | None = None,
-    t_max: float | None = None,
 ) -> bool:
     fig.clear()
 
@@ -439,8 +435,6 @@ def compute_autofit_v_vs_i_limits(
         "x_max": "",
         "v_min": "",
         "v_max": "",
-        "t_min": "",
-        "t_max": "",
     }
 
     currents = [r["Corriente"] for r in rows]
@@ -452,12 +446,6 @@ def compute_autofit_v_vs_i_limits(
         if voltages:
             out["v_min"] = str(int(floor(min(voltages))))
             out["v_max"] = str(int(ceil(max(voltages))))
-
-    if show_temperature:
-        temps = [r["Temperatura"] for r in rows]
-        if temps:
-            out["t_min"] = str(int(floor(min(temps))))
-            out["t_max"] = str(int(ceil(max(temps))))
 
     return out
 
@@ -882,11 +870,6 @@ def build_v_vs_i_figure(
     if show_voltage and (v_min is not None or v_max is not None):
         ax_main.set_ylim(bottom=v_min, top=v_max)
 
-    if show_temperature:
-        target_ax = ax_temp if ax_temp is not None else ax_main
-        if t_min is not None or t_max is not None:
-            target_ax.set_ylim(bottom=t_min, top=t_max)
-
     handles, labels = ax_main.get_legend_handles_labels()
     if ax_temp is not None:
         h2, l2 = ax_temp.get_legend_handles_labels()
@@ -963,8 +946,6 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         "x_max": default_limits["x_max"],
         "v_min": default_limits["v_min"],
         "v_max": default_limits["v_max"],
-        "t_min": default_limits["t_min"],
-        "t_max": default_limits["t_max"],
         "asc_marker": "^",
         "dsc_marker": "v",
         "voltage_line": "-",
@@ -1038,8 +1019,6 @@ def open_v_vs_i_window(input_dir: Path) -> None:
             x_max=_optional_float(x_max_var.get()),
             v_min=_optional_float(v_min_var.get()),
             v_max=_optional_float(v_max_var.get()),
-            t_min=_optional_float(t_min_var.get()),
-            t_max=_optional_float(t_max_var.get()),
         )
     
     def _plot():
@@ -1111,10 +1090,6 @@ def open_v_vs_i_window(input_dir: Path) -> None:
             if fitted["v_min"] != "" or fitted["v_max"] != "":
                 v_min_var.set(fitted["v_min"])
                 v_max_var.set(fitted["v_max"])
-
-            if fitted["t_min"] != "" or fitted["t_max"] != "":
-                t_min_var.set(fitted["t_min"])
-                t_max_var.set(fitted["t_max"])
         finally:
             suspend_events["value"] = False
 
@@ -1138,8 +1113,6 @@ def open_v_vs_i_window(input_dir: Path) -> None:
             x_max_var.set(initial_state["x_max"])
             v_min_var.set(initial_state["v_min"])
             v_max_var.set(initial_state["v_max"])
-            t_min_var.set(initial_state["t_min"])
-            t_max_var.set(initial_state["t_max"])
             _update_point_label()
         finally:
             suspend_events["value"] = False
@@ -1188,8 +1161,6 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         ("I max", x_max_var),
         ("V min", v_min_var),
         ("V max", v_max_var),
-        ("T min", t_min_var),
-        ("T max", t_max_var),
     ]
 
     entry_widgets = []
