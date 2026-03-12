@@ -377,32 +377,11 @@ def draw_v_vs_i_on_figure(
     if show_voltage and (v_min is not None or v_max is not None):
         ax_main.set_ylim(bottom=v_min, top=v_max)
 
-    # Temperature on second axis if needed
-    if show_temperature:
-        target_ax = ax_temp if ax_temp is not None else ax_main
+        # Force ticks to include the exact voltage limits
+        tick_count = 6
+        ax_main.yaxis.set_major_locator(LinearLocator(tick_count))
 
-        if asc_rows and _series_visible(asc_marker, temperature_linestyle):
-            target_ax.plot(
-                [r["Corriente"] for r in asc_rows],
-                [r["Temperatura"] for r in asc_rows],
-                color=PC_PLOT_COLORS["asc_temperature"],
-                marker=asc_marker_mpl,
-                linestyle=temp_ls_mpl,
-                label="Asc T",
-            )
-        if dsc_rows and _series_visible(dsc_marker, temperature_linestyle):
-            target_ax.plot(
-                [r["Corriente"] for r in dsc_rows],
-                [r["Temperatura"] for r in dsc_rows],
-                color=PC_PLOT_COLORS["dsc_temperature"],
-                marker=dsc_marker_mpl,
-                linestyle=temp_ls_mpl,
-                label="Dsc T",
-            )
-        target_ax.set_ylabel("Temperatura (°C)")
-    
     if ax_temp is not None:
-        fig.canvas.draw()
         left_tick_count = len(ax_main.yaxis.get_majorticklocs())
         if left_tick_count >= 2:
             ax_temp.yaxis.set_major_locator(LinearLocator(left_tick_count))
