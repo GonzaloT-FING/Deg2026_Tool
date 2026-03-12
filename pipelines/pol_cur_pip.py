@@ -261,6 +261,13 @@ def draw_v_vs_i_on_figure(
     x_max: float | None = None,
     v_min: float | None = None,
     v_max: float | None = None,
+    plot_title: str = "",
+    title_fontsize: float = 14,
+    tick_fontsize: float = 10,
+    label_fontsize: float = 11,
+    legend_fontsize: float = 10,
+    marker_size: float = 6,
+    hollow_markers: bool = False,
 ) -> bool:
     fig.clear()
 
@@ -268,6 +275,8 @@ def draw_v_vs_i_on_figure(
         return False
     if not (show_voltage or show_temperature):
         return False
+
+    tick_count = max(2, int(tick_count))
 
     curve_data = build_curve_bundle_data(bundle)
 
@@ -296,7 +305,7 @@ def draw_v_vs_i_on_figure(
 
     ax_main = fig.add_subplot(111)
     ax_temp = None
-    
+
     if show_voltage and show_temperature:
         ax_temp = ax_main.twinx()
 
@@ -308,27 +317,53 @@ def draw_v_vs_i_on_figure(
     def _series_visible(marker_value: str, line_value: str) -> bool:
         return not (marker_value == "none" and line_value == "none")
 
+    def _line_kwargs(color: str, mpl_marker: str, mpl_linestyle: str) -> dict:
+        kwargs = {
+            "color": color,
+            "marker": mpl_marker,
+            "linestyle": mpl_linestyle,
+            "linewidth": 1.5,
+            "markersize": marker_size,
+        }
+        
+
+        if mpl_marker != "None":
+            kwargs["markeredgecolor"] = color
+            kwargs["markeredgewidth"] = 1.2
+
+            # x and + are already line-only markers, so facecolor does not matter much
+            if hollow_markers and mpl_marker not in {"x", "+"}:
+                kwargs["markerfacecolor"] = "none"
+            else:
+                kwargs["markerfacecolor"] = "none"
+
+        return kwargs
+
     # Voltage on main axis
     if show_voltage:
         if asc_rows and _series_visible(asc_marker, voltage_linestyle):
             ax_main.plot(
                 [r["Corriente"] for r in asc_rows],
                 [r["Voltaje"] for r in asc_rows],
-                color=PC_PLOT_COLORS["asc_voltage"],
-                marker=asc_marker_mpl,
-                linestyle=voltage_ls_mpl,
                 label="Asc V",
+                **_line_kwargs(
+                    PC_PLOT_COLORS["asc_voltage"],
+                    asc_marker_mpl,
+                    voltage_ls_mpl,
+                ),
             )
         if dsc_rows and _series_visible(dsc_marker, voltage_linestyle):
             ax_main.plot(
                 [r["Corriente"] for r in dsc_rows],
                 [r["Voltaje"] for r in dsc_rows],
-                color=PC_PLOT_COLORS["dsc_voltage"],
-                marker=dsc_marker_mpl,
-                linestyle=voltage_ls_mpl,
                 label="Dsc V",
+                **_line_kwargs(
+                    PC_PLOT_COLORS["dsc_voltage"],
+                    dsc_marker_mpl,
+                    voltage_ls_mpl,
+                ),
             )
-        ax_main.set_ylabel("Voltaje (V)")
+        ax_main.set_ylabel("Voltaje (V)", fontsize=label_fontsize)
 
     # Temperature on second axis if needed
     if show_temperature:
@@ -338,24 +373,26 @@ def draw_v_vs_i_on_figure(
             target_ax.plot(
                 [r["Corriente"] for r in asc_rows],
                 [r["Temperatura"] for r in asc_rows],
-                color=PC_PLOT_COLORS["asc_temperature"],
-                marker=asc_marker_mpl,
-                linestyle=temp_ls_mpl,
                 label="Asc T",
+                **_line_kwargs(
+                    PC_PLOT_COLORS["asc_temperature"],
+                    asc_marker_mpl,
+                    temp_ls_mpl,
+                ),
             )
         if dsc_rows and _series_visible(dsc_marker, temperature_linestyle):
             target_ax.plot(
                 [r["Corriente"] for r in dsc_rows],
                 [r["Temperatura"] for r in dsc_rows],
-                color=PC_PLOT_COLORS["dsc_temperature"],
-                marker=dsc_marker_mpl,
-                linestyle=temp_ls_mpl,
                 label="Dsc T",
+                **_line_kwargs(
+                    PC_PLOT_COLORS["dsc_temperature"],
+                    dsc_marker_mpl,
+                    temp_ls_mpl,
+                ),
             )
-        target_ax.set_ylabel("Temperatura (°C)")
+        target_ax.set_ylabel("Temperatura (°C)", fontsize=label_fontsize)
 
-    
-    # If nothing ended up being drawable, return no plot
     handles, labels = ax_main.get_legend_handles_labels()
     if ax_temp is not None:
         h2, l2 = ax_temp.get_legend_handles_labels()
@@ -366,26 +403,36 @@ def draw_v_vs_i_on_figure(
         fig.clear()
         return False
 
-    ax_main.set_xlabel("Corriente (A)")
-    ax_main.set_title(
+    default_title = (
         f"V vs I - {bundle.description} #{bundle.curve_id} "
         f"(punto step = {point_fraction:.2f})"
     )
+    final_title = plot_title.strip() if plot_title.strip() else default_title
+
+    ax_main.set_xlabel("Corriente (A)", fontsize=label_fontsize)
+    ax_main.set_title(final_title, fontsize=title_fontsize)
     ax_main.grid(True)
+
+    # Tick font size
+    ax_main.tick_params(axis="both", labelsize=tick_fontsize)
+    ax_main.xaxis.set_major_locator(MaxNLocator(nbins=tick_count))
 
     if x_min is not None or x_max is not None:
         ax_main.set_xlim(left=x_min, right=x_max)
 
-    # Voltage manual limits, if provided
-    if show_voltage and (v_min is not None or v_max is not None):
-        ax_main.set_ylim(bottom=v_min, top=v_max)
+    # Voltage axis
+    if show_voltage:
+        if v_min is not None or v_max is not None:
+            ax_main.set_ylim(bottom=v_min, top=v_max)
+            ax_main.yaxis.set_major_locator(LinearLocator(tick_count))
+        else:
+            ax_main.yaxis.set_major_locator(MaxNLocator(nbins=tick_count))
+        ax_main.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
-        # Force left axis ticks to include exact bounds
-        ax_main.yaxis.set_major_locator(LinearLocator(tick_count))
-
-    # Temperature autoscale, but rounded and cleaner
-    # Temperature autoscale with rounded limits and evenly spaced ticks
+    # Temperature axis
     if ax_temp is not None:
+        ax_temp.tick_params(axis="y", labelsize=tick_fontsize)
+
         temp_lines = ax_temp.get_lines()
         temp_values = []
         for line in temp_lines:
@@ -397,9 +444,7 @@ def draw_v_vs_i_on_figure(
             tick_count=tick_count,
         )
 
-    
-
-    ax_main.legend(handles, labels)
+    ax_main.legend(handles, labels, fontsize=legend_fontsize)
     fig.tight_layout()
     return True
 
@@ -794,6 +839,7 @@ def find_last_point_of_each_step(
 ) -> list[dict[str, float]]:
     """Compatibility helper for export sheets: last point = fraction 1.0."""
     return select_fractional_point_per_step(rows, current_tolerance, 1.0)
+
 def build_v_vs_i_figure(
     bundle: CurveBundle,
     show_asc: bool,
@@ -971,6 +1017,14 @@ def open_v_vs_i_window(input_dir: Path) -> None:
 
     tick_count_var = tk.IntVar(value=6)
 
+    plot_title_var = tk.StringVar(value="")
+    title_fontsize_var = tk.StringVar(value="14")
+    tick_fontsize_var = tk.StringVar(value="10")
+    label_fontsize_var = tk.StringVar(value="11")
+    legend_fontsize_var = tk.StringVar(value="10")
+    marker_size_var = tk.StringVar(value="6")
+    hollow_markers_var = tk.BooleanVar(value=False)
+
     initial_state = {
         "asc": True,
         "dsc": True,
@@ -986,6 +1040,13 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         "voltage_line": "-",
         "temperature_line": "--",
         "tick_count": 6,
+        "plot_title": "",
+        "title_fontsize": "14",
+        "tick_fontsize": "10",
+        "label_fontsize": "11",
+        "legend_fontsize": "10",
+        "marker_size": "6",
+        "hollow_markers": False,
     }
 
     ttk.Label(
@@ -1060,6 +1121,49 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     plot_job = {"id": None}
     suspend_events = {"value": False}
 
+    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamaños")
+    text_box.pack(fill="x", pady=5)
+
+    ttk.Label(text_box, text="Título").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
+    title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Title size").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    title_size_entry = ttk.Entry(text_box, textvariable=title_fontsize_var, width=10)
+    title_size_entry.grid(row=1, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Tick size").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    tick_size_entry = ttk.Entry(text_box, textvariable=tick_fontsize_var, width=10)
+    tick_size_entry.grid(row=2, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Label size").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    label_size_entry = ttk.Entry(text_box, textvariable=label_fontsize_var, width=10)
+    label_size_entry.grid(row=3, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Legend size").grid(row=4, column=0, sticky="w", padx=8, pady=3)
+    legend_size_entry = ttk.Entry(text_box, textvariable=legend_fontsize_var, width=10)
+    legend_size_entry.grid(row=4, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Marker size").grid(row=5, column=0, sticky="w", padx=8, pady=3)
+    marker_size_entry = ttk.Entry(text_box, textvariable=marker_size_var, width=10)
+    marker_size_entry.grid(row=5, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Checkbutton(
+        text_box,
+        text="Hollow markers",
+        variable=hollow_markers_var,
+        command=_schedule_plot,
+    ).grid(row=6, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+
+    def _positive_float(text: str, name: str) -> float:
+        value = text.strip().replace(",", ".")
+        if not value:
+            raise ValueError(f"{name} no puede estar vacío.")
+        num = float(value)
+        if num <= 0:
+            raise ValueError(f"{name} debe ser mayor que 0.")
+        return num
+
     def _collect_limits():
         return dict(
             x_min=_optional_float(x_min_var.get()),
@@ -1085,8 +1189,16 @@ def open_v_vs_i_window(input_dir: Path) -> None:
                 show_temperature=temperature_var.get(),
                 point_fraction=point_fraction_var.get(),
                 tick_count=tick_count_var.get(),
+                plot_title=plot_title_var.get(),
+                title_fontsize=_positive_float(title_fontsize_var.get(), "Title size"),
+                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tick size"),
+                label_fontsize=_positive_float(label_fontsize_var.get(), "Label size"),
+                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Legend size"),
+                marker_size=_positive_float(marker_size_var.get(), "Marker size"),
+                hollow_markers=hollow_markers_var.get(),
                 **_collect_limits(),
             )
+            
         except ValueError as exc:
             status_var.set(f"Error: {exc}")
             return
@@ -1158,6 +1270,13 @@ def open_v_vs_i_window(input_dir: Path) -> None:
             temperature_var.set(initial_state["temperature"])
             point_fraction_var.set(initial_state["fraction"])
             tick_count_var.set(initial_state["tick_count"])
+            plot_title_var.set(initial_state["plot_title"])
+            title_fontsize_var.set(initial_state["title_fontsize"])
+            tick_fontsize_var.set(initial_state["tick_fontsize"])
+            label_fontsize_var.set(initial_state["label_fontsize"])
+            legend_fontsize_var.set(initial_state["legend_fontsize"])
+            marker_size_var.set(initial_state["marker_size"])
+            hollow_markers_var.set(initial_state["hollow_markers"])
 
             x_min_var.set(initial_state["x_min"])
             x_max_var.set(initial_state["x_max"])
@@ -1177,6 +1296,18 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     tick_spin.bind("<Return>", _schedule_plot)
     tick_spin.bind("<FocusOut>", _schedule_plot)
     tick_spin.config(command=_schedule_plot)
+
+    for widget in (
+        title_entry,
+        title_size_entry,
+        tick_size_entry,
+        label_size_entry,
+        legend_size_entry,
+        marker_size_entry,
+    ):
+        widget.bind("<Return>", _schedule_plot)
+        widget.bind("<KP_Enter>", _schedule_plot)
+        widget.bind("<FocusOut>", _schedule_plot)
 
     ttk.Checkbutton(series_box, text="Asc", variable=asc_var, command=_schedule_plot).pack(
         anchor="w", padx=8, pady=2
