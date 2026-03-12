@@ -267,7 +267,8 @@ def draw_v_vs_i_on_figure(
     label_fontsize: float = 11,
     legend_fontsize: float = 10,
     marker_size: float = 6,
-    hollow_markers: bool = False,
+    hollow_markers: bool = True,
+    line_width: float = 1.5,
 ) -> bool:
     fig.clear()
 
@@ -322,7 +323,7 @@ def draw_v_vs_i_on_figure(
             "color": color,
             "marker": mpl_marker,
             "linestyle": mpl_linestyle,
-            "linewidth": 1.5,
+            "linewidth": line_width,
             "markersize": marker_size,
         }
         
@@ -335,7 +336,7 @@ def draw_v_vs_i_on_figure(
             if hollow_markers and mpl_marker not in {"x", "+"}:
                 kwargs["markerfacecolor"] = "none"
             else:
-                kwargs["markerfacecolor"] = "none"
+                kwargs["markerfacecolor"] = color
 
         return kwargs
 
@@ -903,6 +904,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     legend_fontsize_var = tk.StringVar(value="10")
     marker_size_var = tk.StringVar(value="6")
     hollow_markers_var = tk.BooleanVar(value=False)
+    line_width_var = tk.StringVar(value="1.5")
 
     initial_state = {
         "asc": True,
@@ -926,6 +928,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         "legend_fontsize": "10",
         "marker_size": "6",
         "hollow_markers": False,
+        "line_width": "1.5",
     }
 
     def _schedule_plot(*_args):
@@ -1034,6 +1037,10 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     marker_size_entry = ttk.Entry(text_box, textvariable=marker_size_var, width=10)
     marker_size_entry.grid(row=5, column=1, sticky="w", padx=8, pady=3)
 
+    ttk.Label(text_box, text="Line width").grid(row=7, column=0, sticky="w", padx=8, pady=3)
+    line_width_entry = ttk.Entry(text_box, textvariable=line_width_var, width=10)
+    line_width_entry.grid(row=7, column=1, sticky="w", padx=8, pady=3)
+
     ttk.Checkbutton(
         text_box,
         text="Hollow markers",
@@ -1082,6 +1089,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
                 legend_fontsize=_positive_float(legend_fontsize_var.get(), "Legend size"),
                 marker_size=_positive_float(marker_size_var.get(), "Marker size"),
                 hollow_markers=hollow_markers_var.get(),
+                line_width=_positive_float(line_width_var.get(), "Line width"),
                 **_collect_limits(),
             )
 
@@ -1156,6 +1164,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
             legend_fontsize_var.set(initial_state["legend_fontsize"])
             marker_size_var.set(initial_state["marker_size"])
             hollow_markers_var.set(initial_state["hollow_markers"])
+            line_width_var.set(initial_state["line_width"])
 
             x_min_var.set(initial_state["x_min"])
             x_max_var.set(initial_state["x_max"])
@@ -1187,6 +1196,19 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         widget.bind("<Return>", _schedule_plot)
         widget.bind("<KP_Enter>", _schedule_plot)
         widget.bind("<FocusOut>", _schedule_plot)
+
+        for widget in (
+            title_entry,
+            title_size_entry,
+            tick_size_entry,
+            label_size_entry,
+            legend_size_entry,
+            marker_size_entry,
+            line_width_entry,
+        ):
+            widget.bind("<Return>", _schedule_plot)
+            widget.bind("<KP_Enter>", _schedule_plot)
+            widget.bind("<FocusOut>", _schedule_plot)
 
     ttk.Checkbutton(series_box, text="Asc", variable=asc_var, command=_schedule_plot).pack(
         anchor="w", padx=8, pady=2
