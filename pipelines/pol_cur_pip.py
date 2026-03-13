@@ -60,8 +60,23 @@ DATA_EXPORT = [
     ("Temp", "Temperatura", "ºC"),
 ]
 
-FILE_RE = re.compile(
-    r"^Curva_Polarizacion_(?P<direction>Asc|Dsc)_(?P<description>.+?)_#(?P<curve_id>\d+)_#(?P<file_index>\d+)\.DTA$",
+STANDARD_FILE_RE = re.compile(
+    r"^Curva_Polarizacion_"
+    r"(?P<direction>Asc|Dsc)_"
+    r"(?P<description>.+?)"
+    r"_#(?P<curve_id>\d+)"
+    r"_#(?P<file_index>\d+)"
+    r"\.DTA$",
+    re.IGNORECASE,
+)
+
+BACKUP_FILE_RE = re.compile(
+    r"^Curva_Polarizacion_"
+    r"(?P<direction>Asc|Dsc)_"
+    r"(?P<description>.+?)"
+    r"_#(?P<file_index>\d+)"
+    r"(?:\s+\([^)]*\))?"
+    r"\.DTA$",
     re.IGNORECASE,
 )
 
@@ -563,17 +578,29 @@ def apply_temperature_axis_scaling(ax_temp, temp_values: list[float], tick_count
 # File discovery and grouping
 # ---------------------------------------------------------------------------
 def _parse_filename(path: Path) -> PolarizationFile | None:
-    match = FILE_RE.match(path.name)
-    if not match:
-        return None
+    name = path.name
 
-    return PolarizationFile(
-        path=path,
-        direction=match.group("direction").title(),
-        description=match.group("description"),
-        curve_id=int(match.group("curve_id")),
-        file_index=int(match.group("file_index")),
-    )
+    match = STANDARD_FILE_RE.match(name)
+    if match:
+        return PolarizationFile(
+            path=path,
+            direction=match.group("direction").title(),
+            description=match.group("description"),
+            curve_id=int(match.group("curve_id")),
+            file_index=int(match.group("file_index")),
+        )
+
+    match = BACKUP_FILE_RE.match(name)
+    if match:
+        return PolarizationFile(
+            path=path,
+            direction=match.group("direction").title(),
+            description=match.group("description"),
+            curve_id=1,  # fallback curve id for backup-only files
+            file_index=int(match.group("file_index")),
+        )
+
+    return None
 
 
 def discover_curve_bundles(input_dir: Path) -> list[CurveBundle]:
