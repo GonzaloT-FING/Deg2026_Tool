@@ -197,8 +197,24 @@ def _format_limit_value(value: float | None) -> str:
         return ""
     return f"{value:.6g}"
 
+def _round_down_dec(value: float, decimals: int = 1) -> float:
+    scale = 10 ** decimals
+    return floor(value * scale) / scale
 
-def _padded_limits(values: list[float], rel_pad: float = 0.05) -> tuple[float | None, float | None]:
+def _round_up_dec(value: float, decimals: int = 1) -> float:
+    scale = 10 ** decimals
+    return ceil(value * scale) / scale
+
+def _format_limit_value(value: float | None, decimals: int = 1) -> str:
+    if value is None:
+        return ""
+    return f"{value:.{decimals}f}"
+
+def _padded_limits(
+    values: list[float],
+    rel_pad: float = 0.05,
+    decimals: int = 1,
+) -> tuple[float | None, float | None]:
     if not values:
         return None, None
 
@@ -210,7 +226,9 @@ def _padded_limits(values: list[float], rel_pad: float = 0.05) -> tuple[float | 
     else:
         pad = (vmax - vmin) * rel_pad
 
-    return vmin - pad, vmax + pad
+    lo = _round_down_dec(vmin - pad, decimals)
+    hi = _round_up_dec(vmax + pad, decimals)
+    return lo, hi
 
 
 def compute_default_v_vs_i_limits(bundle: CurveBundle) -> dict[str, str]:
@@ -463,6 +481,7 @@ def compute_autofit_v_vs_i_limits(
     show_voltage: bool,
     show_temperature: bool,
     point_fraction: float,
+    decimals: int = 1,
 ) -> dict[str, str]:
     if not (show_asc or show_dsc):
         raise ValueError("Debe seleccionar Asc y/o Dsc para usar Autofit.")
@@ -497,7 +516,7 @@ def compute_autofit_v_vs_i_limits(
         raise ValueError("No hay datos válidos para ajustar los ejes.")
 
     out = {
-        "x_min": "0",
+        "x_min": "0",   # keep this if you want current to start at 0
         "x_max": "",
         "v_min": "",
         "v_max": "",
@@ -505,13 +524,22 @@ def compute_autofit_v_vs_i_limits(
 
     currents = [r["Corriente"] for r in rows]
     if currents:
-        out["x_max"] = str(int(ceil(max(currents))))
+        out["x_max"] = _format_limit_value(
+            _round_up_dec(max(currents), decimals),
+            decimals,
+        )
 
     if show_voltage:
         voltages = [r["Voltaje"] for r in rows]
         if voltages:
-            out["v_min"] = str(int(floor(min(voltages))))
-            out["v_max"] = str(int(ceil(max(voltages))))
+            out["v_min"] = _format_limit_value(
+                _round_down_dec(min(voltages), decimals),
+                decimals,
+            )
+            out["v_max"] = _format_limit_value(
+                _round_up_dec(max(voltages), decimals),
+                decimals,
+            )
 
     return out
 
