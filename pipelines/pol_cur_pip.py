@@ -60,23 +60,8 @@ DATA_EXPORT = [
     ("Temp", "Temperatura", "ºC"),
 ]
 
-STANDARD_FILE_RE = re.compile(
-    r"^Curva_Polarizacion_"
-    r"(?P<direction>Asc|Dsc)_"
-    r"(?P<description>.+?)"
-    r"_#(?P<curve_id>\d+)"
-    r"_#(?P<file_index>\d+)"
-    r"\.DTA$",
-    re.IGNORECASE,
-)
-
-BACKUP_FILE_RE = re.compile(
-    r"^Curva_Polarizacion_"
-    r"(?P<direction>Asc|Dsc)_"
-    r"(?P<description>.+?)"
-    r"_#(?P<file_index>\d+)"
-    r"(?:\s+\([^)]*\))?"
-    r"\.DTA$",
+FILE_RE = re.compile(
+    r"^Curva_Polarizacion_(?P<direction>Asc|Dsc)_(?P<description>.+?)_#(?P<curve_id>\d+)_#(?P<file_index>\d+)\.DTA$",
     re.IGNORECASE,
 )
 
@@ -496,7 +481,6 @@ def compute_autofit_v_vs_i_limits(
     show_voltage: bool,
     show_temperature: bool,
     point_fraction: float,
-    decimals: int = 1,
 ) -> dict[str, str]:
     if not (show_asc or show_dsc):
         raise ValueError("Debe seleccionar Asc y/o Dsc para usar Autofit.")
@@ -531,7 +515,7 @@ def compute_autofit_v_vs_i_limits(
         raise ValueError("No hay datos válidos para ajustar los ejes.")
 
     out = {
-        "x_min": "0",   # keep this if you want current to start at 0
+        "x_min": "0",
         "x_max": "",
         "v_min": "",
         "v_max": "",
@@ -539,22 +523,13 @@ def compute_autofit_v_vs_i_limits(
 
     currents = [r["Corriente"] for r in rows]
     if currents:
-        out["x_max"] = _format_limit_value(
-            _round_up_dec(max(currents), decimals),
-            decimals,
-        )
+        out["x_max"] = str(int(ceil(max(currents))))
 
     if show_voltage:
         voltages = [r["Voltaje"] for r in rows]
         if voltages:
-            out["v_min"] = _format_limit_value(
-                _round_down_dec(min(voltages), decimals),
-                decimals,
-            )
-            out["v_max"] = _format_limit_value(
-                _round_up_dec(max(voltages), decimals),
-                decimals,
-            )
+            out["v_min"] = str(int(floor(min(voltages))))
+            out["v_max"] = str(int(ceil(max(voltages))))
 
     return out
 
@@ -578,29 +553,17 @@ def apply_temperature_axis_scaling(ax_temp, temp_values: list[float], tick_count
 # File discovery and grouping
 # ---------------------------------------------------------------------------
 def _parse_filename(path: Path) -> PolarizationFile | None:
-    name = path.name
+    match = FILE_RE.match(path.name)
+    if not match:
+        return None
 
-    match = STANDARD_FILE_RE.match(name)
-    if match:
-        return PolarizationFile(
-            path=path,
-            direction=match.group("direction").title(),
-            description=match.group("description"),
-            curve_id=int(match.group("curve_id")),
-            file_index=int(match.group("file_index")),
-        )
-
-    match = BACKUP_FILE_RE.match(name)
-    if match:
-        return PolarizationFile(
-            path=path,
-            direction=match.group("direction").title(),
-            description=match.group("description"),
-            curve_id=1,  # fallback curve id for backup-only files
-            file_index=int(match.group("file_index")),
-        )
-
-    return None
+    return PolarizationFile(
+        path=path,
+        direction=match.group("direction").title(),
+        description=match.group("description"),
+        curve_id=int(match.group("curve_id")),
+        file_index=int(match.group("file_index")),
+    )
 
 
 def discover_curve_bundles(input_dir: Path) -> list[CurveBundle]:
