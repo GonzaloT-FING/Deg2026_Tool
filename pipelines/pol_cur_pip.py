@@ -73,6 +73,8 @@ PC_PLOT_COLORS = {
     "dsc_voltage": "#2b3d8c",
     "asc_temperature": "#cf9a32",
     "dsc_temperature": "#ab3030",
+    "asc_current": "#2f9e44",
+    "dsc_current": "#1b5e20",
 }
 
 
@@ -502,6 +504,210 @@ def draw_v_vs_i_on_figure(
     fig.tight_layout()
     return True
 
+def draw_series_by_time_on_figure(
+    fig: Figure,
+    bundle: CurveBundle,
+    show_asc: bool,
+    show_dsc: bool,
+    show_voltage: bool,
+    show_current: bool,
+    show_temperature: bool,
+    asc_marker: str,
+    dsc_marker: str,
+    voltage_linestyle: str,
+    current_linestyle: str,
+    temperature_linestyle: str,
+    tick_count: int = 6,
+    t_min: float | None = None,
+    t_max: float | None = None,
+    v_min: float | None = None,
+    v_max: float | None = None,
+    plot_title: str = "",
+    title_fontsize: float = 14,
+    tick_fontsize: float = 10,
+    label_fontsize: float = 11,
+    legend_fontsize: float = 10,
+    marker_size: float = 6,
+    line_width: float = 1.5,
+    hollow_markers: bool = False,
+) -> bool:
+    fig.clear()
+
+    if not (show_asc or show_dsc):
+        return False
+    if not (show_voltage or show_current or show_temperature):
+        return False
+
+    tick_count = max(2, int(tick_count))
+
+    plot_data = build_series_by_time_plot_data(bundle)
+
+    asc_rows = plot_data["asc_rows"] if show_asc else []
+    dsc_rows = plot_data["dsc_rows"] if show_dsc else []
+
+    if not asc_rows and not dsc_rows:
+        return False
+
+    ax_main = fig.add_subplot(111)
+    ax_secondary = None
+
+    has_secondary = show_current or show_temperature
+    if show_voltage and has_secondary:
+        ax_secondary = ax_main.twinx()
+
+    asc_marker_mpl = _mpl_marker(asc_marker)
+    dsc_marker_mpl = _mpl_marker(dsc_marker)
+    voltage_ls_mpl = _mpl_linestyle(voltage_linestyle)
+    current_ls_mpl = _mpl_linestyle(current_linestyle)
+    temp_ls_mpl = _mpl_linestyle(temperature_linestyle)
+
+    def _series_visible(marker_value: str, line_value: str) -> bool:
+        return not (marker_value == "none" and line_value == "none")
+
+    def _line_kwargs(color: str, mpl_marker: str, mpl_linestyle: str) -> dict:
+        kwargs = {
+            "color": color,
+            "marker": mpl_marker,
+            "linestyle": mpl_linestyle,
+            "linewidth": line_width,
+            "markersize": marker_size,
+        }
+
+        if mpl_marker != "None":
+            kwargs["markeredgecolor"] = color
+            kwargs["markeredgewidth"] = 1.2
+            if hollow_markers and mpl_marker not in {"x", "+"}:
+                kwargs["markerfacecolor"] = "none"
+            else:
+                kwargs["markerfacecolor"] = color
+
+        return kwargs
+
+    def _plot_direction(rows, prefix: str, marker_value: str, mpl_marker: str):
+        if not rows:
+            return
+
+        x_vals = [r["plot_time"] for r in rows]
+
+        if show_voltage and _series_visible(marker_value, voltage_linestyle):
+            ax_main.plot(
+                x_vals,
+                [r["Voltaje"] for r in rows],
+                label=f"{prefix} V",
+                **_line_kwargs(
+                    PC_PLOT_COLORS["asc_voltage"] if prefix == "Asc" else PC_PLOT_COLORS["dsc_voltage"],
+                    mpl_marker,
+                    voltage_ls_mpl,
+                ),
+            )
+
+        target_ax = ax_secondary if ax_secondary is not None else ax_main
+
+        if show_current and _series_visible(marker_value, current_linestyle):
+            target_ax.plot(
+                x_vals,
+                [r["Corriente"] for r in rows],
+                label=f"{prefix} I",
+                **_line_kwargs(
+                    PC_PLOT_COLORS["asc_current"] if prefix == "Asc" else PC_PLOT_COLORS["dsc_current"],
+                    mpl_marker,
+                    current_ls_mpl,
+                ),
+            )
+
+        if show_temperature and _series_visible(marker_value, temperature_linestyle):
+            target_ax.plot(
+                x_vals,
+                [r["Temperatura"] for r in rows],
+                label=f"{prefix} T",
+                **_line_kwargs(
+                    PC_PLOT_COLORS["asc_temperature"] if prefix == "Asc" else PC_PLOT_COLORS["dsc_temperature"],
+                    mpl_marker,
+                    temp_ls_mpl,
+                ),
+            )
+
+    _plot_direction(asc_rows, "Asc", asc_marker, asc_marker_mpl)
+    _plot_direction(dsc_rows, "Dsc", dsc_marker, dsc_marker_mpl)
+
+    handles, labels = ax_main.get_legend_handles_labels()
+    if ax_secondary is not None:
+        h2, l2 = ax_secondary.get_legend_handles_labels()
+        handles += h2
+        labels += l2
+
+    if not handles:
+        fig.clear()
+        return False
+
+    default_title = f"Series by time - {bundle.description} #{bundle.curve_id}"
+    final_title = plot_title.strip() if plot_title.strip() else default_title
+
+    ax_main.set_xlabel("Tiempo (s)", fontsize=label_fontsize)
+    ax_main.set_title(final_title, fontsize=title_fontsize)
+    ax_main.grid(True)
+
+    ax_main.tick_params(axis="both", labelsize=tick_fontsize)
+
+    if t_min is not None or t_max is not None:
+        ax_main.set_xlim(left=t_min, right=t_max)
+        ax_main.xaxis.set_major_locator(LinearLocator(tick_count))
+    else:
+        ax_main.xaxis.set_major_locator(MaxNLocator(nbins=tick_count))
+    ax_main.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+
+    if show_voltage:
+        ax_main.set_ylabel("Voltaje (V)", fontsize=label_fontsize)
+
+        if v_min is not None or v_max is not None:
+            ax_main.set_ylim(bottom=v_min, top=v_max)
+            ax_main.yaxis.set_major_locator(LinearLocator(tick_count))
+        else:
+            ax_main.yaxis.set_major_locator(MaxNLocator(nbins=tick_count))
+        ax_main.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+
+    else:
+        secondary_values = []
+        if show_current:
+            secondary_values.extend([r["Corriente"] for r in asc_rows])
+            secondary_values.extend([r["Corriente"] for r in dsc_rows])
+        if show_temperature:
+            secondary_values.extend([r["Temperatura"] for r in asc_rows])
+            secondary_values.extend([r["Temperatura"] for r in dsc_rows])
+
+        if show_current and show_temperature:
+            ax_main.set_ylabel("Corriente / Temperatura", fontsize=label_fontsize)
+        elif show_current:
+            ax_main.set_ylabel("Corriente (A)", fontsize=label_fontsize)
+        elif show_temperature:
+            ax_main.set_ylabel("Temperatura (°C)", fontsize=label_fontsize)
+
+        apply_secondary_axis_scaling(ax_main, secondary_values, tick_count)
+
+    if ax_secondary is not None:
+        ax_secondary.tick_params(axis="y", labelsize=tick_fontsize)
+
+        secondary_values = []
+        if show_current:
+            secondary_values.extend([r["Corriente"] for r in asc_rows])
+            secondary_values.extend([r["Corriente"] for r in dsc_rows])
+        if show_temperature:
+            secondary_values.extend([r["Temperatura"] for r in asc_rows])
+            secondary_values.extend([r["Temperatura"] for r in dsc_rows])
+
+        if show_current and show_temperature:
+            ax_secondary.set_ylabel("Corriente / Temperatura", fontsize=label_fontsize)
+        elif show_current:
+            ax_secondary.set_ylabel("Corriente (A)", fontsize=label_fontsize)
+        elif show_temperature:
+            ax_secondary.set_ylabel("Temperatura (°C)", fontsize=label_fontsize)
+
+        apply_secondary_axis_scaling(ax_secondary, secondary_values, tick_count)
+
+    ax_main.legend(handles, labels, fontsize=legend_fontsize)
+    fig.tight_layout()
+    return True
+
 def _mpl_marker(value: str) -> str:
     return "None" if value == "none" else value
 
@@ -824,6 +1030,118 @@ def build_curve_bundle_data(bundle: CurveBundle) -> dict[str, object]:
         "dsc_tol": dsc_tol,
     }
 
+def build_series_by_time_plot_data(bundle: CurveBundle) -> dict[str, object]:
+    curve_data = build_curve_bundle_data(bundle)
+
+    raw_asc_rows = curve_data["asc_rows"]
+    raw_dsc_rows = curve_data["dsc_rows"]
+
+    t_asc_end = max((r["time"] for r in raw_asc_rows), default=0.0)
+
+    asc_rows = []
+    for row in raw_asc_rows:
+        new_row = dict(row)
+        new_row["plot_time"] = row["time"]
+        asc_rows.append(new_row)
+
+    dsc_rows = []
+    for row in raw_dsc_rows:
+        new_row = dict(row)
+        new_row["plot_time"] = t_asc_end - row["time"]
+        dsc_rows.append(new_row)
+
+    return {
+        "asc_rows": asc_rows,
+        "dsc_rows": dsc_rows,
+        "t_asc_end": t_asc_end,
+    }
+
+
+def compute_default_series_by_time_limits(bundle: CurveBundle) -> dict[str, str]:
+    plot_data = build_series_by_time_plot_data(bundle)
+
+    rows = plot_data["asc_rows"] + plot_data["dsc_rows"]
+    if not rows:
+        return {
+            "t_min": "",
+            "t_max": "",
+            "v_min": "",
+            "v_max": "",
+        }
+
+    t_min, t_max = _padded_limits([r["plot_time"] for r in rows])
+    v_min, v_max = _padded_limits([r["Voltaje"] for r in rows])
+
+    return {
+        "t_min": _format_limit_value(t_min),
+        "t_max": _format_limit_value(t_max),
+        "v_min": _format_limit_value(v_min),
+        "v_max": _format_limit_value(v_max),
+    }
+
+
+def compute_autofit_series_by_time_limits(
+    bundle: CurveBundle,
+    show_asc: bool,
+    show_dsc: bool,
+    show_voltage: bool,
+    show_current: bool,
+    show_temperature: bool,
+) -> dict[str, str]:
+    if not (show_asc or show_dsc):
+        raise ValueError("Debe seleccionar Asc y/o Dsc para usar Autofit.")
+
+    if not (show_voltage or show_current or show_temperature):
+        raise ValueError("Debe seleccionar al menos una magnitud para usar Autofit.")
+
+    plot_data = build_series_by_time_plot_data(bundle)
+
+    rows = []
+    if show_asc:
+        rows.extend(plot_data["asc_rows"])
+    if show_dsc:
+        rows.extend(plot_data["dsc_rows"])
+
+    if not rows:
+        raise ValueError("No hay datos válidos para ajustar los ejes.")
+
+    out = {
+        "t_min": "",
+        "t_max": "",
+        "v_min": "",
+        "v_max": "",
+    }
+
+    t_values = [r["plot_time"] for r in rows]
+    if t_values:
+        out["t_min"] = str(int(floor(min(t_values))))
+        out["t_max"] = str(int(ceil(max(t_values))))
+
+    if show_voltage:
+        v_values = [r["Voltaje"] for r in rows]
+        if v_values:
+            out["v_min"] = str(int(floor(min(v_values))))
+            out["v_max"] = str(int(ceil(max(v_values))))
+
+    return out
+
+
+def apply_secondary_axis_scaling(ax, values: list[float], tick_count: int) -> None:
+    if not values:
+        return
+
+    y_min, y_max = _padded_limits(values)
+    if y_min is None or y_max is None:
+        return
+
+    if y_min == y_max:
+        y_max = y_min + 1.0
+
+    tick_count = max(2, int(tick_count))
+
+    ax.set_ylim(y_min, y_max)
+    ax.yaxis.set_major_locator(LinearLocator(tick_count))
+    ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
 def split_rows_into_steps(
     rows: list[dict[str, float]],
@@ -1502,7 +1820,7 @@ def run_pipeline(
         open_v_vs_i_window(input_dir)
 
     if "Series by time" in chosen:
-        _show_pc_stub("Series by time")
+        open_series_by_time_window(input_dir)
 
     if "dV/dI" in chosen:
         _show_pc_stub("dV/dI")
@@ -1515,8 +1833,356 @@ def run_pipeline(
 
 
 def open_series_by_time_window(input_dir: Path) -> None:
-    import tkinter.messagebox as mb
-    mb.showinfo("PC", "Series by time aún no está implementado.")
+    bundles = discover_curve_bundles(Path(input_dir))
+    if not bundles:
+        raise ValueError("No se encontraron curvas de polarización válidas.")
+
+    bundle = bundles[0]
+    default_limits = compute_default_series_by_time_limits(bundle)
+
+    win = tk.Toplevel()
+    win.title(f"PC - Series by time - {bundle.description} #{bundle.curve_id}")
+    win.geometry("1200x720")
+
+    controls_frame = ttk.Frame(win, padding=10)
+    controls_frame.pack(side="left", fill="y")
+
+    plot_outer = ttk.Frame(win, padding=10)
+    plot_outer.pack(side="right", fill="both", expand=True)
+
+    toolbar_frame = ttk.Frame(plot_outer)
+    toolbar_frame.pack(side="top", fill="x")
+
+    canvas_frame = ttk.Frame(plot_outer)
+    canvas_frame.pack(side="top", fill="both", expand=True)
+
+    fig = Figure(figsize=(9, 5.5), dpi=100)
+
+    canvas = FigureCanvasTkAgg(fig, master=canvas_frame)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    toolbar = NavigationToolbar2Tk(canvas, toolbar_frame, pack_toolbar=False)
+    toolbar.update()
+    toolbar.pack(side="left", fill="x")
+
+    status_var = tk.StringVar(value="Listo.")
+
+    asc_marker_var = tk.StringVar(value="^")
+    dsc_marker_var = tk.StringVar(value="v")
+    voltage_line_var = tk.StringVar(value="-")
+    current_line_var = tk.StringVar(value="-.")
+    temperature_line_var = tk.StringVar(value="--")
+
+    asc_var = tk.BooleanVar(value=True)
+    dsc_var = tk.BooleanVar(value=True)
+    voltage_var = tk.BooleanVar(value=True)
+    current_var = tk.BooleanVar(value=False)
+    temperature_var = tk.BooleanVar(value=False)
+
+    t_min_var = tk.StringVar(value=default_limits["t_min"])
+    t_max_var = tk.StringVar(value=default_limits["t_max"])
+    v_min_var = tk.StringVar(value=default_limits["v_min"])
+    v_max_var = tk.StringVar(value=default_limits["v_max"])
+
+    tick_count_var = tk.IntVar(value=6)
+
+    plot_title_var = tk.StringVar(value="")
+    title_fontsize_var = tk.StringVar(value="14")
+    tick_fontsize_var = tk.StringVar(value="10")
+    label_fontsize_var = tk.StringVar(value="11")
+    legend_fontsize_var = tk.StringVar(value="10")
+    marker_size_var = tk.StringVar(value="6")
+    line_width_var = tk.StringVar(value="1.5")
+    hollow_markers_var = tk.BooleanVar(value=False)
+
+    initial_state = {
+        "asc": True,
+        "dsc": True,
+        "voltage": True,
+        "current": False,
+        "temperature": False,
+        "t_min": default_limits["t_min"],
+        "t_max": default_limits["t_max"],
+        "v_min": default_limits["v_min"],
+        "v_max": default_limits["v_max"],
+        "asc_marker": "^",
+        "dsc_marker": "v",
+        "voltage_line": "-",
+        "current_line": "-.",
+        "temperature_line": "--",
+        "tick_count": 6,
+        "plot_title": "",
+        "title_fontsize": "14",
+        "tick_fontsize": "10",
+        "label_fontsize": "11",
+        "legend_fontsize": "10",
+        "marker_size": "6",
+        "line_width": "1.5",
+        "hollow_markers": False,
+    }
+
+    def _positive_float(text: str, name: str) -> float:
+        value = text.strip().replace(",", ".")
+        if not value:
+            raise ValueError(f"{name} no puede estar vacío.")
+        num = float(value)
+        if num <= 0:
+            raise ValueError(f"{name} debe ser mayor que 0.")
+        return num
+
+    def _collect_limits():
+        return dict(
+            t_min=_optional_float(t_min_var.get()),
+            t_max=_optional_float(t_max_var.get()),
+            v_min=_optional_float(v_min_var.get()),
+            v_max=_optional_float(v_max_var.get()),
+        )
+
+    plot_job = {"id": None}
+    suspend_events = {"value": False}
+
+    def _plot():
+        plot_job["id"] = None
+        try:
+            has_plot = draw_series_by_time_on_figure(
+                fig=fig,
+                bundle=bundle,
+                show_asc=asc_var.get(),
+                show_dsc=dsc_var.get(),
+                show_voltage=voltage_var.get(),
+                show_current=current_var.get(),
+                show_temperature=temperature_var.get(),
+                asc_marker=asc_marker_var.get(),
+                dsc_marker=dsc_marker_var.get(),
+                voltage_linestyle=voltage_line_var.get(),
+                current_linestyle=current_line_var.get(),
+                temperature_linestyle=temperature_line_var.get(),
+                tick_count=tick_count_var.get(),
+                plot_title=plot_title_var.get(),
+                title_fontsize=_positive_float(title_fontsize_var.get(), "Title size"),
+                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tick size"),
+                label_fontsize=_positive_float(label_fontsize_var.get(), "Label size"),
+                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Legend size"),
+                marker_size=_positive_float(marker_size_var.get(), "Marker size"),
+                line_width=_positive_float(line_width_var.get(), "Line width"),
+                hollow_markers=hollow_markers_var.get(),
+                **_collect_limits(),
+            )
+        except ValueError as exc:
+            status_var.set(f"Error: {exc}")
+            return
+
+        if not has_plot:
+            fig.clear()
+            canvas.draw_idle()
+            status_var.set("No se muestra gráfico: seleccione al menos una dirección y una magnitud.")
+            return
+
+        canvas.draw_idle()
+        status_var.set("Gráfico actualizado.")
+
+    def _schedule_plot(*_args):
+        if suspend_events["value"]:
+            return
+        if plot_job["id"] is not None:
+            win.after_cancel(plot_job["id"])
+        plot_job["id"] = win.after(20, _plot)
+
+    def _autofit():
+        try:
+            fitted = compute_autofit_series_by_time_limits(
+                bundle=bundle,
+                show_asc=asc_var.get(),
+                show_dsc=dsc_var.get(),
+                show_voltage=voltage_var.get(),
+                show_current=current_var.get(),
+                show_temperature=temperature_var.get(),
+            )
+        except ValueError as exc:
+            status_var.set(f"Error: {exc}")
+            return
+
+        suspend_events["value"] = True
+        try:
+            t_min_var.set(fitted["t_min"])
+            t_max_var.set(fitted["t_max"])
+            if fitted["v_min"] != "" or fitted["v_max"] != "":
+                v_min_var.set(fitted["v_min"])
+                v_max_var.set(fitted["v_max"])
+        finally:
+            suspend_events["value"] = False
+
+        _plot()
+        status_var.set("Autofit aplicado.")
+
+    def _reset():
+        suspend_events["value"] = True
+        try:
+            asc_var.set(initial_state["asc"])
+            dsc_var.set(initial_state["dsc"])
+            voltage_var.set(initial_state["voltage"])
+            current_var.set(initial_state["current"])
+            temperature_var.set(initial_state["temperature"])
+
+            asc_marker_var.set(initial_state["asc_marker"])
+            dsc_marker_var.set(initial_state["dsc_marker"])
+            voltage_line_var.set(initial_state["voltage_line"])
+            current_line_var.set(initial_state["current_line"])
+            temperature_line_var.set(initial_state["temperature_line"])
+
+            t_min_var.set(initial_state["t_min"])
+            t_max_var.set(initial_state["t_max"])
+            v_min_var.set(initial_state["v_min"])
+            v_max_var.set(initial_state["v_max"])
+
+            tick_count_var.set(initial_state["tick_count"])
+            plot_title_var.set(initial_state["plot_title"])
+            title_fontsize_var.set(initial_state["title_fontsize"])
+            tick_fontsize_var.set(initial_state["tick_fontsize"])
+            label_fontsize_var.set(initial_state["label_fontsize"])
+            legend_fontsize_var.set(initial_state["legend_fontsize"])
+            marker_size_var.set(initial_state["marker_size"])
+            line_width_var.set(initial_state["line_width"])
+            hollow_markers_var.set(initial_state["hollow_markers"])
+        finally:
+            suspend_events["value"] = False
+
+        _plot()
+        status_var.set("Valores restaurados.")
+
+    ttk.Label(
+        controls_frame,
+        text=f"Curva detectada:\n{bundle.description} #{bundle.curve_id}",
+        justify="left",
+    ).pack(anchor="w", pady=(0, 10))
+
+    series_box = ttk.LabelFrame(controls_frame, text="Series")
+    series_box.pack(fill="x", pady=5)
+
+    style_box = ttk.LabelFrame(controls_frame, text="Estilo")
+    style_box.pack(fill="x", pady=5)
+
+    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamaños")
+    text_box.pack(fill="x", pady=5)
+
+    limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
+    limits_box.pack(fill="x", pady=5)
+
+    ttk.Checkbutton(series_box, text="Asc", variable=asc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
+    ttk.Checkbutton(series_box, text="Dsc", variable=dsc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
+    ttk.Checkbutton(series_box, text="Voltaje", variable=voltage_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
+    ttk.Checkbutton(series_box, text="Corriente", variable=current_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
+    ttk.Checkbutton(series_box, text="Temperatura", variable=temperature_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
+
+    ttk.Label(style_box, text="Asc marker").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    asc_marker_combo = ttk.Combobox(style_box, textvariable=asc_marker_var, values=MARKER_OPTIONS, state="readonly", width=10)
+    asc_marker_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(style_box, text="Dsc marker").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    dsc_marker_combo = ttk.Combobox(style_box, textvariable=dsc_marker_var, values=MARKER_OPTIONS, state="readonly", width=10)
+    dsc_marker_combo.grid(row=1, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(style_box, text="Voltaje line").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    voltage_line_combo = ttk.Combobox(style_box, textvariable=voltage_line_var, values=LINESTYLE_OPTIONS, state="readonly", width=10)
+    voltage_line_combo.grid(row=2, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(style_box, text="Corriente line").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    current_line_combo = ttk.Combobox(style_box, textvariable=current_line_var, values=LINESTYLE_OPTIONS, state="readonly", width=10)
+    current_line_combo.grid(row=3, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(style_box, text="Temperatura line").grid(row=4, column=0, sticky="w", padx=8, pady=3)
+    temperature_line_combo = ttk.Combobox(style_box, textvariable=temperature_line_var, values=LINESTYLE_OPTIONS, state="readonly", width=10)
+    temperature_line_combo.grid(row=4, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(style_box, text="Ticks").grid(row=5, column=0, sticky="w", padx=8, pady=3)
+    tick_spin = tk.Spinbox(style_box, from_=2, to=10, textvariable=tick_count_var, width=8)
+    tick_spin.grid(row=5, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Título").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
+    title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Title size").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    title_size_entry = ttk.Entry(text_box, textvariable=title_fontsize_var, width=10)
+    title_size_entry.grid(row=1, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Tick size").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    tick_size_entry = ttk.Entry(text_box, textvariable=tick_fontsize_var, width=10)
+    tick_size_entry.grid(row=2, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Label size").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    label_size_entry = ttk.Entry(text_box, textvariable=label_fontsize_var, width=10)
+    label_size_entry.grid(row=3, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Legend size").grid(row=4, column=0, sticky="w", padx=8, pady=3)
+    legend_size_entry = ttk.Entry(text_box, textvariable=legend_fontsize_var, width=10)
+    legend_size_entry.grid(row=4, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Marker size").grid(row=5, column=0, sticky="w", padx=8, pady=3)
+    marker_size_entry = ttk.Entry(text_box, textvariable=marker_size_var, width=10)
+    marker_size_entry.grid(row=5, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Line width").grid(row=6, column=0, sticky="w", padx=8, pady=3)
+    line_width_entry = ttk.Entry(text_box, textvariable=line_width_var, width=10)
+    line_width_entry.grid(row=6, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Checkbutton(
+        text_box,
+        text="Hollow markers",
+        variable=hollow_markers_var,
+        command=_schedule_plot,
+    ).grid(row=7, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+
+    limit_specs = [
+        ("t min", t_min_var),
+        ("t max", t_max_var),
+        ("V min", v_min_var),
+        ("V max", v_max_var),
+    ]
+
+    for row_idx, (label, var) in enumerate(limit_specs):
+        ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        entry = ttk.Entry(limits_box, textvariable=var, width=12)
+        entry.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        entry.bind("<Return>", _schedule_plot)
+        entry.bind("<KP_Enter>", _schedule_plot)
+        entry.bind("<FocusOut>", _schedule_plot)
+
+    for combo in (asc_marker_combo, dsc_marker_combo, voltage_line_combo, current_line_combo, temperature_line_combo):
+        combo.bind("<<ComboboxSelected>>", _schedule_plot)
+
+    tick_spin.bind("<Return>", _schedule_plot)
+    tick_spin.bind("<FocusOut>", _schedule_plot)
+    tick_spin.config(command=_schedule_plot)
+
+    for widget in (
+        title_entry,
+        title_size_entry,
+        tick_size_entry,
+        label_size_entry,
+        legend_size_entry,
+        marker_size_entry,
+        line_width_entry,
+    ):
+        widget.bind("<Return>", _schedule_plot)
+        widget.bind("<KP_Enter>", _schedule_plot)
+        widget.bind("<FocusOut>", _schedule_plot)
+
+    ttk.Label(
+        controls_frame,
+        textvariable=status_var,
+        wraplength=260,
+        justify="left",
+    ).pack(anchor="w", fill="x", pady=(10, 10))
+
+    buttons_frame = ttk.Frame(controls_frame)
+    buttons_frame.pack(fill="x", pady=(5, 0))
+
+    ttk.Button(buttons_frame, text="Reset", command=_reset).pack(side="left", padx=(0, 6))
+    ttk.Button(buttons_frame, text="Autofit", command=_autofit).pack(side="left")
+
+    _plot()
 
 
 if __name__ == "__main__":

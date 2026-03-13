@@ -24,14 +24,16 @@ from pathlib import Path
 from typing import Iterable
 import re
 
-import math
-
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
+import tkinter.messagebox as mb
+import tkinter as tk
+from tkinter import ttk
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 
 # ---------------------------------------------------------------------------
@@ -215,23 +217,6 @@ def _column_unit(parsed: ParsedDTA, column_name: str) -> str:
     if unit == "#":
         return ""
     return unit
-
-
-def _numeric_series(parsed: ParsedDTA, column_name: str) -> list[float]:
-    idx = _column_index(parsed, column_name)
-    if idx is None:
-        return []
-
-    values: list[float] = []
-    for row in parsed.rows:
-        if idx >= len(row):
-            continue
-        num = to_float(row[idx])
-        if num is None:
-            continue
-        values.append(num)
-    return values
-
 
 def _paired_series(
     parsed: ParsedDTA,
@@ -648,10 +633,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
     if not figures:
         return
 
-    import tkinter as tk
-    from tkinter import ttk, colorchooser
-    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-
     root = tk._default_root
     created_root = False
     if root is None:
@@ -714,8 +695,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
     def _fmt(v: float) -> str:
         return f"{v:.6g}"
-    
-    from matplotlib.ticker import MaxNLocator
 
     def _snap_linear_limits(vmin: float, vmax: float, nbins: int = 6) -> tuple[float, float]:
         # Ensure order and non-degenerate span
@@ -1763,9 +1742,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         win._mpl_refs.append((canvas, toolbar, fig, ax, line))  # type: ignore[attr-defined]
 
     def open_composer_nyquist():
-        import tkinter as tk
-        from tkinter import ttk
-        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
         if not nyquist_sources:
             return
@@ -2156,9 +2132,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         comp.protocol("WM_DELETE_WINDOW", _on_close)
 
     def open_composer_bode(kind: str):  # kind in {"zmod","zphz"}
-        import tkinter as tk
-        from tkinter import ttk
-        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
         sources = bode_sources.get(kind, {})
         if not sources:
@@ -2474,7 +2447,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             return
 
         # optional: small message
-        import tkinter.messagebox as mb
+
         mb.showinfo("Componer", "Composer is available for Nyquist and Bode plots only.")
 
     compose_btn.configure(command=open_composer_for_current)
