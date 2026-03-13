@@ -162,21 +162,37 @@ def _drop_leading_blank(parts: list[str]) -> list[str]:
         return parts[1:]
     return parts
 
+def apply_temperature_axis_scaling(ax_temp, temp_values: list[float], tick_count: int) -> None:
+    if not temp_values:
+        return
+
+    t_lo = floor(min(temp_values))
+    t_hi = ceil(max(temp_values))
+
+    if t_lo == t_hi:
+        t_hi = t_lo + 1
+
+    tick_count = max(2, int(tick_count))
+
+    ax_temp.set_ylim(t_lo, t_hi)
+    ax_temp.yaxis.set_major_locator(LinearLocator(tick_count))
+    ax_temp.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+
 def apply_current_axis_scaling(ax_current, current_values: list[float], tick_count: int) -> None:
-        if not current_values:
-            return
+    if not current_values:
+        return
 
-        i_lo = 0.0
-        i_hi = ceil(max(current_values))
+    i_lo = 0.0
+    i_hi = ceil(max(current_values))
 
-        if i_hi <= i_lo:
-            i_hi = i_lo + 1.0
+    if i_hi <= i_lo:
+        i_hi = i_lo + 1.0
 
-        tick_count = max(2, int(tick_count))
+    tick_count = max(2, int(tick_count))
 
-        ax_current.set_ylim(i_lo, i_hi)
-        ax_current.yaxis.set_major_locator(LinearLocator(tick_count))
-        ax_current.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    ax_current.set_ylim(i_lo, i_hi)
+    ax_current.yaxis.set_major_locator(LinearLocator(tick_count))
+    ax_current.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
 
 def _extract_parenthesized_unit(text: str) -> str:
@@ -512,7 +528,7 @@ def draw_v_vs_i_on_figure(
         for line in temp_lines:
             temp_values.extend(line.get_ydata())
 
-        apply_current_axis_scaling(
+        apply_temperature_axis_scaling(
             ax_temp=ax_temp,
             temp_values=temp_values,
             tick_count=tick_count,
