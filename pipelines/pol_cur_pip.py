@@ -162,6 +162,22 @@ def _drop_leading_blank(parts: list[str]) -> list[str]:
         return parts[1:]
     return parts
 
+def apply_current_axis_scaling(ax_current, current_values: list[float], tick_count: int) -> None:
+        if not current_values:
+            return
+
+        i_lo = 0.0
+        i_hi = ceil(max(current_values))
+
+        if i_hi <= i_lo:
+            i_hi = i_lo + 1.0
+
+        tick_count = max(2, int(tick_count))
+
+        ax_current.set_ylim(i_lo, i_hi)
+        ax_current.yaxis.set_major_locator(LinearLocator(tick_count))
+        ax_current.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+
 
 def _extract_parenthesized_unit(text: str) -> str:
     matches = re.findall(r"\(([^()]*)\)", text)
@@ -485,6 +501,8 @@ def draw_v_vs_i_on_figure(
             ax_main.yaxis.set_major_locator(MaxNLocator(nbins=tick_count))
         ax_main.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
+    
+
     # Temperature axis
     if ax_temp is not None:
         ax_temp.tick_params(axis="y", labelsize=tick_fontsize)
@@ -494,7 +512,7 @@ def draw_v_vs_i_on_figure(
         for line in temp_lines:
             temp_values.extend(line.get_ydata())
 
-        apply_temperature_axis_scaling(
+        apply_current_axis_scaling(
             ax_temp=ax_temp,
             temp_values=temp_values,
             tick_count=tick_count,
@@ -581,14 +599,14 @@ def draw_series_by_time_on_figure(
             else:
                 ax_temp = ax_main
 
-    asc_marker_mpl = _mpl_marker(asc_marker)
-    dsc_marker_mpl = _mpl_marker(dsc_marker)
+    asc_marker_mpl = "None"
+    dsc_marker_mpl = "None"
     voltage_ls_mpl = _mpl_linestyle(voltage_linestyle)
     current_ls_mpl = _mpl_linestyle(current_linestyle)
     temp_ls_mpl = _mpl_linestyle(temperature_linestyle)
 
-    def _series_visible(marker_value: str, line_value: str) -> bool:
-        return not (marker_value == "none" and line_value == "none")
+    def _series_visible(line_value: str) -> bool:
+        return line_value != "none"
 
     def _line_kwargs(color: str, mpl_marker: str, mpl_linestyle: str) -> dict:
         kwargs = {
@@ -612,7 +630,7 @@ def draw_series_by_time_on_figure(
 
         x_vals = [r["plot_time"] for r in rows]
 
-        if show_voltage and _series_visible(marker_value, voltage_linestyle):
+        if show_voltage and _series_visible(voltage_linestyle):
             ax_main.plot(
                 x_vals,
                 [r["Voltaje"] for r in rows],
@@ -624,7 +642,7 @@ def draw_series_by_time_on_figure(
                 ),
             )
 
-        if show_current and ax_current is not None and _series_visible(marker_value, current_linestyle):
+        if show_current and ax_current is not None and _series_visible(current_linestyle):
             ax_current.plot(
                 x_vals,
                 [r["Corriente"] for r in rows],
@@ -636,7 +654,7 @@ def draw_series_by_time_on_figure(
                 ),
             )
 
-        if show_temperature and ax_temp is not None and _series_visible(marker_value, temperature_linestyle):
+        if show_temperature and ax_temp is not None and _series_visible(temperature_linestyle):
             ax_temp.plot(
                 x_vals,
                 [r["Temperatura"] for r in rows],
@@ -659,8 +677,9 @@ def draw_series_by_time_on_figure(
             labels += l2
 
     if ax_current is ax_main:
-        h2, l2 = ax_main.get_legend_handles_labels()
-        handles, labels = h2, l2
+        ax_main.set_ylabel("Corriente (A)", fontsize=label_fontsize)
+        current_values = [r["Corriente"] for r in asc_rows] + [r["Corriente"] for r in dsc_rows]
+        apply_current_axis_scaling(ax_main, current_values, tick_count)
 
     if not handles:
         fig.clear()
@@ -705,7 +724,7 @@ def draw_series_by_time_on_figure(
         ax_current.tick_params(axis="y", labelsize=tick_fontsize)
         ax_current.set_ylabel("Corriente (A)", fontsize=label_fontsize)
         current_values = [r["Corriente"] for r in asc_rows] + [r["Corriente"] for r in dsc_rows]
-        apply_secondary_axis_scaling(ax_current, current_values, tick_count)
+        apply_current_axis_scaling(ax_current, current_values, tick_count)
 
     if ax_temp is not None and ax_temp is not ax_main:
         ax_temp.tick_params(axis="y", labelsize=tick_fontsize)
@@ -759,38 +778,30 @@ def compute_autofit_series_by_time_limits(
         "t_max": "",
         "v_min": "",
         "v_max": "",
+        "i_min": "0",
+        "i_max": "",
     }
 
+    # Time axis: natural visible range of selected rows
     t_values = [r["plot_time"] for r in rows]
     if t_values:
-        t_lo, t_hi = _padded_limits(t_values, decimals=decimals)
-        out["t_min"] = _format_limit_value(t_lo, decimals)
-        out["t_max"] = _format_limit_value(t_hi, decimals)
+        out["t_min"] = _format_limit_value(_round_down_dec(min(t_values), decimals), decimals)
+        out["t_max"] = _format_limit_value(_round_up_dec(max(t_values), decimals), decimals)
 
+    # Voltage axis: same logic as V vs I autofit
     if show_voltage:
         v_values = [r["Voltaje"] for r in rows]
         if v_values:
-            v_lo, v_hi = _padded_limits(v_values, decimals=decimals)
-            out["v_min"] = _format_limit_value(v_lo, decimals)
-            out["v_max"] = _format_limit_value(v_hi, decimals)
+            out["v_min"] = _format_limit_value(_round_down_dec(min(v_values), decimals), decimals)
+            out["v_max"] = _format_limit_value(_round_up_dec(max(v_values), decimals), decimals)
+
+    # Current axis: always start at 0
+    if show_current:
+        i_values = [r["Corriente"] for r in rows]
+        if i_values:
+            out["i_max"] = _format_limit_value(_round_up_dec(max(i_values), decimals), decimals)
 
     return out
-
-def apply_temperature_axis_scaling(ax_temp, temp_values: list[float], tick_count: int) -> None:
-    if not temp_values:
-        return
-
-    t_lo = floor(min(temp_values))
-    t_hi = ceil(max(temp_values))
-
-    if t_lo == t_hi:
-        t_hi = t_lo + 1
-
-    tick_count = max(2, int(tick_count))
-
-    ax_temp.set_ylim(t_lo, t_hi)
-    ax_temp.yaxis.set_major_locator(LinearLocator(tick_count))
-    ax_temp.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
 # ---------------------------------------------------------------------------
 # File discovery and grouping
