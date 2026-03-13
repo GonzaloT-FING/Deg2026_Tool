@@ -119,6 +119,41 @@ def to_float(val: str) -> float | None:
     except ValueError:
         return None
 
+BACKUP_SUFFIX_RE = re.compile(r"\s+\([^)]*\)$")
+
+SINGLE_INDEX_RE = re.compile(
+    r"^Curva_Polarizacion_(?P<direction>Asc|Dsc)_(?P<description>.+?)_#(?P<file_index>\d+)\.DTA$",
+    re.IGNORECASE,
+)
+
+def _normalize_filename_for_parser(path: Path, default_curve_id: int = 1) -> str:
+    name = path.name
+
+    # First remove trailing backup signature, if present:
+    # "Curva_Polarizacion_Dsc_33s_2x_#145 (2026_03_10 19_56_50 UTC).DTA"
+    # -> "Curva_Polarizacion_Dsc_33s_2x_#145.DTA"
+    stem = path.stem
+    stem = BACKUP_SUFFIX_RE.sub("", stem)
+    cleaned_name = f"{stem}{path.suffix}"
+
+    # If it already matches the normal format, keep it unchanged
+    if FILE_RE.match(cleaned_name):
+        return cleaned_name
+
+    # If it is the backup format with only one #number, convert it to the
+    # standard two-number format expected by FILE_RE
+    match = SINGLE_INDEX_RE.match(cleaned_name)
+    if match:
+        return (
+            f"Curva_Polarizacion_"
+            f"{match.group('direction').title()}_"
+            f"{match.group('description')}"
+            f"_#{default_curve_id}"
+            f"_#{match.group('file_index')}"
+            f"{path.suffix}"
+        )
+
+    return cleaned_name
 
 def _drop_leading_blank(parts: list[str]) -> list[str]:
     if parts and parts[0] == "":
@@ -553,7 +588,9 @@ def apply_temperature_axis_scaling(ax_temp, temp_values: list[float], tick_count
 # File discovery and grouping
 # ---------------------------------------------------------------------------
 def _parse_filename(path: Path) -> PolarizationFile | None:
-    match = FILE_RE.match(path.name)
+    normalized_name = _normalize_filename_for_parser(path)
+    match = FILE_RE.match(normalized_name)
+
     if not match:
         return None
 
