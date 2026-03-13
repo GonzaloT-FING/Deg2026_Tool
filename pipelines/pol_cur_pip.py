@@ -541,7 +541,6 @@ def draw_series_by_time_on_figure(
     tick_count = max(2, int(tick_count))
 
     plot_data = build_series_by_time_plot_data(bundle)
-
     asc_rows = plot_data["asc_rows"] if show_asc else []
     dsc_rows = plot_data["dsc_rows"] if show_dsc else []
 
@@ -549,11 +548,38 @@ def draw_series_by_time_on_figure(
         return False
 
     ax_main = fig.add_subplot(111)
-    ax_secondary = None
+    ax_current = None
+    ax_temp = None
 
-    has_secondary = show_current or show_temperature
-    if show_voltage and has_secondary:
-        ax_secondary = ax_main.twinx()
+    # Axis layout
+    if show_voltage:
+        if show_current:
+            ax_current = ax_main.twinx()
+            ax_current.spines["left"].set_visible(False)
+            ax_current.yaxis.tick_right()
+            ax_current.yaxis.set_label_position("right")
+
+        if show_temperature:
+            ax_temp = ax_main.twinx()
+            ax_temp.spines["left"].set_visible(False)
+            ax_temp.yaxis.tick_right()
+            ax_temp.yaxis.set_label_position("right")
+
+            if ax_current is not None:
+                ax_temp.spines["right"].set_position(("outward", 60))
+    else:
+        # No voltage selected: use main axis for current if present, otherwise temperature
+        if show_current:
+            ax_current = ax_main
+        if show_temperature:
+            if show_current:
+                ax_temp = ax_main.twinx()
+                ax_temp.spines["left"].set_visible(False)
+                ax_temp.yaxis.tick_right()
+                ax_temp.yaxis.set_label_position("right")
+                ax_temp.spines["right"].set_position(("outward", 60))
+            else:
+                ax_temp = ax_main
 
     asc_marker_mpl = _mpl_marker(asc_marker)
     dsc_marker_mpl = _mpl_marker(dsc_marker)
@@ -576,10 +602,7 @@ def draw_series_by_time_on_figure(
         if mpl_marker != "None":
             kwargs["markeredgecolor"] = color
             kwargs["markeredgewidth"] = 1.2
-            if hollow_markers and mpl_marker not in {"x", "+"}:
-                kwargs["markerfacecolor"] = "none"
-            else:
-                kwargs["markerfacecolor"] = color
+            kwargs["markerfacecolor"] = "none" if hollow_markers and mpl_marker not in {"x", "+"} else color
 
         return kwargs
 
@@ -601,10 +624,8 @@ def draw_series_by_time_on_figure(
                 ),
             )
 
-        target_ax = ax_secondary if ax_secondary is not None else ax_main
-
-        if show_current and _series_visible(marker_value, current_linestyle):
-            target_ax.plot(
+        if show_current and ax_current is not None and _series_visible(marker_value, current_linestyle):
+            ax_current.plot(
                 x_vals,
                 [r["Corriente"] for r in rows],
                 label=f"{prefix} I",
@@ -615,8 +636,8 @@ def draw_series_by_time_on_figure(
                 ),
             )
 
-        if show_temperature and _series_visible(marker_value, temperature_linestyle):
-            target_ax.plot(
+        if show_temperature and ax_temp is not None and _series_visible(marker_value, temperature_linestyle):
+            ax_temp.plot(
                 x_vals,
                 [r["Temperatura"] for r in rows],
                 label=f"{prefix} T",
@@ -631,10 +652,15 @@ def draw_series_by_time_on_figure(
     _plot_direction(dsc_rows, "Dsc", dsc_marker, dsc_marker_mpl)
 
     handles, labels = ax_main.get_legend_handles_labels()
-    if ax_secondary is not None:
-        h2, l2 = ax_secondary.get_legend_handles_labels()
-        handles += h2
-        labels += l2
+    for extra_ax in (ax_current, ax_temp):
+        if extra_ax is not None and extra_ax is not ax_main:
+            h2, l2 = extra_ax.get_legend_handles_labels()
+            handles += h2
+            labels += l2
+
+    if ax_current is ax_main:
+        h2, l2 = ax_main.get_legend_handles_labels()
+        handles, labels = h2, l2
 
     if not handles:
         fig.clear()
@@ -646,7 +672,6 @@ def draw_series_by_time_on_figure(
     ax_main.set_xlabel("Tiempo (s)", fontsize=label_fontsize)
     ax_main.set_title(final_title, fontsize=title_fontsize)
     ax_main.grid(True)
-
     ax_main.tick_params(axis="both", labelsize=tick_fontsize)
 
     if t_min is not None or t_max is not None:
@@ -656,53 +681,41 @@ def draw_series_by_time_on_figure(
         ax_main.xaxis.set_major_locator(MaxNLocator(nbins=tick_count))
     ax_main.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
+    # Voltage axis
     if show_voltage:
         ax_main.set_ylabel("Voltaje (V)", fontsize=label_fontsize)
-
         if v_min is not None or v_max is not None:
             ax_main.set_ylim(bottom=v_min, top=v_max)
             ax_main.yaxis.set_major_locator(LinearLocator(tick_count))
         else:
             ax_main.yaxis.set_major_locator(MaxNLocator(nbins=tick_count))
         ax_main.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
-
     else:
-        secondary_values = []
-        if show_current:
-            secondary_values.extend([r["Corriente"] for r in asc_rows])
-            secondary_values.extend([r["Corriente"] for r in dsc_rows])
-        if show_temperature:
-            secondary_values.extend([r["Temperatura"] for r in asc_rows])
-            secondary_values.extend([r["Temperatura"] for r in dsc_rows])
-
-        if show_current and show_temperature:
-            ax_main.set_ylabel("Corriente / Temperatura", fontsize=label_fontsize)
-        elif show_current:
+        # Main axis is being used by current or temperature
+        if ax_current is ax_main:
             ax_main.set_ylabel("Corriente (A)", fontsize=label_fontsize)
-        elif show_temperature:
+            current_values = [r["Corriente"] for r in asc_rows] + [r["Corriente"] for r in dsc_rows]
+            apply_secondary_axis_scaling(ax_main, current_values, tick_count)
+        elif ax_temp is ax_main:
             ax_main.set_ylabel("Temperatura (°C)", fontsize=label_fontsize)
+            temp_values = [r["Temperatura"] for r in asc_rows] + [r["Temperatura"] for r in dsc_rows]
+            apply_secondary_axis_scaling(ax_main, temp_values, tick_count)
 
-        apply_secondary_axis_scaling(ax_main, secondary_values, tick_count)
+    if ax_current is not None and ax_current is not ax_main:
+        ax_current.tick_params(axis="y", labelsize=tick_fontsize)
+        ax_current.set_ylabel("Corriente (A)", fontsize=label_fontsize)
+        current_values = [r["Corriente"] for r in asc_rows] + [r["Corriente"] for r in dsc_rows]
+        apply_secondary_axis_scaling(ax_current, current_values, tick_count)
 
-    if ax_secondary is not None:
-        ax_secondary.tick_params(axis="y", labelsize=tick_fontsize)
+    if ax_temp is not None and ax_temp is not ax_main:
+        ax_temp.tick_params(axis="y", labelsize=tick_fontsize)
+        ax_temp.set_ylabel("Temperatura (°C)", fontsize=label_fontsize)
+        temp_values = [r["Temperatura"] for r in asc_rows] + [r["Temperatura"] for r in dsc_rows]
+        apply_secondary_axis_scaling(ax_temp, temp_values, tick_count)
 
-        secondary_values = []
-        if show_current:
-            secondary_values.extend([r["Corriente"] for r in asc_rows])
-            secondary_values.extend([r["Corriente"] for r in dsc_rows])
-        if show_temperature:
-            secondary_values.extend([r["Temperatura"] for r in asc_rows])
-            secondary_values.extend([r["Temperatura"] for r in dsc_rows])
-
-        if show_current and show_temperature:
-            ax_secondary.set_ylabel("Corriente / Temperatura", fontsize=label_fontsize)
-        elif show_current:
-            ax_secondary.set_ylabel("Corriente (A)", fontsize=label_fontsize)
-        elif show_temperature:
-            ax_secondary.set_ylabel("Temperatura (°C)", fontsize=label_fontsize)
-
-        apply_secondary_axis_scaling(ax_secondary, secondary_values, tick_count)
+    # Extra room when 3 y-axes are visible
+    if show_voltage and show_current and show_temperature:
+        fig.subplots_adjust(right=0.80)
 
     ax_main.legend(handles, labels, fontsize=legend_fontsize)
     fig.tight_layout()
@@ -715,62 +728,51 @@ def _mpl_marker(value: str) -> str:
 def _mpl_linestyle(value: str) -> str:
     return "None" if value == "none" else value
 
-def compute_autofit_v_vs_i_limits(
+def compute_autofit_series_by_time_limits(
     bundle: CurveBundle,
     show_asc: bool,
     show_dsc: bool,
     show_voltage: bool,
+    show_current: bool,
     show_temperature: bool,
-    point_fraction: float,
+    decimals: int = 1,
 ) -> dict[str, str]:
     if not (show_asc or show_dsc):
         raise ValueError("Debe seleccionar Asc y/o Dsc para usar Autofit.")
 
-    if not (show_voltage or show_temperature):
-        raise ValueError("Debe seleccionar Voltaje y/o Temperatura para usar Autofit.")
+    if not (show_voltage or show_current or show_temperature):
+        raise ValueError("Debe seleccionar al menos una magnitud para usar Autofit.")
 
-    curve_data = build_curve_bundle_data(bundle)
+    plot_data = build_series_by_time_plot_data(bundle)
 
-    asc_rows = (
-        select_fractional_point_per_step(
-            curve_data["asc_rows"],
-            curve_data["asc_tol"],
-            point_fraction,
-        )
-        if show_asc and curve_data["asc_rows"]
-        else []
-    )
+    rows = []
+    if show_asc:
+        rows.extend(plot_data["asc_rows"])
+    if show_dsc:
+        rows.extend(plot_data["dsc_rows"])
 
-    dsc_rows = (
-        select_fractional_point_per_step(
-            curve_data["dsc_rows"],
-            curve_data["dsc_tol"],
-            point_fraction,
-        )
-        if show_dsc and curve_data["dsc_rows"]
-        else []
-    )
-
-    rows = asc_rows + dsc_rows
     if not rows:
         raise ValueError("No hay datos válidos para ajustar los ejes.")
 
     out = {
-        "x_min": "0",
-        "x_max": "",
+        "t_min": "",
+        "t_max": "",
         "v_min": "",
         "v_max": "",
     }
 
-    currents = [r["Corriente"] for r in rows]
-    if currents:
-        out["x_max"] = str(int(ceil(max(currents))))
+    t_values = [r["plot_time"] for r in rows]
+    if t_values:
+        t_lo, t_hi = _padded_limits(t_values, decimals=decimals)
+        out["t_min"] = _format_limit_value(t_lo, decimals)
+        out["t_max"] = _format_limit_value(t_hi, decimals)
 
     if show_voltage:
-        voltages = [r["Voltaje"] for r in rows]
-        if voltages:
-            out["v_min"] = str(int(floor(min(voltages))))
-            out["v_max"] = str(int(ceil(max(voltages))))
+        v_values = [r["Voltaje"] for r in rows]
+        if v_values:
+            v_lo, v_hi = _padded_limits(v_values, decimals=decimals)
+            out["v_min"] = _format_limit_value(v_lo, decimals)
+            out["v_max"] = _format_limit_value(v_hi, decimals)
 
     return out
 
