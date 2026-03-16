@@ -1,4 +1,4 @@
-"""Open circuit potential (.DTA) -> Excel (.xlsx) exporter for Gamry OCP files."""
+﻿"""Open circuit potential (.DTA) -> Excel (.xlsx) exporter for Gamry OCP files."""
 
 from __future__ import annotations
 
@@ -18,10 +18,10 @@ from openpyxl.utils import get_column_letter
 
 
 META_FIELDS = [
-    ("TITLE", "Técnica"),
+    ("TITLE", "TÃ©cnica"),
     ("DATE", "Fecha"),
     ("TIME", "Hora"),
-    ("TIMEOUT", "Duración"),
+    ("TIMEOUT", "DuraciÃ³n"),
     ("SAMPLETIME", "tiempo de muestreo"),
     ("STABILITY", "estabilizacion"),
     ("AREA", "Area"),
@@ -36,7 +36,7 @@ DATA_EXPORT = [
     ("Temp", "Temperatura"),
 ]
 
-OCP_FILE_RE = re.compile(r"^OCP_.+\.DTA$", re.IGNORECASE)
+OCP_FILE_RE = re.compile(r"^OCP.*\.DTA$", re.IGNORECASE)
 
 OCP_PLOT_COLORS = {
     "voltage": "#06a8c2",
@@ -262,7 +262,7 @@ def _required_numeric_series(parsed: ParsedDTA, x_col: str, y_col: str) -> tuple
         y_values.append(y_val)
 
     if not x_values or not y_values:
-        raise ValueError(f"No hay datos numéricos válidos para {y_col} vs {x_col}.")
+        raise ValueError(f"No hay datos numÃ©ricos vÃ¡lidos para {y_col} vs {x_col}.")
 
     return x_values, y_values
 
@@ -279,7 +279,7 @@ def _optional_float(value: str | None) -> float | None:
 def _positive_float(text: str, name: str) -> float:
     value = text.strip().replace(",", ".")
     if not value:
-        raise ValueError(f"{name} no puede estar vacío.")
+        raise ValueError(f"{name} no puede estar vacÃ­o.")
     num = float(value)
     if num <= 0:
         raise ValueError(f"{name} debe ser mayor que 0.")
@@ -302,8 +302,62 @@ def _format_limit_value(value: float | None, decimals: int = 1) -> str:
     return f"{value:.{decimals}f}"
 
 
+def _padded_limits(
+    values: list[float],
+    rel_pad: float = 0.05,
+    decimals: int = 1,
+) -> tuple[float | None, float | None]:
+    if not values:
+        return None, None
+
+    vmin = min(values)
+    vmax = max(values)
+
+    if vmin == vmax:
+        pad = max(abs(vmin) * rel_pad, 1e-6)
+    else:
+        pad = (vmax - vmin) * rel_pad
+
+    lo = _round_down_dec(vmin - pad, decimals)
+    hi = _round_up_dec(vmax + pad, decimals)
+    return lo, hi
+
+
 def _mpl_linestyle(value: str) -> str:
     return "None" if value == "none" else value
+
+
+def _pick_legend_corner(series_specs: list[tuple[list[float], list[float], tuple[float, float], tuple[float, float]]]) -> str:
+    counts = {
+        "upper left": 0,
+        "upper right": 0,
+        "lower left": 0,
+        "lower right": 0,
+    }
+
+    for x_values, y_values, xlim, ylim in series_specs:
+        if not x_values or not y_values:
+            continue
+
+        x_min, x_max = xlim
+        y_min, y_max = ylim
+        if x_max == x_min or y_max == y_min:
+            continue
+
+        step = max(1, len(x_values) // 500)
+        for x_val, y_val in zip(x_values[::step], y_values[::step]):
+            x_norm = (x_val - x_min) / (x_max - x_min)
+            y_norm = (y_val - y_min) / (y_max - y_min)
+            if x_norm <= 0.5 and y_norm >= 0.5:
+                counts["upper left"] += 1
+            elif x_norm > 0.5 and y_norm >= 0.5:
+                counts["upper right"] += 1
+            elif x_norm <= 0.5 and y_norm < 0.5:
+                counts["lower left"] += 1
+            else:
+                counts["lower right"] += 1
+
+    return min(counts, key=counts.get)
 
 
 def _build_scrollable_controls(parent) -> ttk.Frame:
@@ -348,13 +402,17 @@ def compute_default_v_vs_t_limits(parsed: ParsedDTA, decimals: int = 1) -> dict[
     time_values, voltage_values = _required_numeric_series(parsed, "T", "Vf")
     _temp_time_values, temp_values = _required_numeric_series(parsed, "T", "Temp")
 
+    t_min, t_max = _padded_limits(time_values, decimals=decimals)
+    v_min, v_max = _padded_limits(voltage_values, decimals=decimals)
+    temp_min, temp_max = _padded_limits(temp_values, decimals=decimals)
+
     return {
-        "t_min": _format_limit_value(_round_down_dec(min(time_values), decimals), decimals),
-        "t_max": _format_limit_value(_round_up_dec(max(time_values), decimals), decimals),
-        "v_min": _format_limit_value(_round_down_dec(min(voltage_values), decimals), decimals),
-        "v_max": _format_limit_value(_round_up_dec(max(voltage_values), decimals), decimals),
-        "temp_min": _format_limit_value(_round_down_dec(min(temp_values), decimals), decimals),
-        "temp_max": _format_limit_value(_round_up_dec(max(temp_values), decimals), decimals),
+        "t_min": _format_limit_value(t_min, decimals),
+        "t_max": _format_limit_value(t_max, decimals),
+        "v_min": _format_limit_value(v_min, decimals),
+        "v_max": _format_limit_value(v_max, decimals),
+        "temp_min": _format_limit_value(temp_min, decimals),
+        "temp_max": _format_limit_value(temp_max, decimals),
     }
 
 
@@ -393,7 +451,7 @@ def build_delta_v_data(parsed: ParsedDTA) -> dict[str, list[float]]:
         delta_v_values.append(dv)
 
     if not dvdt_time:
-        raise ValueError("No hay suficientes datos válidos para calcular dV/dt.")
+        raise ValueError("No hay suficientes datos vÃ¡lidos para calcular dV/dt.")
 
     return {
         "raw_time": time_values,
@@ -408,11 +466,13 @@ def build_delta_v_data(parsed: ParsedDTA) -> dict[str, list[float]]:
 
 def compute_default_delta_v_limits(parsed: ParsedDTA, decimals: int = 3) -> dict[str, str]:
     delta_data = build_delta_v_data(parsed)
+    t_min, t_max = _padded_limits(delta_data["dvdt_time"], decimals=decimals)
+    dvdt_min, dvdt_max = _padded_limits(delta_data["dvdt_values"], decimals=decimals)
     return {
-        "t_min": _format_limit_value(_round_down_dec(min(delta_data["dvdt_time"]), decimals), decimals),
-        "t_max": _format_limit_value(_round_up_dec(max(delta_data["dvdt_time"]), decimals), decimals),
-        "dvdt_min": _format_limit_value(_round_down_dec(min(delta_data["dvdt_values"]), decimals), decimals),
-        "dvdt_max": _format_limit_value(_round_up_dec(max(delta_data["dvdt_values"]), decimals), decimals),
+        "t_min": _format_limit_value(t_min, decimals),
+        "t_max": _format_limit_value(t_max, decimals),
+        "dvdt_min": _format_limit_value(dvdt_min, decimals),
+        "dvdt_max": _format_limit_value(dvdt_max, decimals),
     }
 
 
@@ -435,13 +495,16 @@ def compute_autofit_delta_v_limits(
         filtered_values.append(dvdt_value)
 
     if not filtered_time:
-        raise ValueError("No hay datos válidos de dV/dt en el rango de tiempo seleccionado.")
+        raise ValueError("No hay datos vÃ¡lidos de dV/dt en el rango de tiempo seleccionado.")
+
+    t_min_fit, t_max_fit = _padded_limits(filtered_time, decimals=decimals)
+    dvdt_min_fit, dvdt_max_fit = _padded_limits(filtered_values, decimals=decimals)
 
     return {
-        "t_min": _format_limit_value(_round_down_dec(min(filtered_time), decimals), decimals),
-        "t_max": _format_limit_value(_round_up_dec(max(filtered_time), decimals), decimals),
-        "dvdt_min": _format_limit_value(_round_down_dec(min(filtered_values), decimals), decimals),
-        "dvdt_max": _format_limit_value(_round_up_dec(max(filtered_values), decimals), decimals),
+        "t_min": _format_limit_value(t_min_fit, decimals),
+        "t_max": _format_limit_value(t_max_fit, decimals),
+        "dvdt_min": _format_limit_value(dvdt_min_fit, decimals),
+        "dvdt_max": _format_limit_value(dvdt_max_fit, decimals),
     }
 
 
@@ -475,7 +538,7 @@ def compute_delta_v_indicators(
         last_dvdt = dvdt_value
 
     if not selected_rates or selected_start is None or selected_end is None or last_dvdt is None:
-        raise ValueError("No hay datos válidos de dV/dt en el rango de tiempo seleccionado.")
+        raise ValueError("No hay datos vÃ¡lidos de dV/dt en el rango de tiempo seleccionado.")
 
     raw_time = delta_data["raw_time"]
     raw_voltage = delta_data["raw_voltage"]
@@ -570,7 +633,7 @@ def draw_v_vs_t_on_figure(
             linestyle=_mpl_linestyle(temperature_linestyle),
             label="Temperatura",
         )
-        ax_temp.set_ylabel("Temperatura [°C]", color=OCP_PLOT_COLORS["temperature"], fontsize=label_fontsize)
+        ax_temp.set_ylabel("Temperatura [Â°C]", color=OCP_PLOT_COLORS["temperature"], fontsize=label_fontsize)
         ax_temp.tick_params(axis="y", labelcolor=OCP_PLOT_COLORS["temperature"], labelsize=tick_fontsize)
         ax_temp.yaxis.set_major_locator(MaxNLocator(nbins=max(2, int(tick_count))))
         if temp_min is not None or temp_max is not None:
@@ -585,28 +648,27 @@ def draw_v_vs_t_on_figure(
     ax_main.set_title(final_title, fontsize=title_fontsize)
 
     if handles:
-        ax_main.legend(handles, labels, loc="best", fontsize=legend_fontsize)
+        series_specs = []
+        if has_voltage:
+            series_specs.append((time_values, voltage_values, ax_main.get_xlim(), ax_main.get_ylim()))
+        if show_temperature and ax_temp is not None:
+            series_specs.append((temp_time_values, temp_values, ax_main.get_xlim(), ax_temp.get_ylim()))
+        legend_loc = _pick_legend_corner(series_specs) if series_specs else "best"
+        ax_main.legend(handles, labels, loc=legend_loc, fontsize=legend_fontsize)
 
     fig.tight_layout()
     return True
 
 
-def open_v_vs_t_window(input_dir: Path) -> None:
-    ocp_files = find_ocp_files(Path(input_dir))
-    if not ocp_files:
-        raise ValueError("No se encontraron archivos OCP válidos.")
-
-    source_path = ocp_files[0]
+def _build_v_vs_t_tab(parent: tk.Widget, source_path: Path) -> None:
+    root = parent.winfo_toplevel()
     parsed = parse_gamry_dta(source_path)
     default_limits = compute_default_v_vs_t_limits(parsed)
 
-    win = tk.Toplevel()
-    win.title(f"OCP - V vs t - {source_path.stem}")
-    win.geometry("1200x720")
 
-    controls_frame = _build_scrollable_controls(win)
+    controls_frame = _build_scrollable_controls(parent)
 
-    plot_outer = ttk.Frame(win, padding=10)
+    plot_outer = ttk.Frame(parent, padding=10)
     plot_outer.pack(side="right", fill="both", expand=True)
 
     toolbar_frame = ttk.Frame(plot_outer)
@@ -702,18 +764,18 @@ def open_v_vs_t_window(input_dir: Path) -> None:
         if not has_plot:
             fig.clear()
             canvas.draw_idle()
-            status_var.set("No se muestra gráfico: active al menos una serie.")
+            status_var.set("No se muestra grÃ¡fico: active al menos una serie.")
             return
 
         canvas.draw_idle()
-        status_var.set("Gráfico actualizado.")
+        status_var.set("GrÃ¡fico actualizado.")
 
     def _schedule_plot(*_args):
         if suspend_events["value"]:
             return
         if plot_job["id"] is not None:
-            win.after_cancel(plot_job["id"])
-        plot_job["id"] = win.after(20, _plot)
+            root.after_cancel(plot_job["id"])
+        plot_job["id"] = root.after(20, _plot)
 
     def _autofit():
         try:
@@ -773,10 +835,10 @@ def open_v_vs_t_window(input_dir: Path) -> None:
     style_box = ttk.LabelFrame(controls_frame, text="Estilo")
     style_box.pack(fill="x", pady=5)
 
-    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamaños")
+    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamaÃ±os")
     text_box.pack(fill="x", pady=5)
 
-    limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
+    limits_box = ttk.LabelFrame(controls_frame, text="LÃ­mites de ejes")
     limits_box.pack(fill="x", pady=5)
 
     ttk.Checkbutton(
@@ -810,7 +872,7 @@ def open_v_vs_t_window(input_dir: Path) -> None:
     tick_spin = tk.Spinbox(style_box, from_=2, to=10, textvariable=tick_count_var, width=8)
     tick_spin.grid(row=2, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Título").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="TÃ­tulo").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
     title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
 
@@ -930,6 +992,43 @@ def open_v_vs_t_window(input_dir: Path) -> None:
     _plot()
 
 
+def open_delta_v_window(input_dir: Path) -> None:
+    ocp_files = find_ocp_files(Path(input_dir))
+    if not ocp_files:
+        raise ValueError("No se encontraron archivos OCP válidos.")
+
+    win = tk.Toplevel()
+    win.title("OCP - DeltaV")
+    win.geometry("1200x720")
+
+    notebook = ttk.Notebook(win)
+    notebook.pack(fill="both", expand=True)
+
+    for source_path in ocp_files:
+        tab_frame = ttk.Frame(notebook)
+        notebook.add(tab_frame, text=source_path.stem)
+        _build_delta_v_tab(tab_frame, source_path)
+
+
+def open_v_vs_t_window(input_dir: Path) -> None:
+    ocp_files = find_ocp_files(Path(input_dir))
+    if not ocp_files:
+        raise ValueError("No se encontraron archivos OCP válidos.")
+
+    win = tk.Toplevel()
+    win.title("OCP - V vs t")
+    win.geometry("1200x720")
+
+
+    notebook = ttk.Notebook(win)
+    notebook.pack(fill="both", expand=True)
+
+    for source_path in ocp_files:
+        tab_frame = ttk.Frame(notebook)
+        notebook.add(tab_frame, text=source_path.stem)
+        _build_v_vs_t_tab(tab_frame, source_path)
+
+
 def draw_delta_v_on_figure(
     fig: Figure,
     parsed: ParsedDTA,
@@ -1021,28 +1120,27 @@ def draw_delta_v_on_figure(
         labels.extend(voltage_labels)
 
     if handles:
-        ax_main.legend(handles, labels, loc="best", fontsize=legend_fontsize)
+        series_specs = []
+        if linestyle != "None":
+            series_specs.append((delta_data["dvdt_time"], delta_data["dvdt_values"], ax_main.get_xlim(), ax_main.get_ylim()))
+        if ax_voltage is not None:
+            series_specs.append((raw_time, raw_voltage, ax_main.get_xlim(), ax_voltage.get_ylim()))
+        legend_loc = _pick_legend_corner(series_specs) if series_specs else "best"
+        ax_main.legend(handles, labels, loc=legend_loc, fontsize=legend_fontsize)
 
     fig.tight_layout()
     return True
 
 
-def open_delta_v_window(input_dir: Path) -> None:
-    ocp_files = find_ocp_files(Path(input_dir))
-    if not ocp_files:
-        raise ValueError("No se encontraron archivos OCP válidos.")
-
-    source_path = ocp_files[0]
+def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
+    root = parent.winfo_toplevel()
     parsed = parse_gamry_dta(source_path)
     default_limits = compute_default_delta_v_limits(parsed)
 
-    win = tk.Toplevel()
-    win.title(f"OCP - DeltaV - {source_path.stem}")
-    win.geometry("1200x720")
 
-    controls_frame = _build_scrollable_controls(win)
+    controls_frame = _build_scrollable_controls(parent)
 
-    plot_outer = ttk.Frame(win, padding=10)
+    plot_outer = ttk.Frame(parent, padding=10)
     plot_outer.pack(side="right", fill="both", expand=True)
 
     toolbar_frame = ttk.Frame(plot_outer)
@@ -1157,18 +1255,18 @@ def open_delta_v_window(input_dir: Path) -> None:
         if not has_plot:
             fig.clear()
             canvas.draw_idle()
-            status_var.set("No se muestra gráfico: active una línea visible.")
+            status_var.set("No se muestra grÃ¡fico: active una lÃ­nea visible.")
             return
 
         canvas.draw_idle()
-        status_var.set("Gráfico actualizado.")
+        status_var.set("GrÃ¡fico actualizado.")
 
     def _schedule_plot(*_args):
         if suspend_events["value"]:
             return
         if plot_job["id"] is not None:
-            win.after_cancel(plot_job["id"])
-        plot_job["id"] = win.after(20, _plot)
+            root.after_cancel(plot_job["id"])
+        plot_job["id"] = root.after(20, _plot)
 
     def _autofit():
         try:
@@ -1236,10 +1334,10 @@ def open_delta_v_window(input_dir: Path) -> None:
     style_box = ttk.LabelFrame(controls_frame, text="Estilo")
     style_box.pack(fill="x", pady=5)
 
-    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamaños")
+    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamaÃ±os")
     text_box.pack(fill="x", pady=5)
 
-    limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
+    limits_box = ttk.LabelFrame(controls_frame, text="LÃ­mites de ejes")
     limits_box.pack(fill="x", pady=5)
 
     ttk.Checkbutton(
@@ -1252,7 +1350,7 @@ def open_delta_v_window(input_dir: Path) -> None:
     ttk.Label(indicators_box, text="Promedio dV/dt").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     ttk.Label(indicators_box, textvariable=avg_dvdt_var).grid(row=0, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(indicators_box, text="Último dV/dt").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, text="Ãšltimo dV/dt").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     ttk.Label(indicators_box, textvariable=last_dvdt_var).grid(row=1, column=1, sticky="w", padx=8, pady=3)
 
     ttk.Label(indicators_box, text="Delta V total").grid(row=2, column=0, sticky="w", padx=8, pady=3)
@@ -1282,7 +1380,7 @@ def open_delta_v_window(input_dir: Path) -> None:
     tick_spin = tk.Spinbox(style_box, from_=2, to=10, textvariable=tick_count_var, width=8)
     tick_spin.grid(row=2, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Título").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="TÃ­tulo").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
     title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
 
