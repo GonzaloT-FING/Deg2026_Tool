@@ -23,9 +23,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 import re
+import math
 
 from matplotlib.figure import Figure
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import LinearLocator, MaxNLocator
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
@@ -521,6 +522,12 @@ def fig_series_vs_pt(parsed: ParsedDTA) -> Figure | None:
     fig = _new_figure()
     axI = fig.add_subplot(111)
 
+    pt_default_colors = {
+        "I": "#1f77b4",
+        "V": "#3bc400",
+        "T": "#c40000",
+    }
+
     lines: dict[str, object] = {}
     axes: dict[str, object] = {"I": axI}
     ylabels: dict[str, str] = {}
@@ -563,7 +570,15 @@ def fig_series_vs_pt(parsed: ParsedDTA) -> Figure | None:
         unit = _column_unit(parsed, col)
         lab = f"{label} ({unit})" if unit else label
 
-        (ln,) = ax.plot(x, y, marker="o", linestyle="-", markerfacecolor="none", label=lab)
+        (ln,) = ax.plot(
+            x,
+            y,
+            marker="o",
+            linestyle="-",
+            markerfacecolor="none",
+            color=pt_default_colors.get(key),
+            label=lab,
+        )
         ln._eis_freq = f
         lines[key] = ln
         ylabels[key] = lab
@@ -644,24 +659,34 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
     win.title(window_title)
     win.geometry("1200x780")
 
-    nb = ttk.Notebook(win)
-    nb.pack(fill="both", expand=True)
+    controls_frame = ttk.Frame(win, padding=(8, 6))
+    controls_frame.pack(side="left", fill="y")
 
-    # after nb = ttk.Notebook(win) ...
-    topbar = ttk.Frame(win, padding=(8, 6))
+    plot_frame = ttk.Frame(win)
+    plot_frame.pack(side="right", fill="both", expand=True)
+
+    topbar = ttk.Frame(controls_frame)
     topbar.pack(fill="x")
 
-    ttk.Label(topbar, text="Select plot:").pack(side="left")
+    ttk.Label(topbar, text="Select plot:").pack(side="top", anchor="w")
 
     nyquist_sources: dict[str, dict] = {}
     bode_sources = {"zmod": {}, "zphz": {}}
 
     plot_names_var = tk.StringVar()
-    plot_select = ttk.Combobox(topbar, textvariable=plot_names_var, state="readonly", width=55)
-    plot_select.pack(side="left", padx=(6, 0), fill="x", expand=True)
+    plot_select = ttk.Combobox(topbar, textvariable=plot_names_var, state="readonly", width=32)
+    plot_select.pack(side="top", pady=(6, 0), fill="x")
 
     compose_btn = ttk.Button(topbar, text="Componer")
-    compose_btn.pack(side="left", padx=(8, 0))
+    compose_btn.pack(side="top", pady=(8, 0), fill="x")
+
+    ctrl_host = ttk.Frame(controls_frame)
+    ctrl_host.pack(fill="both", expand=True, pady=(10, 0))
+
+    nb = ttk.Notebook(plot_frame)
+    nb.pack(fill="both", expand=True)
+
+    ctrl_frame_by_tab_id: dict[str, ttk.Frame] = {}
 
     def _goto_selected(_evt=None):
         wanted = plot_names_var.get()
@@ -676,6 +701,11 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         title = title_by_tab_id.get(tab_id)
         if title:
             plot_names_var.set(title)
+        for other_tab_id, frame in ctrl_frame_by_tab_id.items():
+            if other_tab_id == tab_id:
+                frame.pack(fill="both", expand=True)
+            else:
+                frame.pack_forget()
 
     nb.bind("<<NotebookTabChanged>>", _sync_combo)
 
@@ -696,22 +726,49 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
     def _fmt(v: float) -> str:
         return f"{v:.6g}"
 
-    def _snap_linear_limits(vmin: float, vmax: float, nbins: int = 6) -> tuple[float, float]:
-        # Ensure order and non-degenerate span
+    def _nice_step(raw_step: float) -> float:
+        if raw_step <= 0:
+            return 1.0
+        exponent = math.floor(math.log10(raw_step))
+        fraction = raw_step / (10 ** exponent)
+        if fraction <= 1:
+            nice_fraction = 1
+        elif fraction <= 2:
+            nice_fraction = 2
+        elif fraction <= 5:
+            nice_fraction = 5
+        else:
+            nice_fraction = 10
+        return nice_fraction * (10 ** exponent)
+
+    def _snap_linear_limits(
+        vmin: float,
+        vmax: float,
+        nbins: int = 6,
+        *,
+        force_zero_floor: bool = False,
+    ) -> tuple[float, float]:
         if vmax < vmin:
             vmin, vmax = vmax, vmin
+
         if vmin == vmax:
             pad = 1.0 if vmin == 0 else abs(vmin) * 0.1
             vmin -= pad
             vmax += pad
 
-        loc = MaxNLocator(nbins=nbins)
-        ticks = list(loc.tick_values(vmin, vmax))
-        if not ticks:
-            return vmin, vmax
+        span = vmax - vmin
+        step = _nice_step(span / max(1, nbins - 1))
 
-        lo = max([t for t in ticks if t <= vmin], default=min(ticks))
-        hi = min([t for t in ticks if t >= vmax], default=max(ticks))
+        lo = math.floor(vmin / step) * step
+        hi = math.ceil(vmax / step) * step
+
+        if force_zero_floor and lo > 0:
+            lo = 0.0
+        if force_zero_floor and vmin >= 0:
+            lo = 0.0
+        if hi <= lo:
+            hi = lo + step
+
         return float(lo), float(hi)
 
     def _add_tab(tab_title: str, fig: Figure) -> None:
@@ -755,10 +812,12 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         outer.pack(fill="both", expand=True)
 
         plot_frame = ttk.Frame(outer)
-        plot_frame.pack(side="left", fill="both", expand=True)
+        plot_frame.pack(fill="both", expand=True)
 
-        ctrl_frame = ttk.Frame(outer, padding=10)
-        ctrl_frame.pack(side="right", fill="y")
+        ctrl_frame = ttk.Frame(ctrl_host, padding=10)
+        ctrl_frame_by_tab_id[tab_id] = ctrl_frame
+        if len(ctrl_frame_by_tab_id) == 1:
+            ctrl_frame.pack(fill="both", expand=True)
 
         canvas = FigureCanvasTkAgg(fig, master=plot_frame)
         canvas.draw()
@@ -848,7 +907,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             ttk.Checkbutton(pt_box, text="Color y-axes", variable=color_axes_var,
                 command=lambda: (_refresh_axis_colors(), canvas.draw_idle())).pack(anchor="w", pady=(6,0))
 
-            show_I = tk.BooleanVar(value=("I" in lines and lines["I"].get_visible()))
             show_V = tk.BooleanVar(value=("V" in lines and lines["V"].get_visible()))
             show_T = tk.BooleanVar(value=("T" in lines and lines["T"].get_visible()))
 
@@ -882,77 +940,50 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                         axk.relim()
                         axk.autoscale_view()
 
-
-            def _sync_ygrid_ticks(master_ax, other_axes, nbins: int = 6):
-                # 1) Freeze master ticks to prevent later redraws from changing them
-                y0, y1 = master_ax.get_ylim()
-                loc = MaxNLocator(nbins=nbins)
-                ticks = list(loc.tick_values(y0, y1))
-                if len(ticks) < 2:
-                    return
-
-                master_ax.set_yticks(ticks)  # <-- this locks ticks (FixedLocator)
-
-                # 2) Map tick positions to fractions of the master axis span
-                y0, y1 = master_ax.get_ylim()
-                span = (y1 - y0) if (y1 != y0) else 1.0
-                fracs = [(t - y0) / span for t in master_ax.get_yticks()]
-
-                # 3) Apply those fractions to other axes
-                for axk in other_axes:
-                    a0, a1 = axk.get_ylim()
-                    aspan = (a1 - a0) if (a1 != a0) else 1.0
-                    axk.set_yticks([a0 + f * aspan for f in fracs])
-
-            _in_sync = {"busy": False}
-
-            def _resync_on_ylim_change(_ax):
-                if _in_sync["busy"]:
-                    return
-                _in_sync["busy"] = True
+            def _current_tick_count() -> int:
                 try:
-                    visible_keys = [k for k in ("I", "V", "T") if k in lines and lines[k].get_visible()]
-                    if not visible_keys:
-                        return
-                    master_key = "I" if "I" in visible_keys else visible_keys[0]
-                    master_ax = axes[master_key]
-                    other_axes = [axes[k] for k in visible_keys if k != master_key]
-                    _sync_ygrid_ticks(master_ax, other_axes, nbins=6)
-                    canvas.draw_idle()
-                finally:
-                    _in_sync["busy"] = False
+                    return max(2, int(tick_count_var.get()))
+                except Exception:
+                    return 6
 
-            # connect only once
-            axes["I"].callbacks.connect("ylim_changed", _resync_on_ylim_change)
+            def _apply_pt_axis_scaling(axk, nbins: int | None = None):
+                axk.yaxis.set_major_locator(LinearLocator(_current_tick_count() if nbins is None else nbins))
+
+            def _autoscale_pt_axis(axk, ln, *, force_zero_floor: bool = False):
+                if ln is None or not ln.get_visible():
+                    return
+
+                xdata = [float(x) for x in ln.get_xdata(orig=False) if x is not None]
+                ydata = [float(y) for y in ln.get_ydata(orig=False) if y is not None]
+                if not xdata or not ydata:
+                    return
+
+                tick_count = _current_tick_count()
+                x0, x1 = _snap_linear_limits(min(xdata), max(xdata), nbins=tick_count)
+                y0, y1 = _snap_linear_limits(min(ydata), max(ydata), nbins=tick_count, force_zero_floor=force_zero_floor)
+
+                axk.set_xlim(x0, x1)
+                axk.set_ylim(y0, y1)
+                _apply_pt_axis_scaling(axk, nbins=tick_count)
 
             def _apply_visibility():
-                if "I" in lines: lines["I"].set_visible(bool(show_I.get()))
+                if "I" in lines:
+                    lines["I"].set_visible(True)
                 if "V" in lines: lines["V"].set_visible(bool(show_V.get()))
                 if "T" in lines: lines["T"].set_visible(bool(show_T.get()))
 
-                # autoscale EACH visible axis first
-                for k, ln in lines.items():
-                    axk = axes.get(k)
-                    if axk is None:
-                        continue
-                    if ln.get_visible():
-                        axk.relim()
-                        axk.autoscale_view()
-
                 # decide master (Idc preferred)
                 visible_keys = [k for k in ("I", "V", "T") if k in lines and lines[k].get_visible()]
+                for axx in axes.values():
+                    axx.grid(False)
+
                 if visible_keys:
                     master_key = "I" if "I" in visible_keys else visible_keys[0]
                     master_ax = axes[master_key]
-                    other_axes = [axes[k] for k in visible_keys if k != master_key]
-
-                    # grid only from master
-                    for axx in axes.values():
-                        axx.grid(False)
                     master_ax.grid(True)
 
-                    _sync_ygrid_ticks(master_ax, other_axes, nbins=6)
-                _sync_ygrid_ticks(master_ax, other_axes, nbins=6)
+                    for key in visible_keys:
+                        _autoscale_pt_axis(axes[key], lines[key], force_zero_floor=(key == "I"))
 
                 _update_right_axis_spacing(fig, canvas, axes)
 
@@ -1068,7 +1099,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 sp_lw.bind("<KeyRelease>", lambda e, kk=k: _apply_series_style(kk))
                 sp_ms.bind("<KeyRelease>", lambda e, kk=k: _apply_series_style(kk))
 
-            ttk.Checkbutton(pt_box, text="Idc", variable=show_I, command=_apply_visibility).pack(anchor="w")
             ttk.Checkbutton(pt_box, text="Vdc", variable=show_V, command=_apply_visibility).pack(anchor="w")
             ttk.Checkbutton(pt_box, text="Temp", variable=show_T, command=_apply_visibility).pack(anchor="w")
 
@@ -1126,6 +1156,22 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         init_ls = (line.get_linestyle() if line else "-") or "None"
         init_lw = float(line.get_linewidth()) if line else 1.0
         init_ms = float(line.get_markersize()) if line else 4.0
+        tick_count_var = tk.IntVar(value=6)
+        pt_axes = getattr(fig, "_pt_axes", {}) if is_pt_series else {}
+        pt_limit_vars: dict[str, dict[str, tk.StringVar]] = {}
+        pt_init_limits: dict[str, tuple[float, float]] = {}
+
+        if is_pt_series:
+            for key in ("I", "V", "T"):
+                axk = pt_axes.get(key)
+                if axk is None:
+                    continue
+                y0k, y1k = axk.get_ylim()
+                pt_limit_vars[key] = {
+                    "min": tk.StringVar(value=_fmt(y0k)),
+                    "max": tk.StringVar(value=_fmt(y1k)),
+                }
+                pt_init_limits[key] = (y0k, y1k)
 
         if init_marker in (None, "", "None"):
             init_marker = "None"
@@ -1145,6 +1191,14 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             xmax_var.set(_fmt(a1))
             ymin_var.set(_fmt(b0))
             ymax_var.set(_fmt(b1))
+            if is_pt_series:
+                for key, vars_map in pt_limit_vars.items():
+                    axk = pt_axes.get(key)
+                    if axk is None:
+                        continue
+                    lo, hi = axk.get_ylim()
+                    vars_map["min"].set(_fmt(lo))
+                    vars_map["max"].set(_fmt(hi))
 
         def _parse_float(s: str) -> float | None:
             s = s.strip()
@@ -1156,7 +1210,33 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 return None
 
         def apply_axes():
+            if is_pt_series:
+                raw_values = [xmin_var.get(), xmax_var.get()]
+                for vars_map in pt_limit_vars.values():
+                    raw_values.extend([vars_map["min"].get(), vars_map["max"].get()])
+                if any(_is_incomplete_number(r) for r in raw_values):
+                    return
 
+                cur_x0, cur_x1 = ax.get_xlim()
+                nx0 = _parse_float(xmin_var.get())
+                nx1 = _parse_float(xmax_var.get())
+                new_x0 = cur_x0 if nx0 is None else nx0
+                new_x1 = cur_x1 if nx1 is None else nx1
+
+                for key, vars_map in pt_limit_vars.items():
+                    axk = pt_axes.get(key)
+                    if axk is None:
+                        continue
+                    cur_y0, cur_y1 = axk.get_ylim()
+                    ny0 = _parse_float(vars_map["min"].get())
+                    ny1 = _parse_float(vars_map["max"].get())
+                    axk.set_xlim(new_x0, new_x1)
+                    axk.set_ylim(cur_y0 if ny0 is None else ny0, cur_y1 if ny1 is None else ny1)
+                    _apply_pt_axis_scaling(axk)
+
+                canvas.draw_idle()
+                _update_limit_entries()
+                return
             raws = [xmin_var.get(), xmax_var.get(), ymin_var.get(), ymax_var.get()]
             if any(_is_incomplete_number(r) for r in raws):
                 return  # don't apply AND don't refresh the fields
@@ -1182,6 +1262,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
             ax.set_xlim(new_x0, new_x1)
             ax.set_ylim(new_y0, new_y1)
+            ax.yaxis.set_major_locator(LinearLocator(max(2, int(tick_count_var.get()))))
 
             if is_nyquist:
                 ax.set_aspect("equal", adjustable="box")
@@ -1190,51 +1271,68 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             _update_limit_entries()
 
         def reset_axes():
+            if is_pt_series:
+                ax.set_xlim(*init_xlim)
+                for key, limits in pt_init_limits.items():
+                    axk = pt_axes.get(key)
+                    if axk is None:
+                        continue
+                    axk.set_xlim(*init_xlim)
+                    axk.set_ylim(*limits)
+                    _apply_pt_axis_scaling(axk)
+                canvas.draw_idle()
+                _update_limit_entries()
+                return
+
             ax.set_xlim(*init_xlim)
             ax.set_ylim(*init_ylim)
+            ax.yaxis.set_major_locator(LinearLocator(max(2, int(tick_count_var.get()))))
             if is_nyquist:
                 ax.set_aspect("equal", adjustable="box")
             canvas.draw_idle()
             _update_limit_entries()
 
         def autoscale_axes():
-            # Default: normal autoscale for log axes / non-Nyquist
-            if ax.get_xscale() == "log" or ax.get_yscale() == "log" or not is_nyquist:
-                ax.relim()
-                ax.autoscale_view()
-                if is_nyquist:
-                    ax.set_aspect("equal", adjustable="box")
-                canvas.draw_idle()
+            tick_count = max(2, int(tick_count_var.get()))
+            if is_pt_series:
+                _apply_visibility()
                 _update_limit_entries()
                 return
 
-            # Nyquist + linear axes: Ymin = 0 and snap to "nice" ticks
             if line is None:
                 ax.relim()
                 ax.autoscale_view()
                 x0, x1 = ax.get_xlim()
                 y0, y1 = ax.get_ylim()
             else:
-                xdata = list(line.get_xdata(orig=False))
-                ydata = list(line.get_ydata(orig=False))
-                # filter finite
-                pts = [(x, y) for x, y in zip(xdata, ydata) if (x is not None and y is not None)]
-                if not pts:
+                xdata = [float(x) for x in line.get_xdata(orig=False) if x is not None]
+                ydata = [float(y) for y in line.get_ydata(orig=False) if y is not None]
+                if not xdata or not ydata:
                     return
-                xs = [float(x) for x, _ in pts]
-                ys = [float(y) for _, y in pts]
-                x0, x1 = min(xs), max(xs)
-                y1 = max(ys)
-                y0 = 0.0  # as requested
+                x0, x1 = min(xdata), max(xdata)
+                y0, y1 = min(ydata), max(ydata)
 
-            # Snap to nearest "nice" axis marks
-            x0s, x1s = _snap_linear_limits(x0, x1)
-            y0s, y1s = _snap_linear_limits(0.0, y1)
+            if ax.get_xscale() == "log":
+                ax.set_xlim(x0, x1)
+            else:
+                x0, x1 = _snap_linear_limits(x0, x1, nbins=tick_count)
+                ax.set_xlim(x0, x1)
 
-            ax.set_xlim(x0s, x1s)
-            ax.set_ylim(y0s, y1s)
+            if ax.get_yscale() == "log":
+                ax.set_ylim(y0, y1)
+            else:
+                y0, y1 = _snap_linear_limits(
+                    y0,
+                    y1,
+                    nbins=tick_count,
+                    force_zero_floor=is_nyquist,
+                )
+                ax.set_ylim(y0, y1)
 
-            ax.set_aspect("equal", adjustable="box")  # preserve square units
+            ax.yaxis.set_major_locator(LinearLocator(tick_count))
+
+            if is_nyquist:
+                ax.set_aspect("equal", adjustable="box")
             canvas.draw_idle()
             _update_limit_entries()
 
@@ -1381,37 +1479,48 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             e.grid(row=r, column=1, sticky="w", pady=2)
             return e
 
-        exmin = _row(axes_box, 0, "Xmin", xmin_var)
-        exmax = _row(axes_box, 1, "Xmax", xmax_var)
-        eymin = _row(axes_box, 2, "Ymin", ymin_var)
-        eymax = _row(axes_box, 3, "Ymax", ymax_var)
+        axis_entries = []
+        next_row = 0
+        axis_entries.append(_row(axes_box, next_row, "Xmin", xmin_var))
+        next_row += 1
+        axis_entries.append(_row(axes_box, next_row, "Xmax", xmax_var))
+        next_row += 1
+        if is_pt_series:
+            for key, label in (("I", "I"), ("V", "V"), ("T", "T")):
+                if key not in pt_limit_vars:
+                    continue
+                axis_entries.append(_row(axes_box, next_row, f"{label}min", pt_limit_vars[key]["min"]))
+                next_row += 1
+                axis_entries.append(_row(axes_box, next_row, f"{label}max", pt_limit_vars[key]["max"]))
+                next_row += 1
+        else:
+            axis_entries.append(_row(axes_box, next_row, "Ymin", ymin_var))
+            next_row += 1
+            axis_entries.append(_row(axes_box, next_row, "Ymax", ymax_var))
+            next_row += 1
+        ttk.Label(axes_box, text="Ticks", width=5).grid(row=next_row, column=0, sticky="w", padx=(0, 6), pady=2)
+        tick_count_spin = ttk.Spinbox(axes_box, from_=2, to=12, increment=1, textvariable=tick_count_var, width=10)
+        tick_count_spin.grid(row=next_row, column=1, sticky="w", pady=2)
 
-        pending = {"id": None}
+        pending_axes = {"id": None}
 
         def _schedule_apply_axes(_evt=None):
-            if pending["id"] is not None:
-                tab.after_cancel(pending["id"])
-            pending["id"] = tab.after(300, apply_axes)
+            if pending_axes["id"] is not None:
+                tab.after_cancel(pending_axes["id"])
+            pending_axes["id"] = tab.after(900, apply_axes)
 
-        for e in (exmin, exmax, eymin, eymax):
-            DEBOUNCE_MS = 900  # try 900–1200
 
-            pending_axes = {"id": None}
-
-            def _schedule_apply_axes(_evt=None):
-                if pending_axes["id"] is not None:
-                    tab.after_cancel(pending_axes["id"])
-                pending_axes["id"] = tab.after(DEBOUNCE_MS, apply_axes)
-
-            for e in (exmin, exmax, eymin, eymax):
-                e.bind("<KeyRelease>", _schedule_apply_axes)
-                e.bind("<Return>", lambda ev: apply_axes())  # optional: instant apply on Enter
-                # remove FocusOut apply
+        for entry in axis_entries:
+            entry.bind("<KeyRelease>", _schedule_apply_axes)
+            entry.bind("<Return>", lambda ev: apply_axes())
 
         btns_axes = ttk.Frame(axes_box)
-        btns_axes.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        btns_axes.grid(row=next_row + 1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Button(btns_axes, text="Autoscale", command=autoscale_axes).pack(side="left", expand=True, fill="x", padx=(0, 6))
         ttk.Button(btns_axes, text="Reset", command=reset_axes).pack(side="left", expand=True, fill="x")
+        tick_count_spin.configure(command=autoscale_axes)
+        tick_count_spin.bind("<Return>", lambda ev: autoscale_axes())
+        tick_count_spin.bind("<FocusOut>", lambda ev: autoscale_axes())
 
         style_box = ttk.LabelFrame(ctrl_frame, text="Style", padding=8)
         if not is_pt_series:
@@ -2506,14 +2615,24 @@ def run_pipeline(
     if not chosen:
         return exported_xlsx
 
-    all_figs: list[tuple[str, Figure]] = []
+    option_order = [
+        "Nyquist plot",
+        "Bode plot",
+        "Series by Pt",
+        "Equivalent circuit fit",
+    ]
 
-    for dta_file in find_eis_files(input_dir):
-        parsed = parse_gamry_dta(dta_file)
-        all_figs.extend(build_figures(parsed, dta_file.stem, chosen))
+    for option in option_order:
+        if option not in chosen:
+            continue
 
-    if all_figs:
-        show_figures_tk(all_figs, window_title="EIS plots")
+        option_figs: list[tuple[str, Figure]] = []
+        for dta_file in find_eis_files(input_dir):
+            parsed = parse_gamry_dta(dta_file)
+            option_figs.extend(build_figures(parsed, dta_file.stem, [option]))
+
+        if option_figs:
+            show_figures_tk(option_figs, window_title=f"EIS - {option}")
 
     return exported_xlsx
 
