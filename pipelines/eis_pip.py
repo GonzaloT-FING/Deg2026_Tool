@@ -26,14 +26,14 @@ import re
 import math
 
 from matplotlib.figure import Figure
-from matplotlib.ticker import LinearLocator, MaxNLocator
+from matplotlib.ticker import LinearLocator, MaxNLocator, StrMethodFormatter
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 import tkinter.messagebox as mb
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, colorchooser
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 
@@ -115,7 +115,57 @@ def _extract_meta_unit(key: str, description: str) -> str:
 
 def _is_incomplete_number(s: str) -> bool:
     s = s.strip()
-    return s in {"-", "+", ".", "-.", "+."}
+    if s in {"", "-", "+", ".", "-.", "+."}:
+        return True
+    if re.fullmatch(r"[+-]?\d+\.", s):
+        return True
+    if re.fullmatch(r"[+-]?(?:\d+\.?\d*|\.\d+)[eE][+-]?", s):
+        return True
+    return False
+
+
+def _build_scrollable_controls(parent) -> tuple[ttk.Frame, ttk.Frame]:
+    outer = ttk.Frame(parent, padding=(8, 6))
+    outer.pack(side="left", fill="y")
+
+    canvas = tk.Canvas(outer, highlightthickness=0, width=340)
+    scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+    controls_frame = ttk.Frame(canvas, padding=(0, 0, 6, 0))
+
+    controls_frame.bind(
+        "<Configure>",
+        lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+    )
+
+    canvas_window = canvas.create_window((0, 0), window=controls_frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+
+    def _resize_controls(event):
+        canvas.itemconfigure(canvas_window, width=event.width)
+
+    def _bind_mousewheel(_event):
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+    def _unbind_mousewheel(_event):
+        canvas.unbind_all("<MouseWheel>")
+
+    def _on_mousewheel(event):
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    canvas.bind("<Configure>", _resize_controls)
+    canvas.bind("<Enter>", _bind_mousewheel)
+    canvas.bind("<Leave>", _unbind_mousewheel)
+
+    canvas.pack(side="left", fill="y", expand=False)
+    scrollbar.pack(side="right", fill="y")
+
+    top_frame = ttk.Frame(controls_frame)
+    top_frame.pack(fill="x")
+
+    host_frame = ttk.Frame(controls_frame)
+    host_frame.pack(fill="both", expand=True, pady=(10, 0))
+
+    return top_frame, host_frame
 
 
 # ---------------------------------------------------------------------------
@@ -416,39 +466,62 @@ def fig_nyquist(parsed: ParsedDTA) -> Figure | None:
     fig.tight_layout()
     return fig
 
-def figs_bode(parsed: ParsedDTA) -> list[tuple[str, Figure]]:
-    """Two Bode figures: Zmod and Zphz."""
-    out: list[tuple[str, Figure]] = []
-
+def fig_bode(parsed: ParsedDTA) -> Figure | None:
     freq_unit = _column_unit(parsed, "Freq")
     zmod_unit = _column_unit(parsed, "Zmod")
     zphz_unit = _column_unit(parsed, "Zphz")
 
     x1, y1 = _paired_series(parsed, "Freq", "Zmod", require_positive_x=True)
-    if x1 and y1:
-        fig = _new_figure()
-        ax = fig.add_subplot(111)
-        ax.semilogx(x1, y1, marker="o", linestyle="-", markerfacecolor="none")
-        ax.set_title(f"{_technique_name(parsed)} - Bode (Zmod)")
-        ax.set_xlabel(f"Frecuencia ({freq_unit})" if freq_unit else "Frecuencia")
-        ax.set_ylabel(f"Zmod ({zmod_unit})" if zmod_unit else "Zmod")
-        ax.grid(True, which="both")
-        fig.tight_layout()
-        out.append(("Bode (Zmod)", fig))
-
     x2, y2 = _paired_series(parsed, "Freq", "Zphz", require_positive_x=True)
-    if x2 and y2:
-        fig = _new_figure()
-        ax = fig.add_subplot(111)
-        ax.semilogx(x2, y2, marker="o", linestyle="-", markerfacecolor="none")
-        ax.set_title(f"{_technique_name(parsed)} - Bode (Zphz)")
-        ax.set_xlabel(f"Frecuencia ({freq_unit})" if freq_unit else "Frecuencia")
-        ax.set_ylabel(f"Zphz ({zphz_unit})" if zphz_unit else "Zphz")
-        ax.grid(True, which="both")
-        fig.tight_layout()
-        out.append(("Bode (Zphz)", fig))
+    if not ((x1 and y1) or (x2 and y2)):
+        return None
 
-    return out
+    fig = _new_figure()
+    ax_mod = fig.add_subplot(111)
+    ax_phz = ax_mod.twinx()
+    ax_phz.spines["left"].set_visible(False)
+    ax_phz.yaxis.tick_right()
+    ax_phz.yaxis.set_label_position("right")
+
+    bode_lines: dict[str, object] = {}
+    bode_axes: dict[str, object] = {"mod": ax_mod, "phz": ax_phz}
+
+    if x1 and y1:
+        (ln_mod,) = ax_mod.semilogx(
+            x1, y1,
+            marker="o",
+            linestyle="-",
+            markerfacecolor="none",
+            color="#1f77b4",
+            label="Zmod",
+        )
+        bode_lines["mod"] = ln_mod
+
+    if x2 and y2:
+        (ln_phz,) = ax_phz.semilogx(
+            x2, y2,
+            marker="o",
+            linestyle="--",
+            markerfacecolor="none",
+            color="#c40000",
+            label="Zphz",
+        )
+        bode_lines["phz"] = ln_phz
+
+    if "mod" in bode_lines:
+        ax_mod.set_ylabel(f"Zmod ({zmod_unit})" if zmod_unit else "Zmod")
+    if "phz" in bode_lines:
+        ax_phz.set_ylabel(f"Zphz ({zphz_unit})" if zphz_unit else "Zphz")
+
+    ax_mod.set_title(f"{_technique_name(parsed)} - Bode")
+    ax_mod.set_xlabel(f"Frecuencia ({freq_unit})" if freq_unit else "Frecuencia")
+    ax_mod.grid(True, which="both")
+
+    fig._bode_plot = True
+    fig._bode_lines = bode_lines
+    fig._bode_axes = bode_axes
+    fig.tight_layout()
+    return fig
 
 def _update_right_axis_spacing(fig, canvas, axes, pad_px: float = 12.0, min_outward_pt: float = 30.0):
     axV = axes.get("V")
@@ -629,8 +702,9 @@ def build_figures(parsed: ParsedDTA, base_name: str, selected_options: Iterable[
             figs.append((f"{base_name} — Nyquist", f))
 
     if "Bode plot" in chosen:
-        for label, f in figs_bode(parsed):
-            figs.append((f"{base_name} — {label}", f))
+        f = fig_bode(parsed)
+        if f is not None:
+            figs.append((f"{base_name} — Bode", f))
 
     if "Series by Pt" in chosen:
         f = fig_series_vs_pt(parsed)
@@ -659,14 +733,10 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
     win.title(window_title)
     win.geometry("1200x780")
 
-    controls_frame = ttk.Frame(win, padding=(8, 6))
-    controls_frame.pack(side="left", fill="y")
+    topbar, ctrl_host = _build_scrollable_controls(win)
 
     plot_frame = ttk.Frame(win)
     plot_frame.pack(side="right", fill="both", expand=True)
-
-    topbar = ttk.Frame(controls_frame)
-    topbar.pack(fill="x")
 
     ttk.Label(topbar, text="Select plot:").pack(side="top", anchor="w")
 
@@ -680,8 +750,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
     compose_btn = ttk.Button(topbar, text="Componer")
     compose_btn.pack(side="top", pady=(8, 0), fill="x")
 
-    ctrl_host = ttk.Frame(controls_frame)
-    ctrl_host.pack(fill="both", expand=True, pady=(10, 0))
+    composer_enabled = "Series by Pt" not in window_title
 
     nb = ttk.Notebook(plot_frame)
     nb.pack(fill="both", expand=True)
@@ -701,6 +770,12 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         title = title_by_tab_id.get(tab_id)
         if title:
             plot_names_var.set(title)
+        if composer_enabled:
+            if compose_btn.winfo_manager() != "pack":
+                compose_btn.pack(side="top", pady=(8, 0), fill="x")
+        else:
+            if compose_btn.winfo_manager():
+                compose_btn.pack_forget()
         for other_tab_id, frame in ctrl_frame_by_tab_id.items():
             if other_tab_id == tab_id:
                 frame.pack(fill="both", expand=True)
@@ -780,7 +855,8 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         tab_id_by_title[tab_title] = tab_id
         title_by_tab_id[tab_id] = tab_title
 
-        is_pt_series = bool(getattr(fig, "_pt_series", False))            
+        is_pt_series = bool(getattr(fig, "_pt_series", False))
+        is_bode_plot = bool(getattr(fig, "_bode_plot", False))
 
         tlow = tab_title.lower()
 
@@ -948,6 +1024,8 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
             def _apply_pt_axis_scaling(axk, nbins: int | None = None):
                 axk.yaxis.set_major_locator(LinearLocator(_current_tick_count() if nbins is None else nbins))
+                axk.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+                axk.yaxis.get_offset_text().set_visible(False)
 
             def _autoscale_pt_axis(axk, ln, *, force_zero_floor: bool = False):
                 if ln is None or not ln.get_visible():
@@ -972,6 +1050,21 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 if "V" in lines: lines["V"].set_visible(bool(show_V.get()))
                 if "T" in lines: lines["T"].set_visible(bool(show_T.get()))
 
+                for key, side in (("I", "left"), ("V", "right"), ("T", "right")):
+                    axk = axes.get(key)
+                    ln = lines.get(key)
+                    if axk is None:
+                        continue
+                    axis_visible = bool(ln is not None and ln.get_visible())
+                    axk.yaxis.set_visible(axis_visible)
+                    axk.yaxis.label.set_visible(axis_visible)
+                    if key == "I":
+                        axk.tick_params(axis="y", labelleft=axis_visible, left=axis_visible, labelright=False, right=False)
+                    else:
+                        axk.tick_params(axis="y", labelleft=False, left=False, labelright=axis_visible, right=axis_visible)
+                    if side in axk.spines:
+                        axk.spines[side].set_visible(axis_visible)
+
                 # decide master (Idc preferred)
                 visible_keys = [k for k in ("I", "V", "T") if k in lines and lines[k].get_visible()]
                 for axx in axes.values():
@@ -983,7 +1076,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     master_ax.grid(True)
 
                     for key in visible_keys:
-                        _autoscale_pt_axis(axes[key], lines[key], force_zero_floor=(key == "I"))
+                        _autoscale_pt_axis(axes[key], lines[key], force_zero_floor=False)
 
                 _update_right_axis_spacing(fig, canvas, axes)
 
@@ -1102,13 +1195,9 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             ttk.Checkbutton(pt_box, text="Vdc", variable=show_V, command=_apply_visibility).pack(anchor="w")
             ttk.Checkbutton(pt_box, text="Temp", variable=show_T, command=_apply_visibility).pack(anchor="w")
 
-        if line is not None:
+        if line is not None and not is_bode_plot:
             if "nyquist" in tlow:
                 nyquist_sources[tab_title] = {"line": line, "ax": ax, "fig": fig}
-            elif "bode" in tlow and "zmod" in tlow:
-                bode_sources["zmod"][tab_title] = {"line": line, "ax": ax, "fig": fig}
-            elif "bode" in tlow and "zphz" in tlow:
-                bode_sources["zphz"][tab_title] = {"line": line, "ax": ax, "fig": fig}
 
         cat = None
         if "vs pt" in tlow:
@@ -1160,6 +1249,13 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         pt_axes = getattr(fig, "_pt_axes", {}) if is_pt_series else {}
         pt_limit_vars: dict[str, dict[str, tk.StringVar]] = {}
         pt_init_limits: dict[str, tuple[float, float]] = {}
+        bode_axes = getattr(fig, "_bode_axes", {}) if is_bode_plot else {}
+        bode_lines = getattr(fig, "_bode_lines", {}) if is_bode_plot else {}
+        bode_limit_vars: dict[str, dict[str, tk.StringVar]] = {}
+        bode_init_limits: dict[str, tuple[float, float]] = {}
+        bode_show_vars: dict[str, tk.BooleanVar] = {}
+        bode_style_vars: dict[str, dict[str, object]] = {}
+        bode_color_axes_var = tk.BooleanVar(value=True) if is_bode_plot else None
 
         if is_pt_series:
             for key in ("I", "V", "T"):
@@ -1172,6 +1268,31 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     "max": tk.StringVar(value=_fmt(y1k)),
                 }
                 pt_init_limits[key] = (y0k, y1k)
+
+        if is_bode_plot:
+            for key in ("mod", "phz"):
+                axk = bode_axes.get(key)
+                ln = bode_lines.get(key)
+                if axk is None or ln is None:
+                    continue
+                y0k, y1k = axk.get_ylim()
+                bode_limit_vars[key] = {
+                    "min": tk.StringVar(value=_fmt(y0k)),
+                    "max": tk.StringVar(value=_fmt(y1k)),
+                }
+                bode_init_limits[key] = (y0k, y1k)
+                bode_show_vars[key] = tk.BooleanVar(value=bool(ln.get_visible()))
+                bode_style_vars[key] = {
+                    "color": tk.StringVar(value=str(ln.get_color())),
+                    "ls": tk.StringVar(value=str(ln.get_linestyle() or ("-" if key == "mod" else "--")) or ("-" if key == "mod" else "--")),
+                    "mk": tk.StringVar(value=str(ln.get_marker() or "o") or "o"),
+                    "lw": tk.DoubleVar(value=float(ln.get_linewidth())),
+                    "ms": tk.DoubleVar(value=float(ln.get_markersize())),
+                }
+            if "mod" in bode_lines and "mod" in bode_axes:
+                bode_sources["zmod"][tab_title] = {"line": bode_lines["mod"], "ax": bode_axes["mod"], "fig": fig}
+            if "phz" in bode_lines and "phz" in bode_axes:
+                bode_sources["zphz"][tab_title] = {"line": bode_lines["phz"], "ax": bode_axes["phz"], "fig": fig}
 
         if init_marker in (None, "", "None"):
             init_marker = "None"
@@ -1199,6 +1320,14 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     lo, hi = axk.get_ylim()
                     vars_map["min"].set(_fmt(lo))
                     vars_map["max"].set(_fmt(hi))
+            if is_bode_plot:
+                for key, vars_map in bode_limit_vars.items():
+                    axk = bode_axes.get(key)
+                    if axk is None:
+                        continue
+                    lo, hi = axk.get_ylim()
+                    vars_map["min"].set(_fmt(lo))
+                    vars_map["max"].set(_fmt(hi))
 
         def _parse_float(s: str) -> float | None:
             s = s.strip()
@@ -1209,12 +1338,14 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             except ValueError:
                 return None
 
-        def apply_axes():
+        def apply_axes(live: bool = False):
             if is_pt_series:
                 raw_values = [xmin_var.get(), xmax_var.get()]
                 for vars_map in pt_limit_vars.values():
                     raw_values.extend([vars_map["min"].get(), vars_map["max"].get()])
                 if any(_is_incomplete_number(r) for r in raw_values):
+                    return
+                if live and any(not r.strip() for r in raw_values):
                     return
 
                 cur_x0, cur_x1 = ax.get_xlim()
@@ -1235,11 +1366,50 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     _apply_pt_axis_scaling(axk)
 
                 canvas.draw_idle()
-                _update_limit_entries()
+                if not live:
+                    _update_limit_entries()
+                return
+            if is_bode_plot:
+                raw_values = [xmin_var.get(), xmax_var.get()]
+                for vars_map in bode_limit_vars.values():
+                    raw_values.extend([vars_map["min"].get(), vars_map["max"].get()])
+                if any(_is_incomplete_number(r) for r in raw_values):
+                    return
+                if live and any(not r.strip() for r in raw_values):
+                    return
+
+                cur_x0, cur_x1 = ax.get_xlim()
+                nx0 = _parse_float(xmin_var.get())
+                nx1 = _parse_float(xmax_var.get())
+                new_x0 = cur_x0 if nx0 is None else nx0
+                new_x1 = cur_x1 if nx1 is None else nx1
+                if new_x0 <= 0 or new_x1 <= 0:
+                    if not live:
+                        _update_limit_entries()
+                    return
+
+                for key, vars_map in bode_limit_vars.items():
+                    axk = bode_axes.get(key)
+                    if axk is None:
+                        continue
+                    cur_y0, cur_y1 = axk.get_ylim()
+                    ny0 = _parse_float(vars_map["min"].get())
+                    ny1 = _parse_float(vars_map["max"].get())
+                    axk.set_xlim(new_x0, new_x1)
+                    axk.set_ylim(cur_y0 if ny0 is None else ny0, cur_y1 if ny1 is None else ny1)
+                    axk.yaxis.set_major_locator(LinearLocator(max(2, int(tick_count_var.get()))))
+                    axk.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+                    axk.yaxis.get_offset_text().set_visible(False)
+
+                canvas.draw_idle()
+                if not live:
+                    _update_limit_entries()
                 return
             raws = [xmin_var.get(), xmax_var.get(), ymin_var.get(), ymax_var.get()]
             if any(_is_incomplete_number(r) for r in raws):
                 return  # don't apply AND don't refresh the fields
+            if live and any(not r.strip() for r in raws):
+                return
             cur_x0, cur_x1 = ax.get_xlim()
             cur_y0, cur_y1 = ax.get_ylim()
 
@@ -1254,10 +1424,12 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             new_y1 = cur_y1 if ny1 is None else ny1
 
             if ax.get_xscale() == "log" and (new_x0 <= 0 or new_x1 <= 0):
-                _update_limit_entries()
+                if not live:
+                    _update_limit_entries()
                 return
             if ax.get_yscale() == "log" and (new_y0 <= 0 or new_y1 <= 0):
-                _update_limit_entries()
+                if not live:
+                    _update_limit_entries()
                 return
 
             ax.set_xlim(new_x0, new_x1)
@@ -1268,7 +1440,8 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 ax.set_aspect("equal", adjustable="box")
 
             canvas.draw_idle()
-            _update_limit_entries()
+            if not live:
+                _update_limit_entries()
 
         def reset_axes():
             if is_pt_series:
@@ -1280,6 +1453,20 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                     axk.set_xlim(*init_xlim)
                     axk.set_ylim(*limits)
                     _apply_pt_axis_scaling(axk)
+                canvas.draw_idle()
+                _update_limit_entries()
+                return
+            if is_bode_plot:
+                ax.set_xlim(*init_xlim)
+                for key, limits in bode_init_limits.items():
+                    axk = bode_axes.get(key)
+                    if axk is None:
+                        continue
+                    axk.set_xlim(*init_xlim)
+                    axk.set_ylim(*limits)
+                    axk.yaxis.set_major_locator(LinearLocator(max(2, int(tick_count_var.get()))))
+                    axk.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+                    axk.yaxis.get_offset_text().set_visible(False)
                 canvas.draw_idle()
                 _update_limit_entries()
                 return
@@ -1296,6 +1483,38 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             tick_count = max(2, int(tick_count_var.get()))
             if is_pt_series:
                 _apply_visibility()
+                _update_limit_entries()
+                return
+            if is_bode_plot:
+                visible_keys = [k for k, var in bode_show_vars.items() if var.get() and k in bode_lines]
+                if not visible_keys:
+                    return
+
+                x_values: list[float] = []
+                for key in visible_keys:
+                    ln = bode_lines[key]
+                    x_values.extend([float(x) for x in ln.get_xdata(orig=False) if x is not None and float(x) > 0])
+
+                if not x_values:
+                    return
+
+                x0, x1 = min(x_values), max(x_values)
+                ax.set_xlim(x0, x1)
+
+                for key in visible_keys:
+                    ln = bode_lines[key]
+                    axk = bode_axes[key]
+                    y_values = [float(y) for y in ln.get_ydata(orig=False) if y is not None]
+                    if not y_values:
+                        continue
+                    y0, y1 = _snap_linear_limits(min(y_values), max(y_values), nbins=tick_count)
+                    axk.set_xlim(x0, x1)
+                    axk.set_ylim(y0, y1)
+                    axk.yaxis.set_major_locator(LinearLocator(tick_count))
+                    axk.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+                    axk.yaxis.get_offset_text().set_visible(False)
+
+                canvas.draw_idle()
                 _update_limit_entries()
                 return
 
@@ -1399,6 +1618,79 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             ms_var.set(init_ms)
             apply_style()
 
+        def _apply_bode_visibility():
+            if not is_bode_plot:
+                return
+
+            visible_keys = []
+            for key, var in bode_show_vars.items():
+                ln = bode_lines.get(key)
+                axk = bode_axes.get(key)
+                if ln is None or axk is None:
+                    continue
+                visible = bool(var.get())
+                ln.set_visible(visible)
+                if visible:
+                    visible_keys.append(key)
+                    axk.tick_params(axis="y", labelleft=(key == "mod"), labelright=(key == "phz"))
+                    axk.yaxis.label.set_visible(True)
+                else:
+                    axk.tick_params(axis="y", labelleft=False, labelright=False)
+                    axk.yaxis.label.set_visible(False)
+
+            handles = []
+            labels = []
+            for key in ("mod", "phz"):
+                ln = bode_lines.get(key)
+                if ln is not None and ln.get_visible():
+                    handles.append(ln)
+                    labels.append(ln.get_label())
+
+            leg = ax.get_legend()
+            if leg is not None:
+                leg.remove()
+            if handles:
+                ax.legend(handles, labels, loc="best", fontsize=float(label_fs_var.get()))
+
+            for key in visible_keys:
+                bode_axes[key].yaxis.set_major_locator(LinearLocator(max(2, int(tick_count_var.get()))))
+                bode_axes[key].yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+                bode_axes[key].yaxis.get_offset_text().set_visible(False)
+
+            use_axis_colors = bool(bode_color_axes_var.get()) if bode_color_axes_var is not None else True
+            for key in ("mod", "phz"):
+                axk = bode_axes.get(key)
+                ln = bode_lines.get(key)
+                if axk is None:
+                    continue
+                axis_color = "black"
+                if use_axis_colors and ln is not None and ln.get_visible():
+                    axis_color = ln.get_color()
+                axk.yaxis.label.set_color(axis_color)
+                axk.tick_params(axis="y", colors=axis_color)
+                side = "left" if key == "mod" else "right"
+                if side in axk.spines:
+                    axk.spines[side].set_color(axis_color)
+
+            canvas.draw_idle()
+
+        def _apply_bode_style(key: str):
+            if not is_bode_plot or key not in bode_lines or key not in bode_style_vars:
+                return
+            ln = bode_lines[key]
+            vals = bode_style_vars[key]
+            color = vals["color"].get().strip()
+            if color:
+                ln.set_color(color)
+            ln.set_linestyle("" if vals["ls"].get() == "None" else vals["ls"].get())
+            ln.set_marker("" if vals["mk"].get() == "None" else vals["mk"].get())
+            ln.set_linewidth(float(vals["lw"].get()))
+            ln.set_markersize(float(vals["ms"].get()))
+            if ln.get_marker() not in ("", None):
+                ln.set_markerfacecolor("none")
+                ln.set_markeredgecolor(ln.get_color())
+            _apply_bode_visibility()
+
         # ---------------- Fonts ----------------
         # Initial font sizes (grab from current artists)
         try:
@@ -1493,6 +1785,14 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 next_row += 1
                 axis_entries.append(_row(axes_box, next_row, f"{label}max", pt_limit_vars[key]["max"]))
                 next_row += 1
+        elif is_bode_plot:
+            for key, label in (("mod", "M"), ("phz", "P")):
+                if key not in bode_limit_vars:
+                    continue
+                axis_entries.append(_row(axes_box, next_row, f"{label}min", bode_limit_vars[key]["min"]))
+                next_row += 1
+                axis_entries.append(_row(axes_box, next_row, f"{label}max", bode_limit_vars[key]["max"]))
+                next_row += 1
         else:
             axis_entries.append(_row(axes_box, next_row, "Ymin", ymin_var))
             next_row += 1
@@ -1507,12 +1807,12 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         def _schedule_apply_axes(_evt=None):
             if pending_axes["id"] is not None:
                 tab.after_cancel(pending_axes["id"])
-            pending_axes["id"] = tab.after(900, apply_axes)
+            pending_axes["id"] = tab.after(900, lambda: apply_axes(live=True))
 
 
         for entry in axis_entries:
-            entry.bind("<KeyRelease>", _schedule_apply_axes)
-            entry.bind("<Return>", lambda ev: apply_axes())
+            entry.bind("<Return>", lambda ev: apply_axes(live=False))
+            entry.bind("<FocusOut>", lambda ev: apply_axes(live=False))
 
         btns_axes = ttk.Frame(axes_box)
         btns_axes.grid(row=next_row + 1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -1522,8 +1822,84 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         tick_count_spin.bind("<Return>", lambda ev: autoscale_axes())
         tick_count_spin.bind("<FocusOut>", lambda ev: autoscale_axes())
 
+        if is_bode_plot:
+            bode_box = ttk.LabelFrame(ctrl_frame, text="Bode", padding=8)
+            bode_box.pack(fill="x", pady=(0, 10))
+            if "mod" in bode_show_vars:
+                ttk.Checkbutton(bode_box, text="Zmod", variable=bode_show_vars["mod"], command=lambda: (_apply_bode_visibility(), autoscale_axes())).pack(anchor="w")
+            if "phz" in bode_show_vars:
+                ttk.Checkbutton(bode_box, text="Zphz", variable=bode_show_vars["phz"], command=lambda: (_apply_bode_visibility(), autoscale_axes())).pack(anchor="w")
+            ttk.Checkbutton(
+                bode_box,
+                text="Color y-axes",
+                variable=bode_color_axes_var,
+                command=_apply_bode_visibility,
+            ).pack(anchor="w", pady=(6, 0))
+
+            bode_style_box = ttk.LabelFrame(ctrl_frame, text="Style", padding=8)
+            bode_style_box.pack(fill="x", pady=(0, 10))
+            bode_style_nb = ttk.Notebook(bode_style_box)
+            bode_style_nb.pack(fill="x")
+
+            for key, title in (("mod", "Zmod"), ("phz", "Zphz")):
+                if key not in bode_style_vars:
+                    continue
+                f = ttk.Frame(bode_style_nb, padding=6)
+                bode_style_nb.add(f, text=title)
+                vars_map = bode_style_vars[key]
+
+                ttk.Label(f, text="Color").grid(row=0, column=0, sticky="w")
+                color_entry_local = tk.Entry(f, textvariable=vars_map["color"], width=10)
+                color_entry_local.grid(row=0, column=1, sticky="w", padx=(6, 0))
+
+                def _update_bode_color_entry(entry, color_value: str):
+                    c = (color_value or "").strip()
+                    if c.startswith("#") and len(c) == 7:
+                        entry.configure(bg=c, fg=_safe_fg_for_bg(c))
+                    else:
+                        entry.configure(bg="white", fg="black")
+
+                _update_bode_color_entry(color_entry_local, vars_map["color"].get())
+                vars_map["color"].trace_add(
+                    "write",
+                    lambda *_args, e=color_entry_local, v=vars_map["color"]: _update_bode_color_entry(e, v.get()),
+                )
+
+                def _pick_bode_color(kk=key):
+                    chosen = colorchooser.askcolor(title=f"Choose color for {kk}")
+                    if chosen and chosen[1]:
+                        bode_style_vars[kk]["color"].set(chosen[1])
+                        _apply_bode_style(kk)
+
+                ttk.Button(f, text="Pick…", command=_pick_bode_color).grid(row=0, column=2, sticky="w", padx=(6, 0))
+
+                ttk.Label(f, text="Line").grid(row=1, column=0, sticky="w", pady=(6, 0))
+                cb_ls = ttk.Combobox(f, textvariable=vars_map["ls"], values=linestyle_opts, state="readonly", width=8)
+                cb_ls.grid(row=1, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+
+                ttk.Label(f, text="Marker").grid(row=2, column=0, sticky="w", pady=(6, 0))
+                cb_mk = ttk.Combobox(f, textvariable=vars_map["mk"], values=marker_opts, state="readonly", width=8)
+                cb_mk.grid(row=2, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+
+                ttk.Label(f, text="LW").grid(row=3, column=0, sticky="w", pady=(6, 0))
+                sp_lw = ttk.Spinbox(f, from_=0.0, to=10.0, increment=0.1, textvariable=vars_map["lw"], width=8)
+                sp_lw.grid(row=3, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+
+                ttk.Label(f, text="MS").grid(row=4, column=0, sticky="w", pady=(6, 0))
+                sp_ms = ttk.Spinbox(f, from_=0.0, to=20.0, increment=0.5, textvariable=vars_map["ms"], width=8)
+                sp_ms.grid(row=4, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+
+                color_entry_local.bind("<Return>", lambda e, kk=key: _apply_bode_style(kk))
+                color_entry_local.bind("<FocusOut>", lambda e, kk=key: _apply_bode_style(kk))
+                cb_ls.bind("<<ComboboxSelected>>", lambda e, kk=key: _apply_bode_style(kk))
+                cb_mk.bind("<<ComboboxSelected>>", lambda e, kk=key: _apply_bode_style(kk))
+                sp_lw.configure(command=lambda kk=key: _apply_bode_style(kk))
+                sp_lw.bind("<KeyRelease>", lambda e, kk=key: _apply_bode_style(kk))
+                sp_ms.configure(command=lambda kk=key: _apply_bode_style(kk))
+                sp_ms.bind("<KeyRelease>", lambda e, kk=key: _apply_bode_style(kk))
+
         style_box = ttk.LabelFrame(ctrl_frame, text="Style", padding=8)
-        if not is_pt_series:
+        if not is_pt_series and not is_bode_plot:
             style_box.pack(fill="x", pady=(0, 10))
         # else: don’t pack it (it won’t appear, but code stays safe)
 
@@ -1839,9 +2215,17 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         title_entry.bind("<Return>", lambda e: apply_title_text())
         title_entry.bind("<FocusOut>", lambda e: apply_title_text())
         title_entry.bind("<KeyRelease>", _schedule_title)
-        
 
-        if line is None:
+        if is_pt_series:
+            _apply_visibility()
+
+        if is_bode_plot:
+            for key in bode_style_vars:
+                _apply_bode_style(key)
+            _apply_bode_visibility()
+            autoscale_axes()
+
+        if line is None and not is_bode_plot:
             for child in style_box.winfo_children():
                 try:
                     child.configure(state="disabled")
@@ -2188,9 +2572,15 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             except ValueError:
                 return None
 
-        def apply_limits():
+        def apply_limits(live: bool = False):
             cx0, cx1 = axc.get_xlim()
             cy0, cy1 = axc.get_ylim()
+
+            raws = [xmin_var.get(), xmax_var.get(), ymin_var.get(), ymax_var.get()]
+            if any(_is_incomplete_number(r) for r in raws):
+                return
+            if live and any(not r.strip() for r in raws):
+                return
 
             nx0 = _parse_float(xmin_var.get())
             nx1 = _parse_float(xmax_var.get())
@@ -2219,12 +2609,11 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         def _schedule(_evt=None):
             if pending["id"] is not None:
                 comp.after_cancel(pending["id"])
-            pending["id"] = comp.after(300, apply_limits)
+            pending["id"] = comp.after(300, lambda: apply_limits(live=True))
 
         for e in (exmin, exmax, eymin, eymax):
-            e.bind("<Return>", lambda ev: apply_limits())
-            e.bind("<FocusOut>", lambda ev: apply_limits())
-            e.bind("<KeyRelease>", _schedule)
+            e.bind("<Return>", lambda ev: apply_limits(live=False))
+            e.bind("<FocusOut>", lambda ev: apply_limits(live=False))
 
         b2 = ttk.Frame(lim_box)
         b2.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -2240,35 +2629,43 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
         comp.protocol("WM_DELETE_WINDOW", _on_close)
 
-    def open_composer_bode(kind: str):  # kind in {"zmod","zphz"}
+    def open_composer_bode():
 
-        sources = bode_sources.get(kind, {})
-        if not sources:
+        source_keys = sorted(
+            set(bode_sources.get("zmod", {}).keys()) | set(bode_sources.get("zphz", {}).keys()),
+            key=lambda k: k.lower(),
+        )
+        if not source_keys:
             return
 
-        win_attr = f"_composer_win_bode_{kind}"
-        existing = getattr(win, win_attr, None)
+        existing = getattr(win, "_composer_win_bode", None)
         if existing is not None and existing.winfo_exists():
             existing.lift()
             existing.focus_force()
             return
 
         def _src_label(key: str) -> str:
-            ax_src = sources[key]["ax"]
+            src = bode_sources.get("zmod", {}).get(key) or bode_sources.get("zphz", {}).get(key)
+            if not src:
+                return key
+            ax_src = src["ax"]
             t = (ax_src.get_title() or "").strip()
             return t if t else key
 
-        # Use first source labels for composite axes labels (keeps units)
-        any_key = next(iter(sources.keys()))
-        src_ax0 = sources[any_key]["ax"]
-        default_xlabel = src_ax0.get_xlabel() or "Frecuencia"
-        default_ylabel = src_ax0.get_ylabel() or ("Zmod" if kind == "zmod" else "Zphz")
-        default_title = f"Composite - Bode ({'Zmod' if kind == 'zmod' else 'Zphz'})"
+        any_key = source_keys[0]
+        src_mod = bode_sources.get("zmod", {}).get(any_key)
+        src_phz = bode_sources.get("zphz", {}).get(any_key)
+        sample_src = src_mod or src_phz
+        sample_ax = sample_src["ax"]
+        default_xlabel = sample_ax.get_xlabel() or "Frecuencia"
+        default_ylabel_mod = src_mod["ax"].get_ylabel() if src_mod else "Zmod"
+        default_ylabel_phz = src_phz["ax"].get_ylabel() if src_phz else "Zphz"
+        default_title = "Composite - Bode"
 
         comp = tk.Toplevel(win)
-        setattr(win, win_attr, comp)
-        comp.title(f"Composite (Bode - {'Zmod' if kind == 'zmod' else 'Zphz'})")
-        comp.geometry("1250x780")
+        win._composer_win_bode = comp  # type: ignore[attr-defined]
+        comp.title("Composite (Bode)")
+        comp.geometry("1280x800")
 
         outer = ttk.Frame(comp)
         outer.pack(fill="both", expand=True)
@@ -2277,14 +2674,24 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         plot_frame.pack(side="left", fill="both", expand=True)
 
         figc = _new_figure()
-        axc = figc.add_subplot(111)
+        axc_mod = figc.add_subplot(111)
+        axc_phz = axc_mod.twinx()
+        axc_phz.spines["left"].set_visible(False)
+        axc_phz.yaxis.tick_right()
+        axc_phz.yaxis.set_label_position("right")
 
         def _reset_axes():
-            axc.set_xscale("log")
-            axc.grid(True, which="both")
-            axc.set_title(default_title)
-            axc.set_xlabel(default_xlabel)
-            axc.set_ylabel(default_ylabel)
+            axc_mod.cla()
+            axc_phz.cla()
+            axc_mod.set_xscale("log")
+            axc_mod.grid(True, which="both")
+            axc_mod.set_title(default_title)
+            axc_mod.set_xlabel(default_xlabel)
+            axc_mod.set_ylabel(default_ylabel_mod)
+            axc_phz.set_ylabel(default_ylabel_phz)
+            axc_phz.spines["left"].set_visible(False)
+            axc_phz.yaxis.tick_right()
+            axc_phz.yaxis.set_label_position("right")
 
         _reset_axes()
 
@@ -2298,7 +2705,6 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         ctrl = ttk.Frame(outer, padding=10)
         ctrl.pack(side="right", fill="y")
 
-        # -------- source list --------
         src_box = ttk.LabelFrame(ctrl, text="Bode sources", padding=8)
         src_box.pack(fill="x", pady=(0, 10))
 
@@ -2311,8 +2717,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             nonlocal idx_to_key
             lb.delete(0, "end")
             idx_to_key = []
-            keys = list(sources.keys())
-            keys.sort(key=lambda k: _src_label(k).lower())
+            keys = sorted(source_keys, key=lambda k: _src_label(k).lower())
             for k in keys:
                 lb.insert("end", f"{_src_label(k)}   [{k}]")
                 idx_to_key.append(k)
@@ -2322,28 +2727,11 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         def _selected_keys() -> list[str]:
             return [idx_to_key[i] for i in lb.curselection()]
 
-        # -------- composite lines --------
-        comp_lines: dict[str, object] = {}
+        comp_lines = {"zmod": {}, "zphz": {}}
         legend_var = tk.BooleanVar(value=True)
-
-        def _apply_legend():
-            leg = axc.get_legend()
-            if leg is not None:
-                leg.remove()
-
-            if not legend_var.get():
-                canvas.draw_idle()
-                return
-
-            handles, labels = axc.get_legend_handles_labels()
-            pairs = [(h, l) for h, l in zip(handles, labels) if l and not l.startswith("_")]
-            if not pairs:
-                canvas.draw_idle()
-                return
-
-            h2, l2 = zip(*pairs)
-            axc.legend(h2, l2, loc="best", fontsize=9)
-            canvas.draw_idle()
+        show_mod_var = tk.BooleanVar(value=True)
+        show_phz_var = tk.BooleanVar(value=True)
+        tick_count_var = tk.IntVar(value=6)
 
         def _copy_style(src_line, dst_line):
             dst_line.set_color(src_line.get_color())
@@ -2364,78 +2752,156 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             except Exception:
                 pass
 
+        def _apply_legend():
+            for axis in (axc_mod, axc_phz):
+                leg = axis.get_legend()
+                if leg is not None:
+                    leg.remove()
+
+            if not legend_var.get():
+                canvas.draw_idle()
+                return
+
+            handles = []
+            labels = []
+            for kind in ("zmod", "zphz"):
+                for key in sorted(comp_lines[kind].keys()):
+                    ln = comp_lines[kind][key]
+                    if ln.get_visible():
+                        handles.append(ln)
+                        labels.append(ln.get_label())
+
+            if handles:
+                axc_mod.legend(handles, labels, loc="best", fontsize=9)
+            canvas.draw_idle()
+
+        def _apply_tick_settings():
+            tick_count = max(2, int(tick_count_var.get()))
+            for axis in (axc_mod, axc_phz):
+                axis.yaxis.set_major_locator(LinearLocator(tick_count))
+                axis.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+                axis.yaxis.get_offset_text().set_visible(False)
+
+        def _sync_axis_visibility():
+            mod_visible = bool(show_mod_var.get() and comp_lines["zmod"])
+            phz_visible = bool(show_phz_var.get() and comp_lines["zphz"])
+
+            for ln in comp_lines["zmod"].values():
+                ln.set_visible(show_mod_var.get())
+            for ln in comp_lines["zphz"].values():
+                ln.set_visible(show_phz_var.get())
+
+            axc_mod.yaxis.set_visible(mod_visible)
+            axc_mod.spines["left"].set_visible(mod_visible)
+            axc_mod.yaxis.label.set_visible(mod_visible)
+
+            axc_phz.yaxis.set_visible(phz_visible)
+            axc_phz.spines["right"].set_visible(phz_visible)
+            axc_phz.yaxis.label.set_visible(phz_visible)
+
+            _apply_tick_settings()
+            _apply_legend()
+            canvas.draw_idle()
+
         def _fit_all():
-            if not comp_lines:
+            active_mod = [ln for ln in comp_lines["zmod"].values() if ln.get_visible()]
+            active_phz = [ln for ln in comp_lines["zphz"].values() if ln.get_visible()]
+            if not active_mod and not active_phz:
                 return
 
             xs: list[float] = []
-            ys: list[float] = []
-            for ln in comp_lines.values():
-                x = [float(v) for v in ln.get_xdata(orig=False)]
-                y = [float(v) for v in ln.get_ydata(orig=False)]
-                for xv, yv in zip(x, y):
-                    if xv > 0:
-                        xs.append(xv)
-                        ys.append(yv)
+            for lineset in (active_mod, active_phz):
+                for ln in lineset:
+                    xs.extend([float(v) for v in ln.get_xdata(orig=False) if float(v) > 0])
 
-            if not xs or not ys:
+            if not xs:
                 return
 
             x0, x1 = min(xs), max(xs)
-            y0, y1 = min(ys), max(ys)
+            axc_mod.set_xlim(x0 / 1.2, x1 * 1.2)
+            axc_phz.set_xlim(x0 / 1.2, x1 * 1.2)
 
-            # log-friendly padding on x, linear padding on y
-            axc.set_xlim(x0 / 1.2, x1 * 1.2)
+            if active_mod:
+                ys = []
+                for ln in active_mod:
+                    ys.extend([float(v) for v in ln.get_ydata(orig=False)])
+                y0, y1 = min(ys), max(ys)
+                dy = (y1 - y0) if y1 != y0 else (abs(y0) * 0.1 + 1.0)
+                axc_mod.set_ylim(y0 - 0.05 * dy, y1 + 0.05 * dy)
 
-            dy = (y1 - y0) if y1 != y0 else (abs(y0) * 0.1 + 1.0)
-            pad_y = 0.05 * dy
-            axc.set_ylim(y0 - pad_y, y1 + pad_y)
+            if active_phz:
+                ys = []
+                for ln in active_phz:
+                    ys.extend([float(v) for v in ln.get_ydata(orig=False)])
+                y0, y1 = min(ys), max(ys)
+                dy = (y1 - y0) if y1 != y0 else (abs(y0) * 0.1 + 1.0)
+                axc_phz.set_ylim(y0 - 0.05 * dy, y1 + 0.05 * dy)
 
+            _apply_tick_settings()
             canvas.draw_idle()
             _sync_limit_entries()
 
         def add_selected():
+            added = False
             for key in _selected_keys():
-                if key in comp_lines:
-                    continue
-                src_line = sources[key]["line"]
-                x = list(src_line.get_xdata(orig=False))
-                y = list(src_line.get_ydata(orig=False))
-                (ln,) = axc.plot(x, y, label=_src_label(key))
-                _copy_style(src_line, ln)
-                comp_lines[key] = ln
+                src_mod_local = bode_sources.get("zmod", {}).get(key)
+                if src_mod_local and key not in comp_lines["zmod"]:
+                    src_line = src_mod_local["line"]
+                    x = list(src_line.get_xdata(orig=False))
+                    y = list(src_line.get_ydata(orig=False))
+                    (ln,) = axc_mod.plot(x, y, label=f"{_src_label(key)} - Zmod")
+                    _copy_style(src_line, ln)
+                    comp_lines["zmod"][key] = ln
+                    added = True
 
-            _apply_legend()
-            _fit_all()
+                src_phz_local = bode_sources.get("zphz", {}).get(key)
+                if src_phz_local and key not in comp_lines["zphz"]:
+                    src_line = src_phz_local["line"]
+                    x = list(src_line.get_xdata(orig=False))
+                    y = list(src_line.get_ydata(orig=False))
+                    (ln,) = axc_phz.plot(x, y, label=f"{_src_label(key)} - Zphz")
+                    _copy_style(src_line, ln)
+                    comp_lines["zphz"][key] = ln
+                    added = True
+
+            if added:
+                _sync_axis_visibility()
+                _fit_all()
 
         def remove_selected():
             removed = False
             for key in _selected_keys():
-                ln = comp_lines.pop(key, None)
-                if ln is not None:
-                    try:
-                        ln.remove()
-                    except Exception:
-                        pass
-                    removed = True
+                for kind in ("zmod", "zphz"):
+                    ln = comp_lines[kind].pop(key, None)
+                    if ln is not None:
+                        try:
+                            ln.remove()
+                        except Exception:
+                            pass
+                        removed = True
             if removed:
-                _apply_legend()
+                _sync_axis_visibility()
                 _fit_all()
 
         def clear_all():
-            comp_lines.clear()
-            axc.cla()
+            comp_lines["zmod"].clear()
+            comp_lines["zphz"].clear()
             _reset_axes()
             canvas.draw_idle()
             _sync_limit_entries()
             _apply_legend()
 
         def refresh_formatting():
-            # refresh BOTH style and legend labels (titles may have been edited)
-            for key, ln in comp_lines.items():
-                src_line = sources[key]["line"]
-                _copy_style(src_line, ln)
-                ln.set_label(_src_label(key))
+            for key, ln in comp_lines["zmod"].items():
+                src = bode_sources.get("zmod", {}).get(key)
+                if src:
+                    _copy_style(src["line"], ln)
+                    ln.set_label(f"{_src_label(key)} - Zmod")
+            for key, ln in comp_lines["zphz"].items():
+                src = bode_sources.get("zphz", {}).get(key)
+                if src:
+                    _copy_style(src["line"], ln)
+                    ln.set_label(f"{_src_label(key)} - Zphz")
             _rebuild_listbox()
             _apply_legend()
             canvas.draw_idle()
@@ -2447,117 +2913,120 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         ttk.Button(btns, text="Clear", command=clear_all).pack(side="left", expand=True, fill="x")
 
         ttk.Button(src_box, text="Refresh formatting", command=refresh_formatting).pack(fill="x", pady=(8, 0))
-        ttk.Checkbutton(ctrl, text="Legend", variable=legend_var, command=_apply_legend).pack(anchor="w", pady=(0, 10))
+        ttk.Checkbutton(ctrl, text="Legend", variable=legend_var, command=_apply_legend).pack(anchor="w", pady=(0, 4))
+        ttk.Checkbutton(ctrl, text="Zmod", variable=show_mod_var, command=_sync_axis_visibility).pack(anchor="w")
+        ttk.Checkbutton(ctrl, text="Zphz", variable=show_phz_var, command=_sync_axis_visibility).pack(anchor="w", pady=(0, 10))
 
-        # -------- axis limits UI --------
         lim_box = ttk.LabelFrame(ctrl, text="Axes limits", padding=8)
         lim_box.pack(fill="x", pady=(0, 10))
 
-        def _fmt(v: float) -> str:
-            return f"{v:.6g}"
-
         xmin_var = tk.StringVar()
         xmax_var = tk.StringVar()
-        ymin_var = tk.StringVar()
-        ymax_var = tk.StringVar()
+        modmin_var = tk.StringVar()
+        modmax_var = tk.StringVar()
+        phzmin_var = tk.StringVar()
+        phzmax_var = tk.StringVar()
 
         def _sync_limit_entries():
-            x0, x1 = axc.get_xlim()
-            y0, y1 = axc.get_ylim()
+            x0, x1 = axc_mod.get_xlim()
+            m0, m1 = axc_mod.get_ylim()
+            p0, p1 = axc_phz.get_ylim()
             xmin_var.set(_fmt(x0))
             xmax_var.set(_fmt(x1))
-            ymin_var.set(_fmt(y0))
-            ymax_var.set(_fmt(y1))
+            modmin_var.set(_fmt(m0))
+            modmax_var.set(_fmt(m1))
+            phzmin_var.set(_fmt(p0))
+            phzmax_var.set(_fmt(p1))
 
         _sync_limit_entries()
 
-        def _parse_float(s: str) -> float | None:
-            s = s.strip()
-            if not s:
-                return None
-            try:
-                return float(s)
-            except ValueError:
-                return None
-
         def apply_limits():
-            cx0, cx1 = axc.get_xlim()
-            cy0, cy1 = axc.get_ylim()
+            raws = [xmin_var.get(), xmax_var.get(), modmin_var.get(), modmax_var.get(), phzmin_var.get(), phzmax_var.get()]
+            if any(_is_incomplete_number(r) for r in raws):
+                return
 
+            cur_x0, cur_x1 = axc_mod.get_xlim()
             nx0 = _parse_float(xmin_var.get())
             nx1 = _parse_float(xmax_var.get())
-            ny0 = _parse_float(ymin_var.get())
-            ny1 = _parse_float(ymax_var.get())
-
-            new_x0 = cx0 if nx0 is None else nx0
-            new_x1 = cx1 if nx1 is None else nx1
-
-            # log-x must be > 0
+            new_x0 = cur_x0 if nx0 is None else nx0
+            new_x1 = cur_x1 if nx1 is None else nx1
             if new_x0 <= 0 or new_x1 <= 0:
                 _sync_limit_entries()
                 return
 
-            axc.set_xlim(new_x0, new_x1)
-            axc.set_ylim(cy0 if ny0 is None else ny0, cy1 if ny1 is None else ny1)
+            axc_mod.set_xlim(new_x0, new_x1)
+            axc_phz.set_xlim(new_x0, new_x1)
 
+            nm0 = _parse_float(modmin_var.get())
+            nm1 = _parse_float(modmax_var.get())
+            np0 = _parse_float(phzmin_var.get())
+            np1 = _parse_float(phzmax_var.get())
+
+            cur_m0, cur_m1 = axc_mod.get_ylim()
+            cur_p0, cur_p1 = axc_phz.get_ylim()
+            axc_mod.set_ylim(cur_m0 if nm0 is None else nm0, cur_m1 if nm1 is None else nm1)
+            axc_phz.set_ylim(cur_p0 if np0 is None else np0, cur_p1 if np1 is None else np1)
+            _apply_tick_settings()
             canvas.draw_idle()
             _sync_limit_entries()
 
         def _row(parent, r, label, var):
-            ttk.Label(parent, text=label, width=5).grid(row=r, column=0, sticky="w", padx=(0, 6), pady=2)
+            ttk.Label(parent, text=label, width=7).grid(row=r, column=0, sticky="w", padx=(0, 6), pady=2)
             e = ttk.Entry(parent, textvariable=var, width=12)
             e.grid(row=r, column=1, sticky="w", pady=2)
             return e
 
-        exmin = _row(lim_box, 0, "Xmin", xmin_var)
-        exmax = _row(lim_box, 1, "Xmax", xmax_var)
-        eymin = _row(lim_box, 2, "Ymin", ymin_var)
-        eymax = _row(lim_box, 3, "Ymax", ymax_var)
+        entries = [
+            _row(lim_box, 0, "Xmin", xmin_var),
+            _row(lim_box, 1, "Xmax", xmax_var),
+            _row(lim_box, 2, "Mmin", modmin_var),
+            _row(lim_box, 3, "Mmax", modmax_var),
+            _row(lim_box, 4, "Pmin", phzmin_var),
+            _row(lim_box, 5, "Pmax", phzmax_var),
+        ]
 
-        pending = {"id": None}
-
-        def _schedule(_evt=None):
-            if pending["id"] is not None:
-                comp.after_cancel(pending["id"])
-            pending["id"] = comp.after(300, apply_limits)
-
-        for e in (exmin, exmax, eymin, eymax):
+        for e in entries:
             e.bind("<Return>", lambda ev: apply_limits())
             e.bind("<FocusOut>", lambda ev: apply_limits())
-            e.bind("<KeyRelease>", _schedule)
+
+        ttk.Label(lim_box, text="Ticks", width=7).grid(row=6, column=0, sticky="w", padx=(0, 6), pady=2)
+        tick_spin = ttk.Spinbox(lim_box, from_=2, to=12, increment=1, textvariable=tick_count_var, width=12)
+        tick_spin.grid(row=6, column=1, sticky="w", pady=2)
+        tick_spin.configure(command=lambda: (_apply_tick_settings(), canvas.draw_idle()))
+        tick_spin.bind("<Return>", lambda ev: (_apply_tick_settings(), canvas.draw_idle()))
+        tick_spin.bind("<FocusOut>", lambda ev: (_apply_tick_settings(), canvas.draw_idle()))
 
         b2 = ttk.Frame(lim_box)
-        b2.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        b2.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Button(b2, text="Fit all", command=_fit_all).pack(side="left", expand=True, fill="x", padx=(0, 6))
         ttk.Button(b2, text="Refresh fields", command=_sync_limit_entries).pack(side="left", expand=True, fill="x")
+
+        _apply_tick_settings()
 
         def _on_close():
             comp.destroy()
             try:
-                delattr(win, win_attr)
+                delattr(win, "_composer_win_bode")
             except Exception:
                 pass
 
         comp.protocol("WM_DELETE_WINDOW", _on_close)
 
     def open_composer_for_current():
+        if not composer_enabled:
+            return
+
         key = plot_names_var.get().lower()
 
         if "nyquist" in key:
             open_composer_nyquist()
             return
 
-        if "bode" in key and "zmod" in key:
-            open_composer_bode(kind="zmod")
+        if "bode" in key:
+            open_composer_bode()
             return
 
-        if "bode" in key and "zphz" in key:
-            open_composer_bode(kind="zphz")
-            return
-
-        # optional: small message
-
-        mb.showinfo("Componer", "Composer is available for Nyquist and Bode plots only.")
+        mb.showinfo("Componer", "Composer is available for Nyquist and Bode plots.")
 
     compose_btn.configure(command=open_composer_for_current)
 
