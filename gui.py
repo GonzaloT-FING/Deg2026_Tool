@@ -4,6 +4,8 @@ import pathlib
 #from pipelines.pol_cur_pip import export_folder as export_pc_folder
 from pipelines.eis_pip import run_pipeline as run_eis_pipeline
 from pipelines.pol_cur_pip import run_pipeline as run_pc_pipeline
+from pipelines.ocp_pip import run_pipeline as run_ocp_pipeline
+
 from tkinter import filedialog, ttk
 
 
@@ -21,6 +23,7 @@ PIPELINE_OPTIONS = {
 RUNNERS = {
     "EIS": run_eis_pipeline,
     "PC": run_pc_pipeline,
+    "OCP": run_ocp_pipeline,
 }
 
 NOT_FOUND_MSG = {
