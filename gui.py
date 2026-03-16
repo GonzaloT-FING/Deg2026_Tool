@@ -14,7 +14,7 @@ PIPELINE_OPTIONS = {
     "EIS": ["Nyquist plot", "Bode plot", "Series by Pt", "Equivalent circuit fit"],
     "CV": ["I vs t", "Peak current", "Onset potential"],
     "PC": ["V vs I", "Series by time", "dV/dI", "Step Stability"],
-    "OCP": ["V vs t", "V final", "Drift", "DeltaV"],
+    "OCP": ["V vs t", "DeltaV"],
     "Deg": ["V vs t", "I vs t", "T vs t", "dV/dt", "dV/dt final", "Trend", "Degradation rate"],
     "Activacion": ["V vs t", "I vs t", "T vs t", "dV/dt", "dV/dt final", "Trend", "Degradation rate"],
     "Análisis multiple": ["EIS", "CV", "PC", "OCP", "Deg"]
@@ -29,6 +29,7 @@ RUNNERS = {
 NOT_FOUND_MSG = {
     "EIS": "No se encontraron archivos .DTA con 'EISPOT' en la carpeta de entrada.",
     "PC": "No se encontraron archivos .DTA con 'Curva_Polarizacion_' en la carpeta de entrada.",
+    "OCP": "No se encontraron archivos .DTA con 'OCP_' en la carpeta de entrada.",
 }
 
 

@@ -763,6 +763,44 @@ def _mpl_marker(value: str) -> str:
 def _mpl_linestyle(value: str) -> str:
     return "None" if value == "none" else value
 
+
+def _build_scrollable_controls(parent) -> ttk.Frame:
+    outer = ttk.Frame(parent, padding=10)
+    outer.pack(side="left", fill="y")
+
+    canvas = tk.Canvas(outer, highlightthickness=0, width=320)
+    scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+    controls_frame = ttk.Frame(canvas, padding=(0, 0, 6, 0))
+
+    controls_frame.bind(
+        "<Configure>",
+        lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+    )
+
+    canvas_window = canvas.create_window((0, 0), window=controls_frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+
+    def _resize_controls(event):
+        canvas.itemconfigure(canvas_window, width=event.width)
+
+    def _bind_mousewheel(_event):
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+    def _unbind_mousewheel(_event):
+        canvas.unbind_all("<MouseWheel>")
+
+    def _on_mousewheel(event):
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    canvas.bind("<Configure>", _resize_controls)
+    canvas.bind("<Enter>", _bind_mousewheel)
+    canvas.bind("<Leave>", _unbind_mousewheel)
+
+    canvas.pack(side="left", fill="y", expand=False)
+    scrollbar.pack(side="right", fill="y")
+
+    return controls_frame
+
 def compute_autofit_series_by_time_limits(
     bundle: CurveBundle,
     show_asc: bool,
@@ -1257,8 +1295,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     win.title(f"PC - V vs I - {bundle.description} #{bundle.curve_id}")
     win.geometry("1200x700")
 
-    controls_frame = ttk.Frame(win, padding=10)
-    controls_frame.pack(side="left", fill="y")
+    controls_frame = _build_scrollable_controls(win)
 
     plot_outer = ttk.Frame(win, padding=10)
     plot_outer.pack(side="right", fill="both", expand=True)
@@ -1873,8 +1910,7 @@ def open_series_by_time_window(input_dir: Path) -> None:
     win.title(f"PC - Series by time - {bundle.description} #{bundle.curve_id}")
     win.geometry("1200x720")
 
-    controls_frame = ttk.Frame(win, padding=10)
-    controls_frame.pack(side="left", fill="y")
+    controls_frame = _build_scrollable_controls(win)
 
     plot_outer = ttk.Frame(win, padding=10)
     plot_outer.pack(side="right", fill="both", expand=True)
@@ -1897,8 +1933,6 @@ def open_series_by_time_window(input_dir: Path) -> None:
 
     status_var = tk.StringVar(value="Listo.")
 
-    asc_marker_var = tk.StringVar(value="^")
-    dsc_marker_var = tk.StringVar(value="v")
     voltage_line_var = tk.StringVar(value="-")
     current_line_var = tk.StringVar(value="-.")
     temperature_line_var = tk.StringVar(value="--")
@@ -1935,8 +1969,6 @@ def open_series_by_time_window(input_dir: Path) -> None:
         "t_max": default_limits["t_max"],
         "v_min": default_limits["v_min"],
         "v_max": default_limits["v_max"],
-        "asc_marker": "^",
-        "dsc_marker": "v",
         "voltage_line": "-",
         "current_line": "-.",
         "temperature_line": "--",
@@ -1982,8 +2014,8 @@ def open_series_by_time_window(input_dir: Path) -> None:
                 show_voltage=voltage_var.get(),
                 show_current=current_var.get(),
                 show_temperature=temperature_var.get(),
-                asc_marker=asc_marker_var.get(),
-                dsc_marker=dsc_marker_var.get(),
+                asc_marker="^",
+                dsc_marker="v",
                 voltage_linestyle=voltage_line_var.get(),
                 current_linestyle=current_line_var.get(),
                 temperature_linestyle=temperature_line_var.get(),
@@ -2054,8 +2086,6 @@ def open_series_by_time_window(input_dir: Path) -> None:
             current_var.set(initial_state["current"])
             temperature_var.set(initial_state["temperature"])
 
-            asc_marker_var.set(initial_state["asc_marker"])
-            dsc_marker_var.set(initial_state["dsc_marker"])
             voltage_line_var.set(initial_state["voltage_line"])
             current_line_var.set(initial_state["current_line"])
             temperature_line_var.set(initial_state["temperature_line"])
@@ -2104,29 +2134,21 @@ def open_series_by_time_window(input_dir: Path) -> None:
     ttk.Checkbutton(series_box, text="Corriente", variable=current_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Temperatura", variable=temperature_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
 
-    ttk.Label(style_box, text="Asc marker").grid(row=0, column=0, sticky="w", padx=8, pady=3)
-    asc_marker_combo = ttk.Combobox(style_box, textvariable=asc_marker_var, values=MARKER_OPTIONS, state="readonly", width=10)
-    asc_marker_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
-
-    ttk.Label(style_box, text="Dsc marker").grid(row=1, column=0, sticky="w", padx=8, pady=3)
-    dsc_marker_combo = ttk.Combobox(style_box, textvariable=dsc_marker_var, values=MARKER_OPTIONS, state="readonly", width=10)
-    dsc_marker_combo.grid(row=1, column=1, sticky="w", padx=8, pady=3)
-
-    ttk.Label(style_box, text="Voltaje line").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Voltaje line").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     voltage_line_combo = ttk.Combobox(style_box, textvariable=voltage_line_var, values=LINESTYLE_OPTIONS, state="readonly", width=10)
-    voltage_line_combo.grid(row=2, column=1, sticky="w", padx=8, pady=3)
+    voltage_line_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Corriente line").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Corriente line").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     current_line_combo = ttk.Combobox(style_box, textvariable=current_line_var, values=LINESTYLE_OPTIONS, state="readonly", width=10)
-    current_line_combo.grid(row=3, column=1, sticky="w", padx=8, pady=3)
+    current_line_combo.grid(row=1, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Temperatura line").grid(row=4, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Temperatura line").grid(row=2, column=0, sticky="w", padx=8, pady=3)
     temperature_line_combo = ttk.Combobox(style_box, textvariable=temperature_line_var, values=LINESTYLE_OPTIONS, state="readonly", width=10)
-    temperature_line_combo.grid(row=4, column=1, sticky="w", padx=8, pady=3)
+    temperature_line_combo.grid(row=2, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Ticks").grid(row=5, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Ticks").grid(row=3, column=0, sticky="w", padx=8, pady=3)
     tick_spin = tk.Spinbox(style_box, from_=2, to=10, textvariable=tick_count_var, width=8)
-    tick_spin.grid(row=5, column=1, sticky="w", padx=8, pady=3)
+    tick_spin.grid(row=3, column=1, sticky="w", padx=8, pady=3)
 
     ttk.Label(text_box, text="Título").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
@@ -2178,7 +2200,7 @@ def open_series_by_time_window(input_dir: Path) -> None:
         entry.bind("<KP_Enter>", _schedule_plot)
         entry.bind("<FocusOut>", _schedule_plot)
 
-    for combo in (asc_marker_combo, dsc_marker_combo, voltage_line_combo, current_line_combo, temperature_line_combo):
+    for combo in (voltage_line_combo, current_line_combo, temperature_line_combo):
         combo.bind("<<ComboboxSelected>>", _schedule_plot)
 
     tick_spin.bind("<Return>", _schedule_plot)
