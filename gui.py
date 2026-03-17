@@ -5,6 +5,7 @@ import pathlib
 from pipelines.eis_pip import run_pipeline as run_eis_pipeline
 from pipelines.pol_cur_pip import run_pipeline as run_pc_pipeline
 from pipelines.ocp_pip import run_pipeline as run_ocp_pipeline
+from pipelines.deg_pip import run_pipeline as run_deg_pipeline
 
 from tkinter import filedialog, ttk
 
@@ -24,12 +25,14 @@ RUNNERS = {
     "EIS": run_eis_pipeline,
     "PC": run_pc_pipeline,
     "OCP": run_ocp_pipeline,
+    "Deg": run_deg_pipeline,
 }
 
 NOT_FOUND_MSG = {
     "EIS": "No se encontraron archivos .DTA con 'EISPOT' en la carpeta de entrada.",
     "PC": "No se encontraron archivos .DTA con 'Curva_Polarizacion_' en la carpeta de entrada.",
     "OCP": "No se encontraron archivos .DTA con 'OCP_' en la carpeta de entrada.",
+    "Deg": "No se encontraron archivos .DTA con 'Degradacion_galvanostatica_19A_60C_' en la carpeta de entrada.",
 }
 
 

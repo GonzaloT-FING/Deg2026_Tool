@@ -21,14 +21,14 @@ from pathlib import Path
 from collections import defaultdict
 import re
 
-from math import floor, ceil
+from math import floor, ceil, log10
 
 import tkinter as tk
 from tkinter import ttk, messagebox
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-from matplotlib.ticker import LinearLocator, MaxNLocator, FormatStrFormatter, StrMethodFormatter
+from matplotlib.ticker import LinearLocator, LogLocator, LogFormatterSciNotation, MaxNLocator, FormatStrFormatter, StrMethodFormatter
 from math import floor, ceil
 
 from openpyxl import Workbook
@@ -76,6 +76,10 @@ PC_PLOT_COLORS = {
     "asc_current": "#2f9e44",
     "dsc_current": "#1b5e20",
 }
+
+SECONDS_PER_MINUTE = 60.0
+SECONDS_PER_HOUR = 3600.0
+TIME_UNIT_OPTIONS = ["s", "min", "h"]
 
 
 # ---------------------------------------------------------------------------
@@ -625,6 +629,285 @@ def draw_v_vs_i_on_figure(
     fig.tight_layout()
     return True
 
+
+def build_dv_di_rows(
+    rows: list[dict[str, float]],
+    current_tolerance: float,
+    point_fraction: float,
+) -> list[dict[str, float]]:
+    selected_rows = select_fractional_point_per_step(rows, current_tolerance, point_fraction)
+    derivative_rows: list[dict[str, float]] = []
+
+    for idx in range(len(selected_rows) - 1):
+        row_a = selected_rows[idx]
+        row_b = selected_rows[idx + 1]
+
+        delta_i = row_b["Corriente"] - row_a["Corriente"]
+        if abs(delta_i) <= 1e-12:
+            continue
+
+        delta_v = row_b["Voltaje"] - row_a["Voltaje"]
+        derivative_rows.append(
+            {
+                "Corriente": (row_a["Corriente"] + row_b["Corriente"]) / 2.0,
+                "dVdI": delta_v / delta_i,
+                "Step": float(idx + 1),
+            }
+        )
+
+    return derivative_rows
+
+
+def _positive_dv_di_rows(rows: list[dict[str, float]]) -> list[dict[str, float]]:
+    return [row for row in rows if row["dVdI"] > 0]
+
+
+def _format_log_limit_value(value: float | None) -> str:
+    if value is None:
+        return ""
+    return f"{value:.6g}"
+
+
+def _log_axis_limits(values: list[float]) -> tuple[float | None, float | None]:
+    positive_values = [value for value in values if value > 0]
+    if not positive_values:
+        return None, None
+
+    vmin = min(positive_values)
+    vmax = max(positive_values)
+
+    lower = 10 ** floor(log10(vmin))
+    upper = 10 ** ceil(log10(vmax))
+
+    if lower == upper:
+        upper *= 10.0
+
+    return lower, upper
+
+
+def compute_default_dv_di_limits(bundle: CurveBundle) -> dict[str, str]:
+    curve_data = build_curve_bundle_data(bundle)
+
+    asc_rows = (
+        build_dv_di_rows(curve_data["asc_rows"], curve_data["asc_tol"], 1.0)
+        if curve_data["asc_rows"] else []
+    )
+    dsc_rows = (
+        build_dv_di_rows(curve_data["dsc_rows"], curve_data["dsc_tol"], 1.0)
+        if curve_data["dsc_rows"] else []
+    )
+
+    rows = _positive_dv_di_rows(asc_rows + dsc_rows)
+    if not rows:
+        return {
+            "x_min": "",
+            "x_max": "",
+            "dvdi_min": "",
+            "dvdi_max": "",
+        }
+
+    x_min, x_max = _padded_limits([r["Corriente"] for r in rows])
+    dvdi_min, dvdi_max = _log_axis_limits([r["dVdI"] for r in rows])
+
+    return {
+        "x_min": _format_limit_value(x_min),
+        "x_max": _format_limit_value(x_max),
+        "dvdi_min": _format_log_limit_value(dvdi_min),
+        "dvdi_max": _format_log_limit_value(dvdi_max),
+    }
+
+
+def compute_autofit_dv_di_limits(
+    bundle: CurveBundle,
+    show_asc: bool,
+    show_dsc: bool,
+    point_fraction: float,
+    decimals: int = 1,
+) -> dict[str, str]:
+    if not (show_asc or show_dsc):
+        raise ValueError("Debe seleccionar Asc y/o Dsc para usar Autoscale.")
+
+    curve_data = build_curve_bundle_data(bundle)
+
+    asc_rows = (
+        build_dv_di_rows(curve_data["asc_rows"], curve_data["asc_tol"], point_fraction)
+        if show_asc and curve_data["asc_rows"] else []
+    )
+    dsc_rows = (
+        build_dv_di_rows(curve_data["dsc_rows"], curve_data["dsc_tol"], point_fraction)
+        if show_dsc and curve_data["dsc_rows"] else []
+    )
+
+    rows = _positive_dv_di_rows(asc_rows + dsc_rows)
+    if not rows:
+        raise ValueError("No hay valores positivos de dV/dI para ajustar los ejes en escala logarítmica.")
+
+    out = {
+        "x_min": "",
+        "x_max": "",
+        "dvdi_min": "",
+        "dvdi_max": "",
+    }
+
+    i_values = [r["Corriente"] for r in rows]
+    if i_values:
+        out["x_min"] = _format_limit_value(_round_down_dec(min(i_values), decimals), decimals)
+        out["x_max"] = _format_limit_value(_round_up_dec(max(i_values), decimals), decimals)
+
+    dvdi_values = [r["dVdI"] for r in rows]
+    if dvdi_values:
+        dvdi_min, dvdi_max = _log_axis_limits(dvdi_values)
+        out["dvdi_min"] = _format_log_limit_value(dvdi_min)
+        out["dvdi_max"] = _format_log_limit_value(dvdi_max)
+
+    return out
+
+
+def draw_dv_di_on_figure(
+    fig: Figure,
+    bundle: CurveBundle,
+    show_asc: bool,
+    show_dsc: bool,
+    point_fraction: float,
+    asc_marker: str,
+    dsc_marker: str,
+    dvdi_linestyle: str,
+    x_tick_count: int = 6,
+    y_tick_count: int = 6,
+    x_min: float | None = None,
+    x_max: float | None = None,
+    dvdi_min: float | None = None,
+    dvdi_max: float | None = None,
+    plot_title: str = "",
+    title_fontsize: float = 14,
+    tick_fontsize: float = 10,
+    label_fontsize: float = 11,
+    legend_fontsize: float = 10,
+    marker_size: float = 6,
+    hollow_markers: bool = True,
+    line_width: float = 1.5,
+) -> bool:
+    fig.clear()
+
+    if not (show_asc or show_dsc):
+        return False
+
+    x_tick_count = max(2, int(x_tick_count))
+    y_tick_count = max(2, int(y_tick_count))
+
+    curve_data = build_curve_bundle_data(bundle)
+
+    asc_rows = (
+        build_dv_di_rows(curve_data["asc_rows"], curve_data["asc_tol"], point_fraction)
+        if show_asc and curve_data["asc_rows"]
+        else []
+    )
+    dsc_rows = (
+        build_dv_di_rows(curve_data["dsc_rows"], curve_data["dsc_tol"], point_fraction)
+        if show_dsc and curve_data["dsc_rows"]
+        else []
+    )
+
+    asc_rows = _positive_dv_di_rows(asc_rows)
+    dsc_rows = _positive_dv_di_rows(dsc_rows)
+
+    if not asc_rows and not dsc_rows:
+        return False
+
+    ax_main = fig.add_subplot(111)
+
+    asc_marker_mpl = _mpl_marker(asc_marker)
+    dsc_marker_mpl = _mpl_marker(dsc_marker)
+    dvdi_ls_mpl = _mpl_linestyle(dvdi_linestyle)
+
+    def _series_visible(marker_value: str, line_value: str) -> bool:
+        return not (marker_value == "none" and line_value == "none")
+
+    def _line_kwargs(color: str, mpl_marker: str, mpl_linestyle: str) -> dict:
+        kwargs = {
+            "color": color,
+            "marker": mpl_marker,
+            "linestyle": mpl_linestyle,
+            "linewidth": line_width,
+            "markersize": marker_size,
+        }
+
+        if mpl_marker != "None":
+            kwargs["markeredgecolor"] = color
+            kwargs["markeredgewidth"] = 1.2
+            if hollow_markers and mpl_marker not in {"x", "+"}:
+                kwargs["markerfacecolor"] = "none"
+            else:
+                kwargs["markerfacecolor"] = color
+
+        return kwargs
+
+    if asc_rows and _series_visible(asc_marker, dvdi_linestyle):
+        ax_main.plot(
+            [r["Corriente"] for r in asc_rows],
+            [r["dVdI"] for r in asc_rows],
+            label="Asc dV/dI",
+            **_line_kwargs(
+                PC_PLOT_COLORS["asc_voltage"],
+                asc_marker_mpl,
+                dvdi_ls_mpl,
+            ),
+        )
+
+    if dsc_rows and _series_visible(dsc_marker, dvdi_linestyle):
+        ax_main.plot(
+            [r["Corriente"] for r in dsc_rows],
+            [r["dVdI"] for r in dsc_rows],
+            label="Dsc dV/dI",
+            **_line_kwargs(
+                PC_PLOT_COLORS["dsc_voltage"],
+                dsc_marker_mpl,
+                dvdi_ls_mpl,
+            ),
+        )
+
+    handles, labels = ax_main.get_legend_handles_labels()
+    if not handles:
+        fig.clear()
+        return False
+
+    default_title = (
+        f"dV/dI vs I - {bundle.description} #{bundle.curve_id} "
+        f"(punto step = {point_fraction:.2f})"
+    )
+    final_title = plot_title.strip() if plot_title.strip() else default_title
+
+    ax_main.set_xlabel("Corriente (A)", fontsize=label_fontsize)
+    ax_main.set_ylabel("dV/dI (V/A)", fontsize=label_fontsize)
+    ax_main.set_title(final_title, fontsize=title_fontsize)
+    ax_main.grid(True)
+    ax_main.tick_params(axis="both", labelsize=tick_fontsize)
+    ax_main.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
+    ax_main.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+
+    if x_min is not None or x_max is not None:
+        ax_main.set_xlim(left=x_min, right=x_max)
+        apply_x_edge_ticks(ax_main, x_min, x_max, x_tick_count)
+
+    if dvdi_min is not None and dvdi_min <= 0:
+        raise ValueError("dV/dI min debe ser mayor que 0 para usar escala logarítmica.")
+    if dvdi_max is not None and dvdi_max <= 0:
+        raise ValueError("dV/dI max debe ser mayor que 0 para usar escala logarítmica.")
+
+    ax_main.set_yscale("log")
+    if dvdi_min is not None or dvdi_max is not None:
+        ax_main.set_ylim(bottom=dvdi_min, top=dvdi_max)
+
+    ax_main.yaxis.set_major_locator(LogLocator(base=10.0, numticks=max(2, y_tick_count)))
+    ax_main.yaxis.set_minor_locator(LogLocator(base=10.0, subs=tuple(range(2, 10))))
+    ax_main.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    ax_main.yaxis.set_minor_formatter(LogFormatterSciNotation(base=10.0, labelOnlyBase=True))
+    ax_main.grid(True, which="minor", axis="y", alpha=0.25)
+
+    ax_main.legend(handles, labels, fontsize=legend_fontsize)
+    fig.tight_layout()
+    return True
+
 def draw_series_by_time_on_figure(
     fig: Figure,
     bundle: CurveBundle,
@@ -638,6 +921,7 @@ def draw_series_by_time_on_figure(
     voltage_linestyle: str,
     current_linestyle: str,
     temperature_linestyle: str,
+    time_unit: str = "s",
     x_tick_count: int = 6,
     y_tick_count: int = 6,
     t_min: float | None = None,
@@ -665,7 +949,7 @@ def draw_series_by_time_on_figure(
     x_tick_count = max(2, int(x_tick_count))
     y_tick_count = max(2, int(y_tick_count))
 
-    plot_data = build_series_by_time_plot_data(bundle)
+    plot_data = build_series_by_time_plot_data(bundle, time_unit=time_unit)
     asc_rows = plot_data["asc_rows"] if show_asc else []
     dsc_rows = plot_data["dsc_rows"] if show_dsc else []
 
@@ -795,7 +1079,7 @@ def draw_series_by_time_on_figure(
     default_title = f"Series by time - {bundle.description} #{bundle.curve_id}"
     final_title = plot_title.strip() if plot_title.strip() else default_title
 
-    ax_main.set_xlabel("Tiempo (s)", fontsize=label_fontsize)
+    ax_main.set_xlabel(f"Tiempo ({time_unit})", fontsize=label_fontsize)
     ax_main.set_title(final_title, fontsize=title_fontsize)
     ax_main.grid(True)
     ax_main.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
@@ -1192,6 +1476,22 @@ def _optional_float(value: str | None) -> float | None:
     return float(text.replace(",", "."))
 
 
+def _time_unit_scale(time_unit: str) -> float:
+    if time_unit == "min":
+        return SECONDS_PER_MINUTE
+    if time_unit == "h":
+        return SECONDS_PER_HOUR
+    return 1.0
+
+
+def _time_unit_decimals(time_unit: str) -> int:
+    if time_unit == "h":
+        return 2
+    if time_unit == "min":
+        return 1
+    return 1
+
+
 def build_curve_bundle_data(bundle: CurveBundle) -> dict[str, object]:
     asc_rows = concatenate_curve_data(bundle.asc_files)
     dsc_rows = concatenate_curve_data(bundle.dsc_files)
@@ -1206,8 +1506,9 @@ def build_curve_bundle_data(bundle: CurveBundle) -> dict[str, object]:
         "dsc_tol": dsc_tol,
     }
 
-def build_series_by_time_plot_data(bundle: CurveBundle) -> dict[str, object]:
+def build_series_by_time_plot_data(bundle: CurveBundle, time_unit: str = "s") -> dict[str, object]:
     curve_data = build_curve_bundle_data(bundle)
+    time_scale = _time_unit_scale(time_unit)
 
     raw_asc_rows = curve_data["asc_rows"]
     raw_dsc_rows = curve_data["dsc_rows"]
@@ -1217,13 +1518,13 @@ def build_series_by_time_plot_data(bundle: CurveBundle) -> dict[str, object]:
     asc_rows = []
     for row in raw_asc_rows:
         new_row = dict(row)
-        new_row["plot_time"] = row["time"]
+        new_row["plot_time"] = row["time"] / time_scale
         asc_rows.append(new_row)
 
     dsc_rows = []
     for row in raw_dsc_rows:
         new_row = dict(row)
-        new_row["plot_time"] = t_asc_end - row["time"]
+        new_row["plot_time"] = (t_asc_end - row["time"]) / time_scale
         dsc_rows.append(new_row)
 
     return {
@@ -1233,8 +1534,12 @@ def build_series_by_time_plot_data(bundle: CurveBundle) -> dict[str, object]:
     }
 
 
-def compute_default_series_by_time_limits(bundle: CurveBundle) -> dict[str, str]:
-    plot_data = build_series_by_time_plot_data(bundle)
+def compute_default_series_by_time_limits(
+    bundle: CurveBundle,
+    time_unit: str = "s",
+) -> dict[str, str]:
+    plot_data = build_series_by_time_plot_data(bundle, time_unit=time_unit)
+    time_decimals = _time_unit_decimals(time_unit)
 
     rows = plot_data["asc_rows"] + plot_data["dsc_rows"]
     if not rows:
@@ -1252,8 +1557,8 @@ def compute_default_series_by_time_limits(bundle: CurveBundle) -> dict[str, str]
     temp_min, temp_max = _padded_limits([r["Temperatura"] for r in rows])
 
     return {
-        "t_min": _format_limit_value(t_min),
-        "t_max": _format_limit_value(t_max),
+        "t_min": _format_limit_value(t_min, time_decimals),
+        "t_max": _format_limit_value(t_max, time_decimals),
         "v_min": _format_limit_value(v_min),
         "v_max": _format_limit_value(v_max),
         "temp_min": _format_limit_value(temp_min),
@@ -1268,6 +1573,7 @@ def compute_autofit_series_by_time_limits(
     show_voltage: bool,
     show_current: bool,
     show_temperature: bool,
+    time_unit: str = "s",
 ) -> dict[str, str]:
     if not (show_asc or show_dsc):
         raise ValueError("Debe seleccionar Asc y/o Dsc para usar Autofit.")
@@ -1275,7 +1581,7 @@ def compute_autofit_series_by_time_limits(
     if not (show_voltage or show_current or show_temperature):
         raise ValueError("Debe seleccionar al menos una magnitud para usar Autofit.")
 
-    plot_data = build_series_by_time_plot_data(bundle)
+    plot_data = build_series_by_time_plot_data(bundle, time_unit=time_unit)
 
     rows = []
     if show_asc:
@@ -1297,8 +1603,9 @@ def compute_autofit_series_by_time_limits(
 
     t_values = [r["plot_time"] for r in rows]
     if t_values:
-        out["t_min"] = str(int(floor(min(t_values))))
-        out["t_max"] = str(int(ceil(max(t_values))))
+        decimals = _time_unit_decimals(time_unit)
+        out["t_min"] = _format_limit_value(_round_down_dec(min(t_values), decimals), decimals)
+        out["t_max"] = _format_limit_value(_round_up_dec(max(t_values), decimals), decimals)
 
     if show_voltage:
         v_values = [r["Voltaje"] for r in rows]
@@ -1394,14 +1701,6 @@ def select_fractional_point_per_step(
         selected_rows.append(selected)
 
     return selected_rows
-
-
-def find_last_point_of_each_step(
-    rows: list[dict[str, float]],
-    current_tolerance: float,
-) -> list[dict[str, float]]:
-    """Compatibility helper for export sheets: last point = fraction 1.0."""
-    return select_fractional_point_per_step(rows, current_tolerance, 1.0)
 
 
 def open_v_vs_i_window(input_dir: Path) -> None:
@@ -1847,6 +2146,401 @@ def open_v_vs_i_window(input_dir: Path) -> None:
 
     _update_point_label()
     _plot()
+
+
+def open_dv_di_window(input_dir: Path) -> None:
+    bundles = discover_curve_bundles(Path(input_dir))
+    if not bundles:
+        raise ValueError("No se encontraron curvas de polarización válidas.")
+
+    bundle = bundles[0]
+    default_limits = compute_default_dv_di_limits(bundle)
+
+    win = tk.Toplevel()
+    win.title(f"PC - dV/dI - {bundle.description} #{bundle.curve_id}")
+    win.geometry("1200x700")
+
+    controls_frame = _build_scrollable_controls(win)
+
+    plot_outer = ttk.Frame(win, padding=10)
+    plot_outer.pack(side="right", fill="both", expand=True)
+
+    toolbar_frame = ttk.Frame(plot_outer)
+    toolbar_frame.pack(side="top", fill="x")
+
+    canvas_frame = ttk.Frame(plot_outer)
+    canvas_frame.pack(side="top", fill="both", expand=True)
+
+    fig = Figure(figsize=(9, 5.5), dpi=100)
+
+    canvas = FigureCanvasTkAgg(fig, master=canvas_frame)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    toolbar = NavigationToolbar2Tk(canvas, toolbar_frame, pack_toolbar=False)
+    toolbar.update()
+    toolbar.pack(side="left", fill="x")
+
+    status_var = tk.StringVar(value="Listo.")
+
+    asc_marker_var = tk.StringVar(value="^")
+    dsc_marker_var = tk.StringVar(value="v")
+    dvdi_line_var = tk.StringVar(value="-")
+
+    asc_var = tk.BooleanVar(value=True)
+    dsc_var = tk.BooleanVar(value=True)
+    point_fraction_var = tk.DoubleVar(value=1.0)
+
+    x_min_var = tk.StringVar(value=default_limits["x_min"])
+    x_max_var = tk.StringVar(value=default_limits["x_max"])
+    dvdi_min_var = tk.StringVar(value=default_limits["dvdi_min"])
+    dvdi_max_var = tk.StringVar(value=default_limits["dvdi_max"])
+
+    x_tick_count_var = tk.IntVar(value=6)
+    y_tick_count_var = tk.IntVar(value=6)
+
+    plot_title_var = tk.StringVar(value="")
+    title_fontsize_var = tk.StringVar(value="14")
+    tick_fontsize_var = tk.StringVar(value="10")
+    label_fontsize_var = tk.StringVar(value="11")
+    legend_fontsize_var = tk.StringVar(value="10")
+    marker_size_var = tk.StringVar(value="6")
+    hollow_markers_var = tk.BooleanVar(value=False)
+    line_width_var = tk.StringVar(value="1.5")
+
+    initial_state = {
+        "asc": True,
+        "dsc": True,
+        "fraction": 1.0,
+        "x_min": default_limits["x_min"],
+        "x_max": default_limits["x_max"],
+        "dvdi_min": default_limits["dvdi_min"],
+        "dvdi_max": default_limits["dvdi_max"],
+        "asc_marker": "^",
+        "dsc_marker": "v",
+        "dvdi_line": "-",
+        "x_tick_count": 6,
+        "y_tick_count": 6,
+        "plot_title": "",
+        "title_fontsize": "14",
+        "tick_fontsize": "10",
+        "label_fontsize": "11",
+        "legend_fontsize": "10",
+        "marker_size": "6",
+        "hollow_markers": False,
+        "line_width": "1.5",
+    }
+
+    plot_job = {"id": None}
+    suspend_events = {"value": False}
+
+    def _schedule_plot(*_args):
+        if suspend_events["value"]:
+            return
+        if plot_job["id"] is not None:
+            win.after_cancel(plot_job["id"])
+        plot_job["id"] = win.after(20, _plot)
+
+    ttk.Label(
+        controls_frame,
+        text=f"Curva detectada:\n{bundle.description} #{bundle.curve_id}",
+        justify="left",
+    ).pack(anchor="w", pady=(0, 10))
+
+    series_box = ttk.LabelFrame(controls_frame, text="Series")
+    series_box.pack(fill="x", pady=5)
+
+    style_box = ttk.LabelFrame(controls_frame, text="Estilo")
+    style_box.pack(fill="x", pady=5)
+
+    ttk.Label(style_box, text="Asc marker").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    asc_marker_combo = ttk.Combobox(
+        style_box,
+        textvariable=asc_marker_var,
+        values=MARKER_OPTIONS,
+        state="readonly",
+        width=10,
+    )
+    asc_marker_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(style_box, text="Dsc marker").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    dsc_marker_combo = ttk.Combobox(
+        style_box,
+        textvariable=dsc_marker_var,
+        values=MARKER_OPTIONS,
+        state="readonly",
+        width=10,
+    )
+    dsc_marker_combo.grid(row=1, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(style_box, text="dV/dI line").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    dvdi_line_combo = ttk.Combobox(
+        style_box,
+        textvariable=dvdi_line_var,
+        values=LINESTYLE_OPTIONS,
+        state="readonly",
+        width=10,
+    )
+    dvdi_line_combo.grid(row=2, column=1, sticky="w", padx=8, pady=3)
+
+    point_box = ttk.LabelFrame(controls_frame, text="Punto dentro de cada step")
+    point_box.pack(fill="x", pady=5)
+
+    limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
+    limits_box.pack(fill="x", pady=5)
+
+    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamaños")
+    text_box.pack(fill="x", pady=5)
+
+    ttk.Label(text_box, text="Título").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
+    title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Title size").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    title_size_entry = ttk.Spinbox(text_box, from_=6.0, to=50.0, increment=0.5, textvariable=title_fontsize_var, width=10)
+    title_size_entry.grid(row=1, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Tick size").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    tick_size_entry = ttk.Spinbox(text_box, from_=6.0, to=40.0, increment=0.5, textvariable=tick_fontsize_var, width=10)
+    tick_size_entry.grid(row=2, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Label size").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    label_size_entry = ttk.Spinbox(text_box, from_=6.0, to=40.0, increment=0.5, textvariable=label_fontsize_var, width=10)
+    label_size_entry.grid(row=3, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Legend size").grid(row=4, column=0, sticky="w", padx=8, pady=3)
+    legend_size_entry = ttk.Spinbox(text_box, from_=6.0, to=40.0, increment=0.5, textvariable=legend_fontsize_var, width=10)
+    legend_size_entry.grid(row=4, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Marker size").grid(row=5, column=0, sticky="w", padx=8, pady=3)
+    marker_size_entry = ttk.Spinbox(text_box, from_=0.0, to=20.0, increment=0.5, textvariable=marker_size_var, width=10)
+    marker_size_entry.grid(row=5, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Checkbutton(
+        text_box,
+        text="Hollow markers",
+        variable=hollow_markers_var,
+        command=_schedule_plot,
+    ).grid(row=6, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+
+    ttk.Label(text_box, text="Line width").grid(row=7, column=0, sticky="w", padx=8, pady=3)
+    line_width_entry = ttk.Spinbox(text_box, from_=0.0, to=10.0, increment=0.1, textvariable=line_width_var, width=10)
+    line_width_entry.grid(row=7, column=1, sticky="w", padx=8, pady=3)
+
+    def _positive_float(text: str, name: str) -> float:
+        value = text.strip().replace(",", ".")
+        if not value:
+            raise ValueError(f"{name} no puede estar vacío.")
+        num = float(value)
+        if num <= 0:
+            raise ValueError(f"{name} debe ser mayor que 0.")
+        return num
+
+    def _collect_limits():
+        return dict(
+            x_min=_optional_float(x_min_var.get()),
+            x_max=_optional_float(x_max_var.get()),
+            dvdi_min=_optional_float(dvdi_min_var.get()),
+            dvdi_max=_optional_float(dvdi_max_var.get()),
+        )
+
+    def _plot():
+        plot_job["id"] = None
+
+        try:
+            has_plot = draw_dv_di_on_figure(
+                fig=fig,
+                bundle=bundle,
+                show_asc=asc_var.get(),
+                show_dsc=dsc_var.get(),
+                point_fraction=point_fraction_var.get(),
+                asc_marker=asc_marker_var.get(),
+                dsc_marker=dsc_marker_var.get(),
+                dvdi_linestyle=dvdi_line_var.get(),
+                x_tick_count=x_tick_count_var.get(),
+                y_tick_count=y_tick_count_var.get(),
+                plot_title=plot_title_var.get(),
+                title_fontsize=_positive_float(title_fontsize_var.get(), "Title size"),
+                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tick size"),
+                label_fontsize=_positive_float(label_fontsize_var.get(), "Label size"),
+                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Legend size"),
+                marker_size=_positive_float(marker_size_var.get(), "Marker size"),
+                hollow_markers=hollow_markers_var.get(),
+                line_width=_positive_float(line_width_var.get(), "Line width"),
+                **_collect_limits(),
+            )
+        except ValueError as exc:
+            status_var.set(f"Error: {exc}")
+            return
+
+        if not has_plot:
+            fig.clear()
+            canvas.draw_idle()
+            status_var.set("No se muestra gráfico: seleccione al menos una dirección.")
+            return
+
+        canvas.draw_idle()
+        status_var.set("Gráfico actualizado.")
+
+    def _update_point_label(_event=None):
+        point_value_label.config(text=f"{point_fraction_var.get():.2f}")
+
+    def _on_scale_move(_value=None):
+        _update_point_label()
+        _plot()
+
+    def _on_scale_release(_event=None):
+        _schedule_plot()
+
+    def _autofit():
+        try:
+            fitted = compute_autofit_dv_di_limits(
+                bundle=bundle,
+                show_asc=asc_var.get(),
+                show_dsc=dsc_var.get(),
+                point_fraction=point_fraction_var.get(),
+            )
+        except ValueError as exc:
+            status_var.set(f"Error: {exc}")
+            return
+
+        suspend_events["value"] = True
+        try:
+            x_min_var.set(fitted["x_min"])
+            x_max_var.set(fitted["x_max"])
+            dvdi_min_var.set(fitted["dvdi_min"])
+            dvdi_max_var.set(fitted["dvdi_max"])
+        finally:
+            suspend_events["value"] = False
+
+        _plot()
+        status_var.set("Autoscale aplicado.")
+
+    def _reset():
+        suspend_events["value"] = True
+        try:
+            asc_var.set(initial_state["asc"])
+            dsc_var.set(initial_state["dsc"])
+            asc_marker_var.set(initial_state["asc_marker"])
+            dsc_marker_var.set(initial_state["dsc_marker"])
+            dvdi_line_var.set(initial_state["dvdi_line"])
+            point_fraction_var.set(initial_state["fraction"])
+            x_tick_count_var.set(initial_state["x_tick_count"])
+            y_tick_count_var.set(initial_state["y_tick_count"])
+            plot_title_var.set(initial_state["plot_title"])
+            title_fontsize_var.set(initial_state["title_fontsize"])
+            tick_fontsize_var.set(initial_state["tick_fontsize"])
+            label_fontsize_var.set(initial_state["label_fontsize"])
+            legend_fontsize_var.set(initial_state["legend_fontsize"])
+            marker_size_var.set(initial_state["marker_size"])
+            hollow_markers_var.set(initial_state["hollow_markers"])
+            line_width_var.set(initial_state["line_width"])
+            x_min_var.set(initial_state["x_min"])
+            x_max_var.set(initial_state["x_max"])
+            dvdi_min_var.set(initial_state["dvdi_min"])
+            dvdi_max_var.set(initial_state["dvdi_max"])
+            _update_point_label()
+        finally:
+            suspend_events["value"] = False
+
+        _plot()
+        status_var.set("Valores restaurados.")
+
+    asc_marker_combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    dsc_marker_combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    dvdi_line_combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    for widget in (
+        title_entry,
+        title_size_entry,
+        tick_size_entry,
+        label_size_entry,
+        legend_size_entry,
+        marker_size_entry,
+        line_width_entry,
+    ):
+        widget.bind("<Return>", _schedule_plot)
+        widget.bind("<KP_Enter>", _schedule_plot)
+        widget.bind("<FocusOut>", _schedule_plot)
+    for spin in (
+        title_size_entry,
+        tick_size_entry,
+        label_size_entry,
+        legend_size_entry,
+        marker_size_entry,
+        line_width_entry,
+    ):
+        spin.configure(command=_schedule_plot)
+
+    ttk.Checkbutton(series_box, text="Asc", variable=asc_var, command=_schedule_plot).pack(
+        anchor="w", padx=8, pady=2
+    )
+    ttk.Checkbutton(series_box, text="Dsc", variable=dsc_var, command=_schedule_plot).pack(
+        anchor="w", padx=8, pady=2
+    )
+
+    point_value_label = ttk.Label(point_box, text="1.00")
+    point_value_label.pack(anchor="e", padx=8, pady=(4, 0))
+
+    point_scale = ttk.Scale(
+        point_box,
+        from_=0.0,
+        to=1.0,
+        orient="horizontal",
+        variable=point_fraction_var,
+        command=_on_scale_move,
+    )
+    point_scale.pack(fill="x", padx=8, pady=6)
+
+    ttk.Label(point_box, text="0 = primer punto, 1 = último punto").pack(
+        anchor="w", padx=8, pady=(0, 6)
+    )
+
+    limit_specs = [
+        ("I min", x_min_var),
+        ("I max", x_max_var),
+        ("dV/dI min", dvdi_min_var),
+        ("dV/dI max", dvdi_max_var),
+    ]
+
+    for row_idx, (label, var) in enumerate(limit_specs):
+        ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        entry = ttk.Entry(limits_box, textvariable=var, width=12)
+        entry.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        entry.bind("<KP_Enter>", _schedule_plot)
+        entry.bind("<FocusOut>", _schedule_plot)
+        entry.bind("<Return>", _schedule_plot)
+
+    ttk.Label(limits_box, text="x-Ticks").grid(row=len(limit_specs), column=0, sticky="w", padx=8, pady=3)
+    x_tick_spin = tk.Spinbox(limits_box, from_=2, to=10, textvariable=x_tick_count_var, width=8)
+    x_tick_spin.grid(row=len(limit_specs), column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(limits_box, text="y-Ticks").grid(row=len(limit_specs) + 1, column=0, sticky="w", padx=8, pady=3)
+    y_tick_spin = tk.Spinbox(limits_box, from_=2, to=10, textvariable=y_tick_count_var, width=8)
+    y_tick_spin.grid(row=len(limit_specs) + 1, column=1, sticky="w", padx=8, pady=3)
+
+    for spin in (x_tick_spin, y_tick_spin):
+        spin.bind("<Return>", _schedule_plot)
+        spin.bind("<FocusOut>", _schedule_plot)
+        spin.config(command=_schedule_plot)
+
+    ttk.Label(
+        controls_frame,
+        textvariable=status_var,
+        wraplength=260,
+        justify="left",
+    ).pack(anchor="w", fill="x", pady=(10, 10))
+
+    buttons_frame = ttk.Frame(controls_frame)
+    buttons_frame.pack(fill="x", pady=(5, 0))
+
+    ttk.Button(buttons_frame, text="Reset", command=_reset).pack(side="left", padx=(0, 6))
+    ttk.Button(buttons_frame, text="Autoscale", command=_autofit).pack(side="left")
+
+    point_scale.bind("<ButtonRelease-1>", _on_scale_release)
+    point_scale.bind("<B1-Motion>", _on_scale_move)
+
+    _update_point_label()
+    _plot()
 # ---------------------------------------------------------------------------
 # Stable-point helper
 # ---------------------------------------------------------------------------
@@ -2024,7 +2718,7 @@ def run_pipeline(
         open_series_by_time_window(input_dir)
 
     if "dV/dI" in chosen:
-        _show_pc_stub("dV/dI")
+        open_dv_di_window(input_dir)
 
     if "Step Stability" in chosen:
         _show_pc_stub("Step Stability")
@@ -2039,7 +2733,7 @@ def open_series_by_time_window(input_dir: Path) -> None:
         raise ValueError("No se encontraron curvas de polarización válidas.")
 
     bundle = bundles[0]
-    default_limits = compute_default_series_by_time_limits(bundle)
+    default_limits = compute_default_series_by_time_limits(bundle, time_unit="s")
 
     win = tk.Toplevel()
     win.title(f"PC - Series by time - {bundle.description} #{bundle.curve_id}")
@@ -2077,6 +2771,7 @@ def open_series_by_time_window(input_dir: Path) -> None:
     voltage_var = tk.BooleanVar(value=True)
     current_var = tk.BooleanVar(value=False)
     temperature_var = tk.BooleanVar(value=False)
+    time_unit_var = tk.StringVar(value="s")
 
     t_min_var = tk.StringVar(value=default_limits["t_min"])
     t_max_var = tk.StringVar(value=default_limits["t_max"])
@@ -2103,6 +2798,7 @@ def open_series_by_time_window(input_dir: Path) -> None:
         "voltage": True,
         "current": False,
         "temperature": False,
+        "time_unit": "s",
         "t_min": default_limits["t_min"],
         "t_max": default_limits["t_max"],
         "v_min": default_limits["v_min"],
@@ -2143,7 +2839,23 @@ def open_series_by_time_window(input_dir: Path) -> None:
             temp_max=_optional_float(temp_max_var.get()),
         )
 
+    def _format_time_limit(value: float | None, time_unit: str) -> str:
+        if value is None:
+            return ""
+        decimals = _time_unit_decimals(time_unit)
+        return _format_limit_value(value, decimals)
+
+    def _convert_time_limit_text(value_text: str, from_unit: str, to_unit: str) -> str:
+        value = _optional_float(value_text)
+        if value is None or from_unit == to_unit:
+            return value_text
+
+        seconds = value * _time_unit_scale(from_unit)
+        converted = seconds / _time_unit_scale(to_unit)
+        return _format_time_limit(converted, to_unit)
+
     plot_job = {"id": None}
+    current_time_unit = {"value": time_unit_var.get()}
     suspend_events = {"value": False}
 
     def _plot():
@@ -2162,6 +2874,7 @@ def open_series_by_time_window(input_dir: Path) -> None:
                 voltage_linestyle=voltage_line_var.get(),
                 current_linestyle=current_line_var.get(),
                 temperature_linestyle=temperature_line_var.get(),
+                time_unit=time_unit_var.get(),
                 x_tick_count=x_tick_count_var.get(),
                 y_tick_count=y_tick_count_var.get(),
                 plot_title=plot_title_var.get(),
@@ -2203,6 +2916,7 @@ def open_series_by_time_window(input_dir: Path) -> None:
                 show_voltage=voltage_var.get(),
                 show_current=current_var.get(),
                 show_temperature=temperature_var.get(),
+                time_unit=time_unit_var.get(),
             )
         except ValueError as exc:
             status_var.set(f"Error: {exc}")
@@ -2224,6 +2938,33 @@ def open_series_by_time_window(input_dir: Path) -> None:
         _plot()
         status_var.set("Autofit aplicado.")
 
+    def _on_time_unit_changed(*_args):
+        if suspend_events["value"]:
+            return
+
+        old_unit = current_time_unit["value"]
+        new_unit = time_unit_var.get()
+
+        suspend_events["value"] = True
+        try:
+            if t_min_var.get().strip():
+                t_min_var.set(_convert_time_limit_text(t_min_var.get(), old_unit, new_unit))
+            else:
+                defaults = compute_default_series_by_time_limits(bundle, time_unit=new_unit)
+                t_min_var.set(defaults["t_min"])
+
+            if t_max_var.get().strip():
+                t_max_var.set(_convert_time_limit_text(t_max_var.get(), old_unit, new_unit))
+            else:
+                defaults = compute_default_series_by_time_limits(bundle, time_unit=new_unit)
+                t_max_var.set(defaults["t_max"])
+
+            current_time_unit["value"] = new_unit
+        finally:
+            suspend_events["value"] = False
+
+        _schedule_plot()
+
     def _reset():
         suspend_events["value"] = True
         try:
@@ -2232,6 +2973,8 @@ def open_series_by_time_window(input_dir: Path) -> None:
             voltage_var.set(initial_state["voltage"])
             current_var.set(initial_state["current"])
             temperature_var.set(initial_state["temperature"])
+            current_time_unit["value"] = initial_state["time_unit"]
+            time_unit_var.set(initial_state["time_unit"])
 
             voltage_line_var.set(initial_state["voltage_line"])
             current_line_var.set(initial_state["current_line"])
@@ -2283,6 +3026,15 @@ def open_series_by_time_window(input_dir: Path) -> None:
     ttk.Checkbutton(series_box, text="Voltaje", variable=voltage_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Corriente", variable=current_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Temperatura", variable=temperature_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
+    ttk.Label(series_box, text="Unidad tiempo").pack(anchor="w", padx=8, pady=(8, 2))
+    time_unit_combo = ttk.Combobox(
+        series_box,
+        textvariable=time_unit_var,
+        values=TIME_UNIT_OPTIONS,
+        state="readonly",
+        width=8,
+    )
+    time_unit_combo.pack(anchor="w", padx=8, pady=(0, 4))
 
     ttk.Label(style_box, text="Voltaje line").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     voltage_line_combo = ttk.Combobox(style_box, textvariable=voltage_line_var, values=LINESTYLE_OPTIONS, state="readonly", width=10)
@@ -2358,6 +3110,8 @@ def open_series_by_time_window(input_dir: Path) -> None:
 
     for combo in (voltage_line_combo, current_line_combo, temperature_line_combo):
         combo.bind("<<ComboboxSelected>>", _schedule_plot)
+
+    time_unit_combo.bind("<<ComboboxSelected>>", _on_time_unit_changed)
 
     for spin in (x_tick_spin, y_tick_spin):
         spin.bind("<Return>", _schedule_plot)
