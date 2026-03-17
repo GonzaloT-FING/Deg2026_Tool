@@ -18,12 +18,12 @@ from openpyxl.utils import get_column_letter
 
 
 META_FIELDS = [
-    ("TITLE", "TÃ©cnica"),
+    ("TITLE", "Técnica"),
     ("DATE", "Fecha"),
     ("TIME", "Hora"),
-    ("TIMEOUT", "DuraciÃ³n"),
+    ("TIMEOUT", "Duración"),
     ("SAMPLETIME", "tiempo de muestreo"),
-    ("STABILITY", "estabilizacion"),
+    ("STABILITY", "estabilización"),
     ("AREA", "Area"),
 ]
 
@@ -633,7 +633,7 @@ def draw_v_vs_t_on_figure(
             linestyle=_mpl_linestyle(temperature_linestyle),
             label="Temperatura",
         )
-        ax_temp.set_ylabel("Temperatura [Â°C]", color=OCP_PLOT_COLORS["temperature"], fontsize=label_fontsize)
+        ax_temp.set_ylabel("Temperatura [°C]", color=OCP_PLOT_COLORS["temperature"], fontsize=label_fontsize)
         ax_temp.tick_params(axis="y", labelcolor=OCP_PLOT_COLORS["temperature"], labelsize=tick_fontsize)
         ax_temp.yaxis.set_major_locator(MaxNLocator(nbins=max(2, int(tick_count))))
         if temp_min is not None or temp_max is not None:
@@ -764,11 +764,11 @@ def _build_v_vs_t_tab(parent: tk.Widget, source_path: Path) -> None:
         if not has_plot:
             fig.clear()
             canvas.draw_idle()
-            status_var.set("No se muestra grÃ¡fico: active al menos una serie.")
+            status_var.set("No se muestra gráfico: active al menos una serie.")
             return
 
         canvas.draw_idle()
-        status_var.set("GrÃ¡fico actualizado.")
+        status_var.set("Gráfico actualizado.")
 
     def _schedule_plot(*_args):
         if suspend_events["value"]:
@@ -835,10 +835,10 @@ def _build_v_vs_t_tab(parent: tk.Widget, source_path: Path) -> None:
     style_box = ttk.LabelFrame(controls_frame, text="Estilo")
     style_box.pack(fill="x", pady=5)
 
-    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamaÃ±os")
+    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamaños")
     text_box.pack(fill="x", pady=5)
 
-    limits_box = ttk.LabelFrame(controls_frame, text="LÃ­mites de ejes")
+    limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
     limits_box.pack(fill="x", pady=5)
 
     ttk.Checkbutton(
@@ -872,7 +872,7 @@ def _build_v_vs_t_tab(parent: tk.Widget, source_path: Path) -> None:
     tick_spin = tk.Spinbox(style_box, from_=2, to=10, textvariable=tick_count_var, width=8)
     tick_spin.grid(row=2, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="TÃ­tulo").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Título").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
     title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
 
@@ -1255,11 +1255,11 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
         if not has_plot:
             fig.clear()
             canvas.draw_idle()
-            status_var.set("No se muestra grÃ¡fico: active una lÃ­nea visible.")
+            status_var.set("No se muestra gráfico: active una lí­nea visible.")
             return
 
         canvas.draw_idle()
-        status_var.set("GrÃ¡fico actualizado.")
+        status_var.set("Gráfico actualizado.")
 
     def _schedule_plot(*_args):
         if suspend_events["value"]:
@@ -1334,10 +1334,10 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
     style_box = ttk.LabelFrame(controls_frame, text="Estilo")
     style_box.pack(fill="x", pady=5)
 
-    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamaÃ±os")
+    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamaños")
     text_box.pack(fill="x", pady=5)
 
-    limits_box = ttk.LabelFrame(controls_frame, text="LÃ­mites de ejes")
+    limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
     limits_box.pack(fill="x", pady=5)
 
     ttk.Checkbutton(
@@ -1380,7 +1380,7 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
     tick_spin = tk.Spinbox(style_box, from_=2, to=10, textvariable=tick_count_var, width=8)
     tick_spin.grid(row=2, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="TÃ­tulo").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Título").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
     title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
 
