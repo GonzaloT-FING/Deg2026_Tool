@@ -44,8 +44,6 @@ OCP_PLOT_COLORS = {
 }
 
 LINESTYLE_OPTIONS = ["none", "-", "--", ":", "-."]
-
-
 @dataclass
 class ParsedDTA:
     meta_values: dict[str, str]
@@ -465,7 +463,9 @@ def build_delta_v_data(parsed: ParsedDTA) -> dict[str, list[float]]:
 
 
 def compute_default_delta_v_limits(parsed: ParsedDTA, decimals: int = 3) -> dict[str, str]:
-    delta_data = build_delta_v_data(parsed)
+    delta_data = build_delta_v_data(
+        parsed
+    )
     t_min, t_max = _padded_limits(delta_data["dvdt_time"], decimals=decimals)
     dvdt_min, dvdt_max = _padded_limits(delta_data["dvdt_values"], decimals=decimals)
     return {
@@ -1097,7 +1097,6 @@ def draw_delta_v_on_figure(
     ax_main.tick_params(axis="y", labelsize=tick_fontsize, labelcolor=OCP_PLOT_COLORS["voltage"])
     ax_main.grid(True, alpha=0.25)
     ax_main.xaxis.set_major_locator(MaxNLocator(nbins=max(2, int(tick_count))))
-    ax_main.yaxis.set_major_locator(MaxNLocator(nbins=max(2, int(tick_count))))
 
     if t_min is not None or t_max is not None:
         ax_main.set_xlim(left=t_min, right=t_max)
@@ -1346,7 +1345,6 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
         variable=show_voltage_var,
         command=_schedule_plot,
     ).pack(anchor="w", padx=8, pady=4)
-
     ttk.Label(indicators_box, text="Promedio dV/dt").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     ttk.Label(indicators_box, textvariable=avg_dvdt_var).grid(row=0, column=1, sticky="w", padx=8, pady=3)
 

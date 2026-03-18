@@ -67,6 +67,7 @@ FILE_RE = re.compile(
 
 MARKER_OPTIONS = ["none", "^", "v", "o", "s", "d", "x", "+"]
 LINESTYLE_OPTIONS = ["none", "-", "--", ":", "-."]
+SMOOTHING_ALGORITHMS = ["Median filter", "Rolling average"]
 
 PC_PLOT_COLORS = {
     "asc_voltage": "#06a8c2",
@@ -634,6 +635,8 @@ def build_dv_di_rows(
     rows: list[dict[str, float]],
     current_tolerance: float,
     point_fraction: float,
+    smoothing_algorithm: str = "Median filter",
+    smoothing_window: int = 1,
 ) -> list[dict[str, float]]:
     selected_rows = select_fractional_point_per_step(rows, current_tolerance, point_fraction)
     derivative_rows: list[dict[str, float]] = []
@@ -655,6 +658,14 @@ def build_dv_di_rows(
             }
         )
 
+    smoothed_values = apply_smoothing(
+        [row["dVdI"] for row in derivative_rows],
+        smoothing_algorithm,
+        smoothing_window,
+    )
+    for row, value in zip(derivative_rows, smoothed_values):
+        row["dVdI"] = value
+
     return derivative_rows
 
 
@@ -662,7 +673,20 @@ def _positive_dv_di_rows(rows: list[dict[str, float]]) -> list[dict[str, float]]
     return [row for row in rows if row["dVdI"] > 0]
 
 
+def _scale_compatible_dv_di_rows(
+    rows: list[dict[str, float]],
+    logarithmic_y: bool,
+) -> list[dict[str, float]]:
+    return _positive_dv_di_rows(rows) if logarithmic_y else rows
+
+
 def _format_log_limit_value(value: float | None) -> str:
+    if value is None:
+        return ""
+    return f"{value:.6g}"
+
+
+def _format_adaptive_limit_value(value: float | None) -> str:
     if value is None:
         return ""
     return f"{value:.6g}"
@@ -685,19 +709,113 @@ def _log_axis_limits(values: list[float]) -> tuple[float | None, float | None]:
     return lower, upper
 
 
-def compute_default_dv_di_limits(bundle: CurveBundle) -> dict[str, str]:
+def _adaptive_linear_limits(values: list[float]) -> tuple[float | None, float | None]:
+    if not values:
+        return None, None
+
+    vmin = min(values)
+    vmax = max(values)
+
+    if vmin == vmax:
+        pad = max(abs(vmin) * 0.05, 1e-9)
+    else:
+        pad = (vmax - vmin) * 0.05
+
+    lo = vmin - pad
+    hi = vmax + pad
+
+    if lo == hi:
+        hi = lo + max(abs(lo) * 0.05, 1e-9)
+
+    return lo, hi
+
+
+def _normalize_median_window(window_size: int) -> int:
+    size = max(1, int(window_size))
+    if size % 2 == 0:
+        size += 1
+    return size
+
+
+def _median_filter(values: list[float], window_size: int) -> list[float]:
+    if not values:
+        return []
+
+    size = _normalize_median_window(window_size)
+    if size == 1:
+        return list(values)
+
+    radius = size // 2
+    filtered: list[float] = []
+    for idx in range(len(values)):
+        start = max(0, idx - radius)
+        end = min(len(values), idx + radius + 1)
+        window = sorted(values[start:end])
+        filtered.append(window[len(window) // 2])
+    return filtered
+
+
+def _normalize_average_window(window_size: int) -> int:
+    return max(1, int(window_size))
+
+
+def _rolling_average_filter(values: list[float], window_size: int) -> list[float]:
+    if not values:
+        return []
+
+    size = _normalize_average_window(window_size)
+    if size == 1:
+        return list(values)
+
+    radius_left = (size - 1) // 2
+    radius_right = size // 2
+    filtered: list[float] = []
+    for idx in range(len(values)):
+        start = max(0, idx - radius_left)
+        end = min(len(values), idx + radius_right + 1)
+        window = values[start:end]
+        filtered.append(sum(window) / len(window))
+    return filtered
+
+
+def apply_smoothing(values: list[float], algorithm: str, window_size: int) -> list[float]:
+    if algorithm == "Median filter":
+        return _median_filter(values, window_size)
+    if algorithm == "Rolling average":
+        return _rolling_average_filter(values, window_size)
+    raise ValueError(f"Algoritmo de suavizado no soportado: {algorithm}")
+
+
+def compute_default_dv_di_limits(
+    bundle: CurveBundle,
+    smoothing_algorithm: str = "Median filter",
+    smoothing_window: int = 1,
+    logarithmic_y: bool = True,
+) -> dict[str, str]:
     curve_data = build_curve_bundle_data(bundle)
 
     asc_rows = (
-        build_dv_di_rows(curve_data["asc_rows"], curve_data["asc_tol"], 1.0)
+        build_dv_di_rows(
+            curve_data["asc_rows"],
+            curve_data["asc_tol"],
+            1.0,
+            smoothing_algorithm=smoothing_algorithm,
+            smoothing_window=smoothing_window,
+        )
         if curve_data["asc_rows"] else []
     )
     dsc_rows = (
-        build_dv_di_rows(curve_data["dsc_rows"], curve_data["dsc_tol"], 1.0)
+        build_dv_di_rows(
+            curve_data["dsc_rows"],
+            curve_data["dsc_tol"],
+            1.0,
+            smoothing_algorithm=smoothing_algorithm,
+            smoothing_window=smoothing_window,
+        )
         if curve_data["dsc_rows"] else []
     )
 
-    rows = _positive_dv_di_rows(asc_rows + dsc_rows)
+    rows = _scale_compatible_dv_di_rows(asc_rows + dsc_rows, logarithmic_y=logarithmic_y)
     if not rows:
         return {
             "x_min": "",
@@ -707,21 +825,30 @@ def compute_default_dv_di_limits(bundle: CurveBundle) -> dict[str, str]:
         }
 
     x_min, x_max = _padded_limits([r["Corriente"] for r in rows])
-    dvdi_min, dvdi_max = _log_axis_limits([r["dVdI"] for r in rows])
+    if logarithmic_y:
+        dvdi_min, dvdi_max = _log_axis_limits([r["dVdI"] for r in rows])
+    else:
+        dvdi_min, dvdi_max = _adaptive_linear_limits([r["dVdI"] for r in rows])
 
     return {
         "x_min": _format_limit_value(x_min),
         "x_max": _format_limit_value(x_max),
-        "dvdi_min": _format_log_limit_value(dvdi_min),
-        "dvdi_max": _format_log_limit_value(dvdi_max),
+        "dvdi_min": _format_log_limit_value(dvdi_min) if logarithmic_y else _format_adaptive_limit_value(dvdi_min),
+        "dvdi_max": _format_log_limit_value(dvdi_max) if logarithmic_y else _format_adaptive_limit_value(dvdi_max),
     }
-
 
 def compute_autofit_dv_di_limits(
     bundle: CurveBundle,
     show_asc: bool,
     show_dsc: bool,
     point_fraction: float,
+    smoothing_algorithm: str = "Median filter",
+    smoothing_window: int = 1,
+    logarithmic_y: bool = True,
+    locked_x_min: float | None = None,
+    locked_x_max: float | None = None,
+    locked_dvdi_min: float | None = None,
+    locked_dvdi_max: float | None = None,
     decimals: int = 1,
 ) -> dict[str, str]:
     if not (show_asc or show_dsc):
@@ -730,17 +857,43 @@ def compute_autofit_dv_di_limits(
     curve_data = build_curve_bundle_data(bundle)
 
     asc_rows = (
-        build_dv_di_rows(curve_data["asc_rows"], curve_data["asc_tol"], point_fraction)
+        build_dv_di_rows(
+            curve_data["asc_rows"],
+            curve_data["asc_tol"],
+            point_fraction,
+            smoothing_algorithm=smoothing_algorithm,
+            smoothing_window=smoothing_window,
+        )
         if show_asc and curve_data["asc_rows"] else []
     )
     dsc_rows = (
-        build_dv_di_rows(curve_data["dsc_rows"], curve_data["dsc_tol"], point_fraction)
+        build_dv_di_rows(
+            curve_data["dsc_rows"],
+            curve_data["dsc_tol"],
+            point_fraction,
+            smoothing_algorithm=smoothing_algorithm,
+            smoothing_window=smoothing_window,
+        )
         if show_dsc and curve_data["dsc_rows"] else []
     )
 
-    rows = _positive_dv_di_rows(asc_rows + dsc_rows)
-    if not rows:
-        raise ValueError("No hay valores positivos de dV/dI para ajustar los ejes en escala logarítmica.")
+    rows = _scale_compatible_dv_di_rows(asc_rows + dsc_rows, logarithmic_y=logarithmic_y)
+    filtered_rows: list[dict[str, float]] = []
+    for row in rows:
+        if locked_x_min is not None and row["Corriente"] < locked_x_min:
+            continue
+        if locked_x_max is not None and row["Corriente"] > locked_x_max:
+            continue
+        if locked_dvdi_min is not None and row["dVdI"] < locked_dvdi_min:
+            continue
+        if locked_dvdi_max is not None and row["dVdI"] > locked_dvdi_max:
+            continue
+        filtered_rows.append(row)
+
+    if not filtered_rows:
+        if logarithmic_y:
+            raise ValueError("No hay valores positivos de dV/dI dentro de los limites bloqueados para ajustar los ejes.")
+        raise ValueError("No hay datos validos de dV/dI dentro de los limites bloqueados para ajustar los ejes.")
 
     out = {
         "x_min": "",
@@ -749,19 +902,23 @@ def compute_autofit_dv_di_limits(
         "dvdi_max": "",
     }
 
-    i_values = [r["Corriente"] for r in rows]
+    i_values = [r["Corriente"] for r in filtered_rows]
     if i_values:
         out["x_min"] = _format_limit_value(_round_down_dec(min(i_values), decimals), decimals)
         out["x_max"] = _format_limit_value(_round_up_dec(max(i_values), decimals), decimals)
 
-    dvdi_values = [r["dVdI"] for r in rows]
+    dvdi_values = [r["dVdI"] for r in filtered_rows]
     if dvdi_values:
-        dvdi_min, dvdi_max = _log_axis_limits(dvdi_values)
-        out["dvdi_min"] = _format_log_limit_value(dvdi_min)
-        out["dvdi_max"] = _format_log_limit_value(dvdi_max)
+        if logarithmic_y:
+            dvdi_min, dvdi_max = _log_axis_limits(dvdi_values)
+            out["dvdi_min"] = _format_log_limit_value(dvdi_min)
+            out["dvdi_max"] = _format_log_limit_value(dvdi_max)
+        else:
+            dvdi_min, dvdi_max = _padded_limits(dvdi_values, decimals=decimals)
+            out["dvdi_min"] = _format_adaptive_limit_value(dvdi_min)
+            out["dvdi_max"] = _format_adaptive_limit_value(dvdi_max)
 
     return out
-
 
 def draw_dv_di_on_figure(
     fig: Figure,
@@ -772,6 +929,9 @@ def draw_dv_di_on_figure(
     asc_marker: str,
     dsc_marker: str,
     dvdi_linestyle: str,
+    smoothing_algorithm: str = "Median filter",
+    smoothing_window: int = 1,
+    logarithmic_y: bool = True,
     x_tick_count: int = 6,
     y_tick_count: int = 6,
     x_min: float | None = None,
@@ -798,18 +958,30 @@ def draw_dv_di_on_figure(
     curve_data = build_curve_bundle_data(bundle)
 
     asc_rows = (
-        build_dv_di_rows(curve_data["asc_rows"], curve_data["asc_tol"], point_fraction)
+        build_dv_di_rows(
+            curve_data["asc_rows"],
+            curve_data["asc_tol"],
+            point_fraction,
+            smoothing_algorithm=smoothing_algorithm,
+            smoothing_window=smoothing_window,
+        )
         if show_asc and curve_data["asc_rows"]
         else []
     )
     dsc_rows = (
-        build_dv_di_rows(curve_data["dsc_rows"], curve_data["dsc_tol"], point_fraction)
+        build_dv_di_rows(
+            curve_data["dsc_rows"],
+            curve_data["dsc_tol"],
+            point_fraction,
+            smoothing_algorithm=smoothing_algorithm,
+            smoothing_window=smoothing_window,
+        )
         if show_dsc and curve_data["dsc_rows"]
         else []
     )
 
-    asc_rows = _positive_dv_di_rows(asc_rows)
-    dsc_rows = _positive_dv_di_rows(dsc_rows)
+    asc_rows = _scale_compatible_dv_di_rows(asc_rows, logarithmic_y=logarithmic_y)
+    dsc_rows = _scale_compatible_dv_di_rows(dsc_rows, logarithmic_y=logarithmic_y)
 
     if not asc_rows and not dsc_rows:
         return False
@@ -889,20 +1061,28 @@ def draw_dv_di_on_figure(
         ax_main.set_xlim(left=x_min, right=x_max)
         apply_x_edge_ticks(ax_main, x_min, x_max, x_tick_count)
 
-    if dvdi_min is not None and dvdi_min <= 0:
+    if logarithmic_y and dvdi_min is not None and dvdi_min <= 0:
         raise ValueError("dV/dI min debe ser mayor que 0 para usar escala logarítmica.")
-    if dvdi_max is not None and dvdi_max <= 0:
+    if logarithmic_y and dvdi_max is not None and dvdi_max <= 0:
         raise ValueError("dV/dI max debe ser mayor que 0 para usar escala logarítmica.")
 
-    ax_main.set_yscale("log")
-    if dvdi_min is not None or dvdi_max is not None:
-        ax_main.set_ylim(bottom=dvdi_min, top=dvdi_max)
+    if logarithmic_y:
+        ax_main.set_yscale("log")
+        if dvdi_min is not None or dvdi_max is not None:
+            ax_main.set_ylim(bottom=dvdi_min, top=dvdi_max)
 
-    ax_main.yaxis.set_major_locator(LogLocator(base=10.0, numticks=max(2, y_tick_count)))
-    ax_main.yaxis.set_minor_locator(LogLocator(base=10.0, subs=tuple(range(2, 10))))
-    ax_main.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
-    ax_main.yaxis.set_minor_formatter(LogFormatterSciNotation(base=10.0, labelOnlyBase=True))
-    ax_main.grid(True, which="minor", axis="y", alpha=0.25)
+        ax_main.yaxis.set_major_locator(LogLocator(base=10.0, numticks=max(2, y_tick_count)))
+        ax_main.yaxis.set_minor_locator(LogLocator(base=10.0, subs=tuple(range(2, 10))))
+        ax_main.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+        ax_main.yaxis.set_minor_formatter(LogFormatterSciNotation(base=10.0, labelOnlyBase=True))
+        ax_main.grid(True, which="minor", axis="y", alpha=0.25)
+    else:
+        if dvdi_min is not None or dvdi_max is not None:
+            ax_main.set_ylim(bottom=dvdi_min, top=dvdi_max)
+            ax_main.yaxis.set_major_locator(LinearLocator(y_tick_count))
+        else:
+            ax_main.yaxis.set_major_locator(MaxNLocator(nbins=y_tick_count))
+        ax_main.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
     ax_main.legend(handles, labels, fontsize=legend_fontsize)
     fig.tight_layout()
@@ -2154,7 +2334,12 @@ def open_dv_di_window(input_dir: Path) -> None:
         raise ValueError("No se encontraron curvas de polarización válidas.")
 
     bundle = bundles[0]
-    default_limits = compute_default_dv_di_limits(bundle)
+    default_limits = compute_default_dv_di_limits(
+        bundle,
+        smoothing_algorithm="Median filter",
+        smoothing_window=1,
+        logarithmic_y=True,
+    )
 
     win = tk.Toplevel()
     win.title(f"PC - dV/dI - {bundle.description} #{bundle.curve_id}")
@@ -2186,6 +2371,9 @@ def open_dv_di_window(input_dir: Path) -> None:
     asc_marker_var = tk.StringVar(value="^")
     dsc_marker_var = tk.StringVar(value="v")
     dvdi_line_var = tk.StringVar(value="-")
+    logarithmic_y_var = tk.BooleanVar(value=True)
+    smoothing_algorithm_var = tk.StringVar(value="Median filter")
+    smoothing_window_var = tk.IntVar(value=1)
 
     asc_var = tk.BooleanVar(value=True)
     dsc_var = tk.BooleanVar(value=True)
@@ -2195,6 +2383,10 @@ def open_dv_di_window(input_dir: Path) -> None:
     x_max_var = tk.StringVar(value=default_limits["x_max"])
     dvdi_min_var = tk.StringVar(value=default_limits["dvdi_min"])
     dvdi_max_var = tk.StringVar(value=default_limits["dvdi_max"])
+    x_min_lock_var = tk.BooleanVar(value=False)
+    x_max_lock_var = tk.BooleanVar(value=False)
+    dvdi_min_lock_var = tk.BooleanVar(value=False)
+    dvdi_max_lock_var = tk.BooleanVar(value=False)
 
     x_tick_count_var = tk.IntVar(value=6)
     y_tick_count_var = tk.IntVar(value=6)
@@ -2216,6 +2408,9 @@ def open_dv_di_window(input_dir: Path) -> None:
         "x_max": default_limits["x_max"],
         "dvdi_min": default_limits["dvdi_min"],
         "dvdi_max": default_limits["dvdi_max"],
+        "logarithmic_y": True,
+        "smoothing_algorithm": "Median filter",
+        "smoothing_window": 1,
         "asc_marker": "^",
         "dsc_marker": "v",
         "dvdi_line": "-",
@@ -2229,10 +2424,15 @@ def open_dv_di_window(input_dir: Path) -> None:
         "marker_size": "6",
         "hollow_markers": False,
         "line_width": "1.5",
+        "x_min_lock": False,
+        "x_max_lock": False,
+        "dvdi_min_lock": False,
+        "dvdi_max_lock": False,
     }
 
     plot_job = {"id": None}
     suspend_events = {"value": False}
+    limit_entries: dict[str, ttk.Entry] = {}
 
     def _schedule_plot(*_args):
         if suspend_events["value"]:
@@ -2252,6 +2452,9 @@ def open_dv_di_window(input_dir: Path) -> None:
 
     style_box = ttk.LabelFrame(controls_frame, text="Estilo")
     style_box.pack(fill="x", pady=5)
+
+    smoothing_box = ttk.LabelFrame(controls_frame, text="Smoothing")
+    smoothing_box.pack(fill="x", pady=5)
 
     ttk.Label(style_box, text="Asc marker").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     asc_marker_combo = ttk.Combobox(
@@ -2282,6 +2485,36 @@ def open_dv_di_window(input_dir: Path) -> None:
         width=10,
     )
     dvdi_line_combo.grid(row=2, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(smoothing_box, text="Algorithm").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    smoothing_algo_combo = ttk.Combobox(
+        smoothing_box,
+        textvariable=smoothing_algorithm_var,
+        values=SMOOTHING_ALGORITHMS,
+        state="readonly",
+        width=16,
+    )
+    smoothing_algo_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
+
+    smoothing_window_label = ttk.Label(smoothing_box, text="Median window")
+    smoothing_window_label.grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    smoothing_window_spin = tk.Spinbox(
+        smoothing_box,
+        from_=1,
+        to=500,
+        increment=1,
+        textvariable=smoothing_window_var,
+        width=8,
+    )
+    smoothing_window_spin.grid(row=1, column=1, sticky="w", padx=8, pady=3)
+
+    def _update_smoothing_ui(*_args):
+        algorithm = smoothing_algorithm_var.get()
+        if algorithm == "Rolling average":
+            smoothing_window_label.config(text="Average window")
+        else:
+            smoothing_window_label.config(text="Median window")
+        _schedule_plot()
 
     point_box = ttk.LabelFrame(controls_frame, text="Punto dentro de cada step")
     point_box.pack(fill="x", pady=5)
@@ -2344,6 +2577,27 @@ def open_dv_di_window(input_dir: Path) -> None:
             dvdi_max=_optional_float(dvdi_max_var.get()),
         )
 
+    def _smoothing_config() -> dict[str, object]:
+        return {
+            "smoothing_algorithm": smoothing_algorithm_var.get(),
+            "smoothing_window": smoothing_window_var.get(),
+        }
+
+    def _axis_mode_config() -> dict[str, object]:
+        return {
+            "logarithmic_y": logarithmic_y_var.get(),
+        }
+
+    def _apply_lock_states() -> None:
+        states = {
+            "x_min": x_min_lock_var.get(),
+            "x_max": x_max_lock_var.get(),
+            "dvdi_min": dvdi_min_lock_var.get(),
+            "dvdi_max": dvdi_max_lock_var.get(),
+        }
+        for key, entry in limit_entries.items():
+            entry.state(["disabled"] if states[key] else ["!disabled"])
+
     def _plot():
         plot_job["id"] = None
 
@@ -2354,6 +2608,8 @@ def open_dv_di_window(input_dir: Path) -> None:
                 show_asc=asc_var.get(),
                 show_dsc=dsc_var.get(),
                 point_fraction=point_fraction_var.get(),
+                **_smoothing_config(),
+                **_axis_mode_config(),
                 asc_marker=asc_marker_var.get(),
                 dsc_marker=dsc_marker_var.get(),
                 dvdi_linestyle=dvdi_line_var.get(),
@@ -2399,6 +2655,12 @@ def open_dv_di_window(input_dir: Path) -> None:
                 show_asc=asc_var.get(),
                 show_dsc=dsc_var.get(),
                 point_fraction=point_fraction_var.get(),
+                **_smoothing_config(),
+                **_axis_mode_config(),
+                locked_x_min=_optional_float(x_min_var.get()) if x_min_lock_var.get() else None,
+                locked_x_max=_optional_float(x_max_var.get()) if x_max_lock_var.get() else None,
+                locked_dvdi_min=_optional_float(dvdi_min_var.get()) if dvdi_min_lock_var.get() else None,
+                locked_dvdi_max=_optional_float(dvdi_max_var.get()) if dvdi_max_lock_var.get() else None,
             )
         except ValueError as exc:
             status_var.set(f"Error: {exc}")
@@ -2406,10 +2668,14 @@ def open_dv_di_window(input_dir: Path) -> None:
 
         suspend_events["value"] = True
         try:
-            x_min_var.set(fitted["x_min"])
-            x_max_var.set(fitted["x_max"])
-            dvdi_min_var.set(fitted["dvdi_min"])
-            dvdi_max_var.set(fitted["dvdi_max"])
+            if not x_min_lock_var.get():
+                x_min_var.set(fitted["x_min"])
+            if not x_max_lock_var.get():
+                x_max_var.set(fitted["x_max"])
+            if not dvdi_min_lock_var.get():
+                dvdi_min_var.set(fitted["dvdi_min"])
+            if not dvdi_max_lock_var.get():
+                dvdi_max_var.set(fitted["dvdi_max"])
         finally:
             suspend_events["value"] = False
 
@@ -2421,6 +2687,9 @@ def open_dv_di_window(input_dir: Path) -> None:
         try:
             asc_var.set(initial_state["asc"])
             dsc_var.set(initial_state["dsc"])
+            logarithmic_y_var.set(initial_state["logarithmic_y"])
+            smoothing_algorithm_var.set(initial_state["smoothing_algorithm"])
+            smoothing_window_var.set(initial_state["smoothing_window"])
             asc_marker_var.set(initial_state["asc_marker"])
             dsc_marker_var.set(initial_state["dsc_marker"])
             dvdi_line_var.set(initial_state["dvdi_line"])
@@ -2439,6 +2708,11 @@ def open_dv_di_window(input_dir: Path) -> None:
             x_max_var.set(initial_state["x_max"])
             dvdi_min_var.set(initial_state["dvdi_min"])
             dvdi_max_var.set(initial_state["dvdi_max"])
+            x_min_lock_var.set(initial_state["x_min_lock"])
+            x_max_lock_var.set(initial_state["x_max_lock"])
+            dvdi_min_lock_var.set(initial_state["dvdi_min_lock"])
+            dvdi_max_lock_var.set(initial_state["dvdi_max_lock"])
+            _apply_lock_states()
             _update_point_label()
         finally:
             suspend_events["value"] = False
@@ -2449,6 +2723,7 @@ def open_dv_di_window(input_dir: Path) -> None:
     asc_marker_combo.bind("<<ComboboxSelected>>", _schedule_plot)
     dsc_marker_combo.bind("<<ComboboxSelected>>", _schedule_plot)
     dvdi_line_combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    smoothing_algo_combo.bind("<<ComboboxSelected>>", _update_smoothing_ui)
     for widget in (
         title_entry,
         title_size_entry,
@@ -2477,6 +2752,9 @@ def open_dv_di_window(input_dir: Path) -> None:
     ttk.Checkbutton(series_box, text="Dsc", variable=dsc_var, command=_schedule_plot).pack(
         anchor="w", padx=8, pady=2
     )
+    ttk.Checkbutton(series_box, text="Logarithmic y-axis", variable=logarithmic_y_var, command=_schedule_plot).pack(
+        anchor="w", padx=8, pady=2
+    )
 
     point_value_label = ttk.Label(point_box, text="1.00")
     point_value_label.pack(anchor="e", padx=8, pady=(4, 0))
@@ -2496,19 +2774,26 @@ def open_dv_di_window(input_dir: Path) -> None:
     )
 
     limit_specs = [
-        ("I min", x_min_var),
-        ("I max", x_max_var),
-        ("dV/dI min", dvdi_min_var),
-        ("dV/dI max", dvdi_max_var),
+        ("I min", "x_min", x_min_var, x_min_lock_var),
+        ("I max", "x_max", x_max_var, x_max_lock_var),
+        ("dV/dI min", "dvdi_min", dvdi_min_var, dvdi_min_lock_var),
+        ("dV/dI max", "dvdi_max", dvdi_max_var, dvdi_max_lock_var),
     ]
 
-    for row_idx, (label, var) in enumerate(limit_specs):
+    for row_idx, (label, key, var, lock_var) in enumerate(limit_specs):
         ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
         entry = ttk.Entry(limits_box, textvariable=var, width=12)
         entry.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
         entry.bind("<KP_Enter>", _schedule_plot)
         entry.bind("<FocusOut>", _schedule_plot)
         entry.bind("<Return>", _schedule_plot)
+        limit_entries[key] = entry
+        ttk.Checkbutton(
+            limits_box,
+            text="Lock",
+            variable=lock_var,
+            command=_apply_lock_states,
+        ).grid(row=row_idx, column=2, sticky="w", padx=8, pady=3)
 
     ttk.Label(limits_box, text="x-Ticks").grid(row=len(limit_specs), column=0, sticky="w", padx=8, pady=3)
     x_tick_spin = tk.Spinbox(limits_box, from_=2, to=10, textvariable=x_tick_count_var, width=8)
@@ -2518,7 +2803,7 @@ def open_dv_di_window(input_dir: Path) -> None:
     y_tick_spin = tk.Spinbox(limits_box, from_=2, to=10, textvariable=y_tick_count_var, width=8)
     y_tick_spin.grid(row=len(limit_specs) + 1, column=1, sticky="w", padx=8, pady=3)
 
-    for spin in (x_tick_spin, y_tick_spin):
+    for spin in (smoothing_window_spin, x_tick_spin, y_tick_spin):
         spin.bind("<Return>", _schedule_plot)
         spin.bind("<FocusOut>", _schedule_plot)
         spin.config(command=_schedule_plot)
@@ -2539,6 +2824,8 @@ def open_dv_di_window(input_dir: Path) -> None:
     point_scale.bind("<ButtonRelease-1>", _on_scale_release)
     point_scale.bind("<B1-Motion>", _on_scale_move)
 
+    _apply_lock_states()
+    _update_smoothing_ui()
     _update_point_label()
     _plot()
 # ---------------------------------------------------------------------------

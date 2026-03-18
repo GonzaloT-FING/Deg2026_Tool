@@ -6,6 +6,7 @@ from pipelines.eis_pip import run_pipeline as run_eis_pipeline
 from pipelines.pol_cur_pip import run_pipeline as run_pc_pipeline
 from pipelines.ocp_pip import run_pipeline as run_ocp_pipeline
 from pipelines.deg_pip import run_pipeline as run_deg_pipeline
+from pipelines.activ_pip import run_pipeline as run_activ_pipeline
 
 from tkinter import filedialog, ttk
 
@@ -26,6 +27,7 @@ RUNNERS = {
     "PC": run_pc_pipeline,
     "OCP": run_ocp_pipeline,
     "Deg": run_deg_pipeline,
+    "Activacion": run_activ_pipeline,
 }
 
 NOT_FOUND_MSG = {
@@ -33,6 +35,7 @@ NOT_FOUND_MSG = {
     "PC": "No se encontraron archivos .DTA con 'Curva_Polarizacion_' en la carpeta de entrada.",
     "OCP": "No se encontraron archivos .DTA con 'OCP_' en la carpeta de entrada.",
     "Deg": "No se encontraron archivos .DTA con 'Degradacion_galvanostatica_19A_60C_' en la carpeta de entrada.",
+    "Activacion": "No se encontraron archivos .DTA con 'Activacion_' en la carpeta de entrada.",
 }
 
 
