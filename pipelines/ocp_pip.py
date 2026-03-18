@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+from math import floor, log10
 
 import tkinter as tk
 from tkinter import ttk
@@ -323,6 +324,51 @@ def _padded_limits(
     return lo, hi
 
 
+def _tight_limits(values: list[float], decimals: int = 1) -> tuple[float | None, float | None]:
+    if not values:
+        return None, None
+
+    vmin = min(values)
+    vmax = max(values)
+
+    lo = _round_down_dec(vmin, decimals)
+    hi = _round_up_dec(vmax, decimals)
+    if lo == hi:
+        hi = lo + 1.0
+
+    return lo, hi
+
+
+def _auto_decimals(
+    values: list[float],
+    default: int = 1,
+    min_decimals: int = 1,
+    max_decimals: int = 4,
+) -> int:
+    if not values:
+        return default
+
+    vmin = min(values)
+    vmax = max(values)
+    span = abs(vmax - vmin)
+    if span <= 0:
+        return max(default, min_decimals)
+
+    magnitude = floor(log10(span))
+    decimals = 1 - magnitude
+    decimals = max(min_decimals, min(max_decimals, int(decimals)))
+    return max(default, decimals)
+
+
+def _linspace_ticks(lo: float, hi: float, count: int) -> list[float]:
+    if count <= 1:
+        return [lo]
+    if lo == hi:
+        return [lo for _ in range(count)]
+    step = (hi - lo) / (count - 1)
+    return [lo + step * idx for idx in range(count)]
+
+
 def _mpl_linestyle(value: str) -> str:
     return "None" if value == "none" else value
 
@@ -403,16 +449,18 @@ def compute_default_v_vs_t_limits(parsed: ParsedDTA, decimals: int = 1) -> dict[
     _temp_time_values, temp_values = _required_numeric_series(parsed, "T", "Temp")
 
     t_min, t_max = _padded_limits(time_values, decimals=decimals)
-    v_min, v_max = _padded_limits(voltage_values, decimals=decimals)
-    temp_min, temp_max = _padded_limits(temp_values, decimals=decimals)
+    v_decimals = _auto_decimals(voltage_values, default=decimals)
+    temp_decimals = _auto_decimals(temp_values, default=decimals)
+    v_min, v_max = _tight_limits(voltage_values, decimals=v_decimals)
+    temp_min, temp_max = _tight_limits(temp_values, decimals=temp_decimals)
 
     return {
         "t_min": _format_limit_value(t_min, decimals),
         "t_max": _format_limit_value(t_max, decimals),
-        "v_min": _format_limit_value(v_min, decimals),
-        "v_max": _format_limit_value(v_max, decimals),
-        "temp_min": _format_limit_value(temp_min, decimals),
-        "temp_max": _format_limit_value(temp_max, decimals),
+        "v_min": _format_limit_value(v_min, v_decimals),
+        "v_max": _format_limit_value(v_max, v_decimals),
+        "temp_min": _format_limit_value(temp_min, temp_decimals),
+        "temp_max": _format_limit_value(temp_max, temp_decimals),
     }
 
 
@@ -467,12 +515,13 @@ def build_delta_v_data(parsed: ParsedDTA) -> dict[str, list[float]]:
 def compute_default_delta_v_limits(parsed: ParsedDTA, decimals: int = 3) -> dict[str, str]:
     delta_data = build_delta_v_data(parsed)
     t_min, t_max = _padded_limits(delta_data["dvdt_time"], decimals=decimals)
-    dvdt_min, dvdt_max = _padded_limits(delta_data["dvdt_values"], decimals=decimals)
+    dvdt_decimals = _auto_decimals(delta_data["dvdt_values"], default=decimals, max_decimals=6)
+    dvdt_min, dvdt_max = _tight_limits(delta_data["dvdt_values"], decimals=dvdt_decimals)
     return {
         "t_min": _format_limit_value(t_min, decimals),
         "t_max": _format_limit_value(t_max, decimals),
-        "dvdt_min": _format_limit_value(dvdt_min, decimals),
-        "dvdt_max": _format_limit_value(dvdt_max, decimals),
+        "dvdt_min": _format_limit_value(dvdt_min, dvdt_decimals),
+        "dvdt_max": _format_limit_value(dvdt_max, dvdt_decimals),
     }
 
 
@@ -498,13 +547,14 @@ def compute_autofit_delta_v_limits(
         raise ValueError("No hay datos vÃ¡lidos de dV/dt en el rango de tiempo seleccionado.")
 
     t_min_fit, t_max_fit = _padded_limits(filtered_time, decimals=decimals)
-    dvdt_min_fit, dvdt_max_fit = _padded_limits(filtered_values, decimals=decimals)
+    dvdt_decimals = _auto_decimals(filtered_values, default=decimals, max_decimals=6)
+    dvdt_min_fit, dvdt_max_fit = _tight_limits(filtered_values, decimals=dvdt_decimals)
 
     return {
         "t_min": _format_limit_value(t_min_fit, decimals),
         "t_max": _format_limit_value(t_max_fit, decimals),
-        "dvdt_min": _format_limit_value(dvdt_min_fit, decimals),
-        "dvdt_max": _format_limit_value(dvdt_max_fit, decimals),
+        "dvdt_min": _format_limit_value(dvdt_min_fit, dvdt_decimals),
+        "dvdt_max": _format_limit_value(dvdt_max_fit, dvdt_decimals),
     }
 
 
@@ -616,11 +666,8 @@ def draw_v_vs_t_on_figure(
     if v_min is not None or v_max is not None:
         ax_main.set_ylim(bottom=v_min, top=v_max)
 
-    handles = []
-    labels = []
-    main_handles, main_labels = ax_main.get_legend_handles_labels()
-    handles.extend(main_handles)
-    labels.extend(main_labels)
+    temp_time_values: list[float] = []
+    temp_values: list[float] = []
 
     if show_temperature:
         temp_time_values, temp_values = _required_numeric_series(parsed, "T", "Temp")
@@ -639,13 +686,26 @@ def draw_v_vs_t_on_figure(
         if temp_min is not None or temp_max is not None:
             ax_temp.set_ylim(bottom=temp_min, top=temp_max)
 
-        temp_handles, temp_labels = ax_temp.get_legend_handles_labels()
-        handles.extend(temp_handles)
-        labels.extend(temp_labels)
+    y_tick_count = max(2, int(tick_count))
+    v_lo, v_hi = ax_main.get_ylim()
+    ax_main.set_yticks(_linspace_ticks(v_lo, v_hi, y_tick_count))
+    if ax_temp is not None:
+        t_lo, t_hi = ax_temp.get_ylim()
+        ax_temp.set_yticks(_linspace_ticks(t_lo, t_hi, y_tick_count))
 
     default_title = parsed.meta_values.get("TITLE", "").strip() or source_name
     final_title = plot_title.strip() if plot_title.strip() else f"V vs t - {default_title}"
     ax_main.set_title(final_title, fontsize=title_fontsize)
+
+    handles = []
+    labels = []
+    main_handles, main_labels = ax_main.get_legend_handles_labels()
+    handles.extend(main_handles)
+    labels.extend(main_labels)
+    if ax_temp is not None:
+        temp_handles, temp_labels = ax_temp.get_legend_handles_labels()
+        handles.extend(temp_handles)
+        labels.extend(temp_labels)
 
     if handles:
         series_specs = []
@@ -1034,8 +1094,10 @@ def draw_delta_v_on_figure(
     parsed: ParsedDTA,
     source_name: str,
     show_voltage: bool = False,
+    show_temperature: bool = False,
     dvdt_linestyle: str = "-",
     voltage_linestyle: str = "--",
+    temperature_linestyle: str = "--",
     tick_count: int = 6,
     plot_title: str = "",
     title_fontsize: float = 14,
@@ -1054,7 +1116,8 @@ def draw_delta_v_on_figure(
 
     linestyle = _mpl_linestyle(dvdt_linestyle)
     voltage_style = _mpl_linestyle(voltage_linestyle)
-    if linestyle == "None" and not show_voltage:
+    temp_style = _mpl_linestyle(temperature_linestyle)
+    if linestyle == "None" and not show_voltage and not show_temperature:
         return False
 
     delta_data = build_delta_v_data(parsed)
@@ -1062,6 +1125,7 @@ def draw_delta_v_on_figure(
     raw_voltage = delta_data["raw_voltage"]
     ax_main = fig.add_subplot(111)
     ax_voltage = None
+    ax_temp = None
     handles = []
     labels = []
 
@@ -1091,6 +1155,28 @@ def draw_delta_v_on_figure(
         if v_min is not None or v_max is not None:
             ax_voltage.set_ylim(bottom=v_min, top=v_max)
 
+    if show_temperature and temp_style != "None":
+        temp_time, temp_values = _required_numeric_series(parsed, "T", "Temp")
+        if ax_voltage is None:
+            ax_temp = ax_main.twinx()
+        else:
+            ax_temp = ax_main.twinx()
+            ax_temp.spines["right"].set_position(("outward", 60))
+            ax_temp.spines["left"].set_visible(False)
+            ax_temp.yaxis.tick_right()
+            ax_temp.yaxis.set_label_position("right")
+        ax_temp.plot(
+            temp_time,
+            temp_values,
+            color=OCP_PLOT_COLORS["temperature"],
+            linewidth=line_width,
+            linestyle=temp_style,
+            label="Temperatura",
+        )
+        ax_temp.set_ylabel("Temperatura [°C]", color=OCP_PLOT_COLORS["temperature"], fontsize=label_fontsize)
+        ax_temp.tick_params(axis="y", labelsize=tick_fontsize, labelcolor=OCP_PLOT_COLORS["temperature"])
+        ax_temp.yaxis.set_major_locator(MaxNLocator(nbins=max(2, int(tick_count))))
+
     ax_main.set_xlabel("Tiempo [s]", fontsize=label_fontsize)
     ax_main.set_ylabel("dV/dt [V/s]", color=OCP_PLOT_COLORS["voltage"], fontsize=label_fontsize)
     ax_main.tick_params(axis="x", labelsize=tick_fontsize)
@@ -1103,8 +1189,20 @@ def draw_delta_v_on_figure(
         ax_main.set_xlim(left=t_min, right=t_max)
         if ax_voltage is not None:
             ax_voltage.set_xlim(left=t_min, right=t_max)
+        if ax_temp is not None:
+            ax_temp.set_xlim(left=t_min, right=t_max)
     if dvdt_min is not None or dvdt_max is not None:
         ax_main.set_ylim(bottom=dvdt_min, top=dvdt_max)
+
+    y_tick_count = max(2, int(tick_count))
+    dvdt_lo, dvdt_hi = ax_main.get_ylim()
+    ax_main.set_yticks(_linspace_ticks(dvdt_lo, dvdt_hi, y_tick_count))
+    if ax_voltage is not None:
+        v_lo, v_hi = ax_voltage.get_ylim()
+        ax_voltage.set_yticks(_linspace_ticks(v_lo, v_hi, y_tick_count))
+    if ax_temp is not None:
+        t_lo, t_hi = ax_temp.get_ylim()
+        ax_temp.set_yticks(_linspace_ticks(t_lo, t_hi, y_tick_count))
 
     default_title = parsed.meta_values.get("TITLE", "").strip() or source_name
     final_title = plot_title.strip() if plot_title.strip() else f"DeltaV - {default_title}"
@@ -1118,6 +1216,10 @@ def draw_delta_v_on_figure(
         voltage_handles, voltage_labels = ax_voltage.get_legend_handles_labels()
         handles.extend(voltage_handles)
         labels.extend(voltage_labels)
+    if ax_temp is not None:
+        temp_handles, temp_labels = ax_temp.get_legend_handles_labels()
+        handles.extend(temp_handles)
+        labels.extend(temp_labels)
 
     if handles:
         series_specs = []
@@ -1125,6 +1227,9 @@ def draw_delta_v_on_figure(
             series_specs.append((delta_data["dvdt_time"], delta_data["dvdt_values"], ax_main.get_xlim(), ax_main.get_ylim()))
         if ax_voltage is not None:
             series_specs.append((raw_time, raw_voltage, ax_main.get_xlim(), ax_voltage.get_ylim()))
+        if ax_temp is not None:
+            temp_time, temp_values = _required_numeric_series(parsed, "T", "Temp")
+            series_specs.append((temp_time, temp_values, ax_main.get_xlim(), ax_temp.get_ylim()))
         legend_loc = _pick_legend_corner(series_specs) if series_specs else "best"
         ax_main.legend(handles, labels, loc=legend_loc, fontsize=legend_fontsize)
 
@@ -1165,8 +1270,10 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
     total_delta_v_var = tk.StringVar(value="")
 
     show_voltage_var = tk.BooleanVar(value=False)
+    show_temperature_var = tk.BooleanVar(value=False)
     dvdt_line_var = tk.StringVar(value="-")
     voltage_line_var = tk.StringVar(value="--")
+    temperature_line_var = tk.StringVar(value="--")
     tick_count_var = tk.IntVar(value=6)
     plot_title_var = tk.StringVar(value="")
     title_fontsize_var = tk.StringVar(value="14")
@@ -1184,8 +1291,10 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
 
     initial_state = {
         "show_voltage": False,
+        "show_temperature": False,
         "dvdt_line": "-",
         "voltage_line": "--",
+        "temperature_line": "--",
         "tick_count": 6,
         "plot_title": "",
         "title_fontsize": "14",
@@ -1231,8 +1340,10 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
                 parsed=parsed,
                 source_name=source_path.stem,
                 show_voltage=show_voltage_var.get(),
+                show_temperature=show_temperature_var.get(),
                 dvdt_linestyle=dvdt_line_var.get(),
                 voltage_linestyle=voltage_line_var.get(),
+                temperature_linestyle=temperature_line_var.get(),
                 tick_count=tick_count_var.get(),
                 plot_title=plot_title_var.get(),
                 title_fontsize=_positive_float(title_fontsize_var.get(), "Title size"),
@@ -1298,8 +1409,10 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
         suspend_events["value"] = True
         try:
             show_voltage_var.set(initial_state["show_voltage"])
+            show_temperature_var.set(initial_state["show_temperature"])
             dvdt_line_var.set(initial_state["dvdt_line"])
             voltage_line_var.set(initial_state["voltage_line"])
+            temperature_line_var.set(initial_state["temperature_line"])
             tick_count_var.set(initial_state["tick_count"])
             plot_title_var.set(initial_state["plot_title"])
             title_fontsize_var.set(initial_state["title_fontsize"])
@@ -1346,11 +1459,17 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
         variable=show_voltage_var,
         command=_schedule_plot,
     ).pack(anchor="w", padx=8, pady=4)
+    ttk.Checkbutton(
+        series_box,
+        text="Temperatura",
+        variable=show_temperature_var,
+        command=_schedule_plot,
+    ).pack(anchor="w", padx=8, pady=4)
 
     ttk.Label(indicators_box, text="Promedio dV/dt").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     ttk.Label(indicators_box, textvariable=avg_dvdt_var).grid(row=0, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(indicators_box, text="Ãšltimo dV/dt").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, text="Último dV/dt").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     ttk.Label(indicators_box, textvariable=last_dvdt_var).grid(row=1, column=1, sticky="w", padx=8, pady=3)
 
     ttk.Label(indicators_box, text="Delta V total").grid(row=2, column=0, sticky="w", padx=8, pady=3)
@@ -1376,9 +1495,19 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
     )
     voltage_line_combo.grid(row=1, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Ticks").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Temp line").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    temperature_line_combo = ttk.Combobox(
+        style_box,
+        textvariable=temperature_line_var,
+        values=LINESTYLE_OPTIONS,
+        state="readonly",
+        width=10,
+    )
+    temperature_line_combo.grid(row=2, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(style_box, text="Ticks").grid(row=3, column=0, sticky="w", padx=8, pady=3)
     tick_spin = tk.Spinbox(style_box, from_=2, to=10, textvariable=tick_count_var, width=8)
-    tick_spin.grid(row=2, column=1, sticky="w", padx=8, pady=3)
+    tick_spin.grid(row=3, column=1, sticky="w", padx=8, pady=3)
 
     ttk.Label(text_box, text="Título").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
@@ -1421,7 +1550,7 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
         entry.bind("<KP_Enter>", _schedule_plot)
         entry.bind("<FocusOut>", _schedule_plot)
 
-    for combo in (dvdt_line_combo, voltage_line_combo):
+    for combo in (dvdt_line_combo, voltage_line_combo, temperature_line_combo):
         combo.bind("<<ComboboxSelected>>", _schedule_plot)
 
     tick_spin.bind("<Return>", _schedule_plot)
