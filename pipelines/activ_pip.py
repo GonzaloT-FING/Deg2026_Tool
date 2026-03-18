@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
+import tkinter as tk
+from tkinter import ttk
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.figure import Figure
+from matplotlib.ticker import LinearLocator, MaxNLocator, StrMethodFormatter
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
@@ -38,6 +43,20 @@ ACTIV_FILE_RE = re.compile(
     re.IGNORECASE,
 )
 
+LINESTYLE_OPTIONS = ["none", "-", "--", ":", "-."]
+TIME_UNIT_OPTIONS = ["s", "min", "h"]
+SECONDS_PER_MINUTE = 60.0
+SECONDS_PER_HOUR = 3600.0
+
+ACTIV_PLOT_COLORS = {
+    "asc_voltage": "#06a8c2",
+    "dsc_voltage": "#2b3d8c",
+    "asc_current": "#2f9e44",
+    "dsc_current": "#1b5e20",
+    "asc_temperature": "#cf9a32",
+    "dsc_temperature": "#ab3030",
+}
+
 
 @dataclass(frozen=True)
 class ActivationFile:
@@ -62,6 +81,14 @@ class ActivationBundle:
     label: str
     asc_cycles: dict[int, list[ActivationFile]]
     dsc_cycles: dict[int, list[ActivationFile]]
+
+
+@dataclass
+class ActivationRamp:
+    key: str
+    direction: str
+    cycle: int
+    files: list[ActivationFile]
 
 
 def to_float(val: str) -> float | None:
@@ -257,6 +284,34 @@ def infer_current_tolerance(files: list[ActivationFile]) -> float:
     return 1e-5
 
 
+def build_activation_ramps(bundle: ActivationBundle) -> list[ActivationRamp]:
+    ramps: list[ActivationRamp] = []
+    cycle_ids = sorted(set(bundle.asc_cycles) | set(bundle.dsc_cycles))
+
+    for cycle in cycle_ids:
+        asc_files = bundle.asc_cycles.get(cycle, [])
+        dsc_files = bundle.dsc_cycles.get(cycle, [])
+        if asc_files:
+            ramps.append(
+                ActivationRamp(
+                    key=f"Asc_{cycle}",
+                    direction="Asc",
+                    cycle=cycle,
+                    files=asc_files,
+                )
+            )
+        if dsc_files:
+            ramps.append(
+                ActivationRamp(
+                    key=f"Dsc_{cycle}",
+                    direction="Dsc",
+                    cycle=cycle,
+                    files=dsc_files,
+                )
+            )
+    return ramps
+
+
 def _fmt_range_value(i_min: float | None, i_max: float | None) -> str:
     if i_min is None or i_max is None:
         return ""
@@ -367,6 +422,124 @@ def find_last_point_of_each_step(
     return stable_rows
 
 
+def build_v_vs_t_plot_data(bundle: ActivationBundle, time_unit: str = "s") -> dict[str, object]:
+    ramps = build_activation_ramps(bundle)
+    time_scale = _time_unit_scale(time_unit)
+
+    plotted_ramps: list[dict[str, object]] = []
+    time_offset = 0.0
+
+    for ramp in ramps:
+        rows = concatenate_cycle_data(ramp.files)
+        if not rows:
+            continue
+
+        plotted_rows: list[dict[str, float]] = []
+        for row in rows:
+            new_row = dict(row)
+            new_row["plot_time"] = (row["time"] + time_offset) / time_scale
+            plotted_rows.append(new_row)
+
+        sample_time = 0.0
+        if len(rows) >= 2:
+            sample_time = max(0.0, rows[-1]["time"] - rows[-2]["time"])
+
+        time_offset = rows[-1]["time"] + time_offset + sample_time
+        plotted_ramps.append(
+            {
+                "key": ramp.key,
+                "label": f"{ramp.direction} #{ramp.cycle}",
+                "direction": ramp.direction,
+                "cycle": ramp.cycle,
+                "rows": plotted_rows,
+            }
+        )
+
+    return {"ramps": plotted_ramps}
+
+
+def compute_default_v_vs_t_limits(bundle: ActivationBundle, time_unit: str = "s") -> dict[str, str]:
+    plot_data = build_v_vs_t_plot_data(bundle, time_unit=time_unit)
+    rows = [row for ramp in plot_data["ramps"] for row in ramp["rows"]]
+    decimals = _time_unit_decimals(time_unit)
+
+    if not rows:
+        return {
+            "t_min": "",
+            "t_max": "",
+            "v_min": "",
+            "v_max": "",
+            "temp_min": "",
+            "temp_max": "",
+        }
+
+    t_min, t_max = _padded_limits([r["plot_time"] for r in rows], decimals=decimals)
+    v_min, v_max = _padded_limits([r["Voltaje"] for r in rows])
+    temp_min, temp_max = _padded_limits([r["Temperatura"] for r in rows])
+
+    return {
+        "t_min": _format_limit_value(t_min, decimals),
+        "t_max": _format_limit_value(t_max, decimals),
+        "v_min": _format_limit_value(v_min),
+        "v_max": _format_limit_value(v_max),
+        "temp_min": _format_limit_value(temp_min),
+        "temp_max": _format_limit_value(temp_max),
+    }
+
+
+def compute_autofit_v_vs_t_limits(
+    bundle: ActivationBundle,
+    visible_ramp_keys: set[str],
+    show_voltage: bool,
+    show_current: bool,
+    show_temperature: bool,
+    time_unit: str = "s",
+) -> dict[str, str]:
+    if not visible_ramp_keys:
+        raise ValueError("Debe seleccionar al menos una rampa para usar Autoscale.")
+    if not (show_voltage or show_current or show_temperature):
+        raise ValueError("Debe seleccionar al menos una magnitud para usar Autoscale.")
+
+    plot_data = build_v_vs_t_plot_data(bundle, time_unit=time_unit)
+    rows = [
+        row
+        for ramp in plot_data["ramps"]
+        if ramp["key"] in visible_ramp_keys
+        for row in ramp["rows"]
+    ]
+    if not rows:
+        raise ValueError("No hay datos validos para ajustar los ejes.")
+
+    decimals = _time_unit_decimals(time_unit)
+    out = {
+        "t_min": "",
+        "t_max": "",
+        "v_min": "",
+        "v_max": "",
+        "temp_min": "",
+        "temp_max": "",
+    }
+
+    t_values = [r["plot_time"] for r in rows]
+    if t_values:
+        out["t_min"] = _format_limit_value(_round_down_dec(min(t_values), decimals), decimals)
+        out["t_max"] = _format_limit_value(_round_up_dec(max(t_values), decimals), decimals)
+
+    if show_voltage:
+        v_values = [r["Voltaje"] for r in rows]
+        if v_values:
+            out["v_min"] = _format_limit_value(_round_down_dec(min(v_values)), 1)
+            out["v_max"] = _format_limit_value(_round_up_dec(max(v_values)), 1)
+
+    if show_temperature:
+        temp_values = [r["Temperatura"] for r in rows]
+        if temp_values:
+            out["temp_min"] = _format_limit_value(_round_down_dec(min(temp_values)), 1)
+            out["temp_max"] = _format_limit_value(_round_up_dec(max(temp_values)), 1)
+
+    return out
+
+
 def _write_metadata_sheet(ws, metadata_rows: list[tuple[str, object, str]]) -> None:
     ws.title = "Metadata"
     ws["A1"] = "Campo"
@@ -408,6 +581,177 @@ def _write_data_sheet(ws, rows: list[dict[str, float]], include_step: bool = Fal
     ws.freeze_panes = "A3"
 
 
+def _mpl_linestyle(value: str) -> str:
+    return "None" if value == "none" else value
+
+
+def _optional_float(value: str | None) -> float | None:
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    return float(text.replace(",", "."))
+
+
+def _positive_float(text: str, name: str) -> float:
+    value = text.strip().replace(",", ".")
+    if not value:
+        raise ValueError(f"{name} no puede estar vacio.")
+    num = float(value)
+    if num <= 0:
+        raise ValueError(f"{name} debe ser mayor que 0.")
+    return num
+
+
+def _round_down_dec(value: float, decimals: int = 1) -> float:
+    scale = 10 ** decimals
+    return int(value * scale) / scale if value >= 0 else -int((-value * scale) + 0.9999999999) / scale
+
+
+def _round_up_dec(value: float, decimals: int = 1) -> float:
+    scale = 10 ** decimals
+    return -int((-value * scale)) / scale if value <= 0 else int((value * scale) + 0.9999999999) / scale
+
+
+def _format_limit_value(value: float | None, decimals: int = 1) -> str:
+    if value is None:
+        return ""
+    return f"{value:.{decimals}f}"
+
+
+def _padded_limits(
+    values: list[float],
+    rel_pad: float = 0.05,
+    decimals: int = 1,
+) -> tuple[float | None, float | None]:
+    if not values:
+        return None, None
+
+    vmin = min(values)
+    vmax = max(values)
+
+    if vmin == vmax:
+        pad = max(abs(vmin) * rel_pad, 1e-6)
+    else:
+        pad = (vmax - vmin) * rel_pad
+
+    lo = _round_down_dec(vmin - pad, decimals)
+    hi = _round_up_dec(vmax + pad, decimals)
+    return lo, hi
+
+
+def _time_unit_scale(time_unit: str) -> float:
+    if time_unit == "min":
+        return SECONDS_PER_MINUTE
+    if time_unit == "h":
+        return SECONDS_PER_HOUR
+    return 1.0
+
+
+def _time_unit_decimals(time_unit: str) -> int:
+    if time_unit == "h":
+        return 2
+    if time_unit == "min":
+        return 1
+    return 1
+
+
+def apply_x_edge_ticks(ax, x_min: float | None, x_max: float | None, tick_count: int) -> None:
+    if x_min is None and x_max is None:
+        return
+    ax.xaxis.set_major_locator(LinearLocator(max(2, int(tick_count))))
+    ax.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+
+
+def apply_current_axis_scaling(ax_current, current_values: list[float], tick_count: int) -> None:
+    if not current_values:
+        return
+    i_lo = 0.0
+    i_hi = max(current_values)
+    if i_hi <= i_lo:
+        i_hi = i_lo + 1.0
+    tick_count = max(2, int(tick_count))
+    ax_current.set_ylim(i_lo, i_hi)
+    ax_current.yaxis.set_major_locator(LinearLocator(tick_count))
+    ax_current.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+
+
+def apply_temperature_axis_scaling(
+    ax_temp,
+    temp_values: list[float],
+    tick_count: int,
+    t_min: float | None = None,
+    t_max: float | None = None,
+) -> None:
+    if not temp_values:
+        return
+
+    if t_min is not None or t_max is not None:
+        current_lo, current_hi = ax_temp.get_ylim()
+        y_lo = current_lo if t_min is None else t_min
+        y_hi = current_hi if t_max is None else t_max
+    else:
+        y_lo, y_hi = _padded_limits(temp_values)
+        if y_lo is None or y_hi is None:
+            return
+
+    if y_lo == y_hi:
+        y_hi = y_lo + 1.0
+
+    tick_count = max(2, int(tick_count))
+    ax_temp.set_ylim(y_lo, y_hi)
+    ax_temp.yaxis.set_major_locator(LinearLocator(tick_count))
+    ax_temp.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+
+
+def _build_scrollable_controls(parent) -> ttk.Frame:
+    outer = ttk.Frame(parent, width=320)
+    outer.pack(side="left", fill="y")
+    outer.pack_propagate(False)
+
+    canvas = tk.Canvas(outer, highlightthickness=0, width=320)
+    scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=scrollbar.set)
+
+    scrollbar.pack(side="right", fill="y")
+    canvas.pack(side="left", fill="both", expand=True)
+
+    inner = ttk.Frame(canvas, padding=10)
+    window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+    def _update_scrollregion(_event=None):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def _sync_width(event):
+        canvas.itemconfigure(window_id, width=event.width)
+
+    inner.bind("<Configure>", _update_scrollregion)
+    canvas.bind("<Configure>", _sync_width)
+
+    def _on_mousewheel(event):
+        if event.delta:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        else:
+            step = -1 if event.num == 4 else 1
+            canvas.yview_scroll(step, "units")
+
+    def _bind_mousewheel(_event=None):
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        canvas.bind_all("<Button-4>", _on_mousewheel)
+        canvas.bind_all("<Button-5>", _on_mousewheel)
+
+    def _unbind_mousewheel(_event=None):
+        canvas.unbind_all("<MouseWheel>")
+        canvas.unbind_all("<Button-4>")
+        canvas.unbind_all("<Button-5>")
+
+    outer.bind("<Enter>", _bind_mousewheel)
+    outer.bind("<Leave>", _unbind_mousewheel)
+
+    return inner
+
+
 def _auto_format_sheet(ws) -> None:
     for col_num in range(1, ws.max_column + 1):
         max_len = 0
@@ -421,6 +765,183 @@ def _auto_format_sheet(ws) -> None:
     for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
         for cell in row_cells:
             cell.alignment = Alignment(vertical="top")
+
+
+def draw_v_vs_t_on_figure(
+    fig: Figure,
+    bundle: ActivationBundle,
+    visible_ramp_keys: set[str],
+    show_voltage: bool,
+    show_current: bool,
+    show_temperature: bool,
+    voltage_linestyle: str,
+    current_linestyle: str,
+    temperature_linestyle: str,
+    time_unit: str = "s",
+    x_tick_count: int = 6,
+    y_tick_count: int = 6,
+    t_min: float | None = None,
+    t_max: float | None = None,
+    v_min: float | None = None,
+    v_max: float | None = None,
+    temp_min: float | None = None,
+    temp_max: float | None = None,
+    plot_title: str = "",
+    title_fontsize: float = 14,
+    tick_fontsize: float = 10,
+    label_fontsize: float = 11,
+    legend_fontsize: float = 10,
+    line_width: float = 1.5,
+) -> bool:
+    fig.clear()
+
+    if not visible_ramp_keys:
+        return False
+    if not (show_voltage or show_current or show_temperature):
+        return False
+
+    plot_data = build_v_vs_t_plot_data(bundle, time_unit=time_unit)
+    visible_ramps = [ramp for ramp in plot_data["ramps"] if ramp["key"] in visible_ramp_keys]
+    if not visible_ramps:
+        return False
+
+    x_tick_count = max(2, int(x_tick_count))
+    y_tick_count = max(2, int(y_tick_count))
+
+    ax_main = fig.add_subplot(111)
+    ax_current = None
+    ax_temp = None
+
+    if show_voltage:
+        if show_current:
+            ax_current = ax_main.twinx()
+            ax_current.spines["left"].set_visible(False)
+            ax_current.yaxis.tick_right()
+            ax_current.yaxis.set_label_position("right")
+        if show_temperature:
+            ax_temp = ax_main.twinx()
+            ax_temp.spines["left"].set_visible(False)
+            ax_temp.yaxis.tick_right()
+            ax_temp.yaxis.set_label_position("right")
+            if ax_current is not None:
+                ax_temp.spines["right"].set_position(("outward", 60))
+    else:
+        if show_current:
+            ax_current = ax_main
+        if show_temperature:
+            if show_current:
+                ax_temp = ax_main.twinx()
+                ax_temp.spines["left"].set_visible(False)
+                ax_temp.yaxis.tick_right()
+                ax_temp.yaxis.set_label_position("right")
+                ax_temp.spines["right"].set_position(("outward", 60))
+            else:
+                ax_temp = ax_main
+
+    voltage_ls = _mpl_linestyle(voltage_linestyle)
+    current_ls = _mpl_linestyle(current_linestyle)
+    temp_ls = _mpl_linestyle(temperature_linestyle)
+
+    for ramp in visible_ramps:
+        rows = ramp["rows"]
+        x_vals = [row["plot_time"] for row in rows]
+        direction = ramp["direction"]
+
+        voltage_color = ACTIV_PLOT_COLORS["asc_voltage"] if direction == "Asc" else ACTIV_PLOT_COLORS["dsc_voltage"]
+        current_color = ACTIV_PLOT_COLORS["asc_current"] if direction == "Asc" else ACTIV_PLOT_COLORS["dsc_current"]
+        temp_color = ACTIV_PLOT_COLORS["asc_temperature"] if direction == "Asc" else ACTIV_PLOT_COLORS["dsc_temperature"]
+
+        if show_voltage and voltage_ls != "None":
+            ax_main.plot(
+                x_vals,
+                [row["Voltaje"] for row in rows],
+                color=voltage_color,
+                linestyle=voltage_ls,
+                linewidth=line_width,
+                label=f"{ramp['label']} V",
+            )
+
+        if show_current and ax_current is not None and current_ls != "None":
+            ax_current.plot(
+                x_vals,
+                [row["Corriente"] for row in rows],
+                color=current_color,
+                linestyle=current_ls,
+                linewidth=line_width,
+                label=f"{ramp['label']} I",
+            )
+
+        if show_temperature and ax_temp is not None and temp_ls != "None":
+            ax_temp.plot(
+                x_vals,
+                [row["Temperatura"] for row in rows],
+                color=temp_color,
+                linestyle=temp_ls,
+                linewidth=line_width,
+                label=f"{ramp['label']} T",
+            )
+
+    handles, labels = ax_main.get_legend_handles_labels()
+    for extra_ax in (ax_current, ax_temp):
+        if extra_ax is not None and extra_ax is not ax_main:
+            h2, l2 = extra_ax.get_legend_handles_labels()
+            handles += h2
+            labels += l2
+
+    if ax_current is ax_main:
+        current_values = [row["Corriente"] for ramp in visible_ramps for row in ramp["rows"]]
+        ax_main.set_ylabel("Corriente (A)", fontsize=label_fontsize)
+        apply_current_axis_scaling(ax_main, current_values, y_tick_count)
+
+    if not handles:
+        fig.clear()
+        return False
+
+    default_title = f"V vs t - Activacion {bundle.label}"
+    final_title = plot_title.strip() if plot_title.strip() else default_title
+
+    ax_main.set_xlabel(f"Tiempo ({time_unit})", fontsize=label_fontsize)
+    ax_main.set_title(final_title, fontsize=title_fontsize)
+    ax_main.grid(True)
+    ax_main.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
+    ax_main.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    ax_main.tick_params(axis="both", labelsize=tick_fontsize)
+
+    if t_min is not None or t_max is not None:
+        ax_main.set_xlim(left=t_min, right=t_max)
+        apply_x_edge_ticks(ax_main, t_min, t_max, x_tick_count)
+
+    if show_voltage:
+        ax_main.set_ylabel("Voltaje (V)", fontsize=label_fontsize)
+        if v_min is not None or v_max is not None:
+            ax_main.set_ylim(bottom=v_min, top=v_max)
+            ax_main.yaxis.set_major_locator(LinearLocator(y_tick_count))
+        else:
+            ax_main.yaxis.set_major_locator(MaxNLocator(nbins=y_tick_count))
+        ax_main.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    elif ax_temp is ax_main:
+        temp_values = [row["Temperatura"] for ramp in visible_ramps for row in ramp["rows"]]
+        ax_main.set_ylabel("Temperatura (C)", fontsize=label_fontsize)
+        apply_temperature_axis_scaling(ax_main, temp_values, y_tick_count, temp_min, temp_max)
+
+    if ax_current is not None and ax_current is not ax_main:
+        current_values = [row["Corriente"] for ramp in visible_ramps for row in ramp["rows"]]
+        ax_current.tick_params(axis="y", labelsize=tick_fontsize)
+        ax_current.set_ylabel("Corriente (A)", fontsize=label_fontsize)
+        apply_current_axis_scaling(ax_current, current_values, y_tick_count)
+
+    if ax_temp is not None and ax_temp is not ax_main:
+        temp_values = [row["Temperatura"] for ramp in visible_ramps for row in ramp["rows"]]
+        ax_temp.tick_params(axis="y", labelsize=tick_fontsize)
+        ax_temp.set_ylabel("Temperatura (C)", fontsize=label_fontsize)
+        apply_temperature_axis_scaling(ax_temp, temp_values, y_tick_count, temp_min, temp_max)
+
+    if show_voltage and show_current and show_temperature:
+        fig.subplots_adjust(right=0.80)
+
+    ax_main.legend(handles, labels, fontsize=legend_fontsize)
+    fig.tight_layout()
+    return True
 
 
 def export_activation_bundle(bundle: ActivationBundle, out_path: Path) -> None:
@@ -461,6 +982,380 @@ def export_activation_bundle(bundle: ActivationBundle, out_path: Path) -> None:
     wb.save(out_path)
 
 
+def open_v_vs_t_window(input_dir: Path) -> None:
+    bundles = discover_activation_bundles(Path(input_dir))
+    if not bundles:
+        raise ValueError("No se encontraron archivos de activacion validos.")
+
+    bundle = bundles[0]
+    default_limits = compute_default_v_vs_t_limits(bundle, time_unit="s")
+    ramps = build_activation_ramps(bundle)
+
+    win = tk.Toplevel()
+    win.title(f"Activacion - V vs t - {bundle.label}")
+    win.geometry("1200x720")
+
+    controls_frame = _build_scrollable_controls(win)
+
+    plot_outer = ttk.Frame(win, padding=10)
+    plot_outer.pack(side="right", fill="both", expand=True)
+
+    toolbar_frame = ttk.Frame(plot_outer)
+    toolbar_frame.pack(side="top", fill="x")
+
+    canvas_frame = ttk.Frame(plot_outer)
+    canvas_frame.pack(side="top", fill="both", expand=True)
+
+    fig = Figure(figsize=(9, 5.5), dpi=100)
+    canvas = FigureCanvasTkAgg(fig, master=canvas_frame)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    toolbar = NavigationToolbar2Tk(canvas, toolbar_frame, pack_toolbar=False)
+    toolbar.update()
+    toolbar.pack(side="left", fill="x")
+
+    status_var = tk.StringVar(value="Listo.")
+
+    voltage_var = tk.BooleanVar(value=True)
+    current_var = tk.BooleanVar(value=False)
+    temperature_var = tk.BooleanVar(value=False)
+    time_unit_var = tk.StringVar(value="s")
+
+    voltage_line_var = tk.StringVar(value="-")
+    current_line_var = tk.StringVar(value="-.")
+    temperature_line_var = tk.StringVar(value="--")
+
+    t_min_var = tk.StringVar(value=default_limits["t_min"])
+    t_max_var = tk.StringVar(value=default_limits["t_max"])
+    v_min_var = tk.StringVar(value=default_limits["v_min"])
+    v_max_var = tk.StringVar(value=default_limits["v_max"])
+    temp_min_var = tk.StringVar(value=default_limits["temp_min"])
+    temp_max_var = tk.StringVar(value=default_limits["temp_max"])
+
+    x_tick_count_var = tk.IntVar(value=6)
+    y_tick_count_var = tk.IntVar(value=6)
+
+    plot_title_var = tk.StringVar(value="")
+    title_fontsize_var = tk.StringVar(value="14")
+    tick_fontsize_var = tk.StringVar(value="10")
+    label_fontsize_var = tk.StringVar(value="11")
+    legend_fontsize_var = tk.StringVar(value="10")
+    line_width_var = tk.StringVar(value="1.5")
+
+    ramp_vars = {ramp.key: tk.BooleanVar(value=True) for ramp in ramps}
+
+    initial_state = {
+        "voltage": True,
+        "current": False,
+        "temperature": False,
+        "time_unit": "s",
+        "voltage_line": "-",
+        "current_line": "-.",
+        "temperature_line": "--",
+        "t_min": default_limits["t_min"],
+        "t_max": default_limits["t_max"],
+        "v_min": default_limits["v_min"],
+        "v_max": default_limits["v_max"],
+        "temp_min": default_limits["temp_min"],
+        "temp_max": default_limits["temp_max"],
+        "x_tick_count": 6,
+        "y_tick_count": 6,
+        "plot_title": "",
+        "title_fontsize": "14",
+        "tick_fontsize": "10",
+        "label_fontsize": "11",
+        "legend_fontsize": "10",
+        "line_width": "1.5",
+        "visible_ramps": {ramp.key: True for ramp in ramps},
+    }
+
+    def _visible_ramp_keys() -> set[str]:
+        return {key for key, var in ramp_vars.items() if var.get()}
+
+    def _collect_limits():
+        return dict(
+            t_min=_optional_float(t_min_var.get()),
+            t_max=_optional_float(t_max_var.get()),
+            v_min=_optional_float(v_min_var.get()),
+            v_max=_optional_float(v_max_var.get()),
+            temp_min=_optional_float(temp_min_var.get()),
+            temp_max=_optional_float(temp_max_var.get()),
+        )
+
+    plot_job = {"id": None}
+    suspend_events = {"value": False}
+    current_time_unit = {"value": time_unit_var.get()}
+
+    def _schedule_plot(*_args):
+        if suspend_events["value"]:
+            return
+        if plot_job["id"] is not None:
+            win.after_cancel(plot_job["id"])
+        plot_job["id"] = win.after(20, _plot)
+
+    def _plot():
+        plot_job["id"] = None
+        try:
+            has_plot = draw_v_vs_t_on_figure(
+                fig=fig,
+                bundle=bundle,
+                visible_ramp_keys=_visible_ramp_keys(),
+                show_voltage=voltage_var.get(),
+                show_current=current_var.get(),
+                show_temperature=temperature_var.get(),
+                voltage_linestyle=voltage_line_var.get(),
+                current_linestyle=current_line_var.get(),
+                temperature_linestyle=temperature_line_var.get(),
+                time_unit=time_unit_var.get(),
+                x_tick_count=x_tick_count_var.get(),
+                y_tick_count=y_tick_count_var.get(),
+                plot_title=plot_title_var.get(),
+                title_fontsize=_positive_float(title_fontsize_var.get(), "Title size"),
+                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tick size"),
+                label_fontsize=_positive_float(label_fontsize_var.get(), "Label size"),
+                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Legend size"),
+                line_width=_positive_float(line_width_var.get(), "Line width"),
+                **_collect_limits(),
+            )
+        except ValueError as exc:
+            fig.clear()
+            canvas.draw_idle()
+            status_var.set(f"Error: {exc}")
+            return
+
+        if not has_plot:
+            fig.clear()
+            canvas.draw_idle()
+            status_var.set("No se muestra grafico: seleccione al menos una rampa y una magnitud.")
+            return
+
+        canvas.draw_idle()
+        status_var.set("Grafico actualizado.")
+
+    def _autofit():
+        try:
+            fitted = compute_autofit_v_vs_t_limits(
+                bundle=bundle,
+                visible_ramp_keys=_visible_ramp_keys(),
+                show_voltage=voltage_var.get(),
+                show_current=current_var.get(),
+                show_temperature=temperature_var.get(),
+                time_unit=time_unit_var.get(),
+            )
+        except ValueError as exc:
+            status_var.set(f"Error: {exc}")
+            return
+
+        suspend_events["value"] = True
+        try:
+            t_min_var.set(fitted["t_min"])
+            t_max_var.set(fitted["t_max"])
+            if fitted["v_min"] != "" or fitted["v_max"] != "":
+                v_min_var.set(fitted["v_min"])
+                v_max_var.set(fitted["v_max"])
+            if fitted["temp_min"] != "" or fitted["temp_max"] != "":
+                temp_min_var.set(fitted["temp_min"])
+                temp_max_var.set(fitted["temp_max"])
+        finally:
+            suspend_events["value"] = False
+
+        _plot()
+        status_var.set("Autoscale aplicado.")
+
+    def _convert_time_limit_text(value_text: str, from_unit: str, to_unit: str) -> str:
+        value = _optional_float(value_text)
+        if value is None or from_unit == to_unit:
+            return value_text
+        seconds = value * _time_unit_scale(from_unit)
+        converted = seconds / _time_unit_scale(to_unit)
+        return _format_limit_value(converted, _time_unit_decimals(to_unit))
+
+    def _on_time_unit_changed(*_args):
+        if suspend_events["value"]:
+            return
+
+        old_unit = current_time_unit["value"]
+        new_unit = time_unit_var.get()
+
+        suspend_events["value"] = True
+        try:
+            if t_min_var.get().strip():
+                t_min_var.set(_convert_time_limit_text(t_min_var.get(), old_unit, new_unit))
+            if t_max_var.get().strip():
+                t_max_var.set(_convert_time_limit_text(t_max_var.get(), old_unit, new_unit))
+            current_time_unit["value"] = new_unit
+        finally:
+            suspend_events["value"] = False
+
+        _schedule_plot()
+
+    def _reset():
+        suspend_events["value"] = True
+        try:
+            voltage_var.set(initial_state["voltage"])
+            current_var.set(initial_state["current"])
+            temperature_var.set(initial_state["temperature"])
+            time_unit_var.set(initial_state["time_unit"])
+            current_time_unit["value"] = initial_state["time_unit"]
+            voltage_line_var.set(initial_state["voltage_line"])
+            current_line_var.set(initial_state["current_line"])
+            temperature_line_var.set(initial_state["temperature_line"])
+            t_min_var.set(initial_state["t_min"])
+            t_max_var.set(initial_state["t_max"])
+            v_min_var.set(initial_state["v_min"])
+            v_max_var.set(initial_state["v_max"])
+            temp_min_var.set(initial_state["temp_min"])
+            temp_max_var.set(initial_state["temp_max"])
+            x_tick_count_var.set(initial_state["x_tick_count"])
+            y_tick_count_var.set(initial_state["y_tick_count"])
+            plot_title_var.set(initial_state["plot_title"])
+            title_fontsize_var.set(initial_state["title_fontsize"])
+            tick_fontsize_var.set(initial_state["tick_fontsize"])
+            label_fontsize_var.set(initial_state["label_fontsize"])
+            legend_fontsize_var.set(initial_state["legend_fontsize"])
+            line_width_var.set(initial_state["line_width"])
+            for key, var in ramp_vars.items():
+                var.set(initial_state["visible_ramps"][key])
+        finally:
+            suspend_events["value"] = False
+
+        _plot()
+        status_var.set("Valores restaurados.")
+
+    ttk.Label(
+        controls_frame,
+        text=f"Serie detectada: Activacion {bundle.label}",
+        justify="left",
+        wraplength=260,
+    ).pack(anchor="w", pady=(0, 10))
+
+    ramps_box = ttk.LabelFrame(controls_frame, text="Ramps")
+    ramps_box.pack(fill="x", pady=5)
+
+    series_box = ttk.LabelFrame(controls_frame, text="Series")
+    series_box.pack(fill="x", pady=5)
+
+    style_box = ttk.LabelFrame(controls_frame, text="Estilo")
+    style_box.pack(fill="x", pady=5)
+
+    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamanos")
+    text_box.pack(fill="x", pady=5)
+
+    limits_box = ttk.LabelFrame(controls_frame, text="Limites de ejes")
+    limits_box.pack(fill="x", pady=5)
+
+    for ramp in ramps:
+        ttk.Checkbutton(
+            ramps_box,
+            text=f"{ramp.direction} #{ramp.cycle}",
+            variable=ramp_vars[ramp.key],
+            command=_schedule_plot,
+        ).pack(anchor="w", padx=8, pady=2)
+
+    ttk.Checkbutton(series_box, text="Voltaje", variable=voltage_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
+    ttk.Checkbutton(series_box, text="Corriente", variable=current_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
+    ttk.Checkbutton(series_box, text="Temperatura", variable=temperature_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
+    ttk.Label(series_box, text="Unidad tiempo").pack(anchor="w", padx=8, pady=(8, 2))
+    time_unit_combo = ttk.Combobox(series_box, textvariable=time_unit_var, values=TIME_UNIT_OPTIONS, state="readonly", width=8)
+    time_unit_combo.pack(anchor="w", padx=8, pady=(0, 4))
+
+    ttk.Label(style_box, text="Voltaje line").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    voltage_line_combo = ttk.Combobox(style_box, textvariable=voltage_line_var, values=LINESTYLE_OPTIONS, state="readonly", width=10)
+    voltage_line_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(style_box, text="Corriente line").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    current_line_combo = ttk.Combobox(style_box, textvariable=current_line_var, values=LINESTYLE_OPTIONS, state="readonly", width=10)
+    current_line_combo.grid(row=1, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(style_box, text="Temperatura line").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    temperature_line_combo = ttk.Combobox(style_box, textvariable=temperature_line_var, values=LINESTYLE_OPTIONS, state="readonly", width=10)
+    temperature_line_combo.grid(row=2, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Titulo").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
+    title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Title size").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    title_size_spin = tk.Spinbox(text_box, from_=6, to=30, increment=0.5, textvariable=title_fontsize_var, width=8)
+    title_size_spin.grid(row=1, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Tick size").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    tick_size_spin = tk.Spinbox(text_box, from_=6, to=24, increment=0.5, textvariable=tick_fontsize_var, width=8)
+    tick_size_spin.grid(row=2, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Label size").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    label_size_spin = tk.Spinbox(text_box, from_=6, to=24, increment=0.5, textvariable=label_fontsize_var, width=8)
+    label_size_spin.grid(row=3, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Legend size").grid(row=4, column=0, sticky="w", padx=8, pady=3)
+    legend_size_spin = tk.Spinbox(text_box, from_=6, to=24, increment=0.5, textvariable=legend_fontsize_var, width=8)
+    legend_size_spin.grid(row=4, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Line width").grid(row=5, column=0, sticky="w", padx=8, pady=3)
+    line_width_spin = tk.Spinbox(text_box, from_=0.0, to=10.0, increment=0.1, textvariable=line_width_var, width=8)
+    line_width_spin.grid(row=5, column=1, sticky="w", padx=8, pady=3)
+
+    limit_specs = [
+        ("t min", t_min_var),
+        ("t max", t_max_var),
+        ("V min", v_min_var),
+        ("V max", v_max_var),
+        ("T min", temp_min_var),
+        ("T max", temp_max_var),
+    ]
+    for row_idx, (label, var) in enumerate(limit_specs):
+        ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        entry = ttk.Entry(limits_box, textvariable=var, width=12)
+        entry.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        entry.bind("<Return>", _schedule_plot)
+        entry.bind("<KP_Enter>", _schedule_plot)
+        entry.bind("<FocusOut>", _schedule_plot)
+
+    ttk.Label(limits_box, text="x-Ticks").grid(row=len(limit_specs), column=0, sticky="w", padx=8, pady=3)
+    x_tick_spin = tk.Spinbox(limits_box, from_=2, to=10, textvariable=x_tick_count_var, width=8)
+    x_tick_spin.grid(row=len(limit_specs), column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(limits_box, text="y-Ticks").grid(row=len(limit_specs) + 1, column=0, sticky="w", padx=8, pady=3)
+    y_tick_spin = tk.Spinbox(limits_box, from_=2, to=10, textvariable=y_tick_count_var, width=8)
+    y_tick_spin.grid(row=len(limit_specs) + 1, column=1, sticky="w", padx=8, pady=3)
+
+    for combo in (voltage_line_combo, current_line_combo, temperature_line_combo):
+        combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    time_unit_combo.bind("<<ComboboxSelected>>", _on_time_unit_changed)
+
+    for widget in (
+        title_entry,
+        title_size_spin,
+        tick_size_spin,
+        label_size_spin,
+        legend_size_spin,
+        line_width_spin,
+    ):
+        widget.bind("<Return>", _schedule_plot)
+        widget.bind("<KP_Enter>", _schedule_plot)
+        widget.bind("<FocusOut>", _schedule_plot)
+
+    for spin in (title_size_spin, tick_size_spin, label_size_spin, legend_size_spin, line_width_spin, x_tick_spin, y_tick_spin):
+        spin.config(command=_schedule_plot)
+        spin.bind("<Return>", _schedule_plot)
+        spin.bind("<FocusOut>", _schedule_plot)
+
+    ttk.Label(
+        controls_frame,
+        textvariable=status_var,
+        wraplength=240,
+        justify="left",
+    ).pack(anchor="w", fill="x", pady=(10, 10))
+
+    buttons_frame = ttk.Frame(controls_frame)
+    buttons_frame.pack(fill="x", pady=(5, 0))
+    ttk.Button(buttons_frame, text="Reset", command=_reset).pack(side="left", padx=(0, 6))
+    ttk.Button(buttons_frame, text="Autoscale", command=_autofit).pack(side="left")
+
+    _plot()
+
+
 def export_folder(input_dir: Path, output_dir: Path) -> list[Path]:
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -482,4 +1377,12 @@ def run_pipeline(
     output_dir: Path,
     selected_options: list[str] | None = None,
 ) -> list[Path]:
-    return export_folder(input_dir, output_dir)
+    exported_files = export_folder(input_dir, output_dir)
+    if not exported_files:
+        return []
+
+    chosen = set(selected_options or [])
+    if "V vs t" in chosen:
+        open_v_vs_t_window(input_dir)
+
+    return exported_files
