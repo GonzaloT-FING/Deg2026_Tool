@@ -3089,10 +3089,17 @@ def run_pipeline(
         "Bode plot",
         "Series by Pt",
         "Equivalent circuit fit",
+        "MultiFit",
     ]
 
     for option in option_order:
         if option not in chosen:
+            continue
+
+        if option == "MultiFit":
+            from pipelines.multi_eis_fit_pip import open_multifit_window
+
+            open_multifit_window(eis_files=find_eis_files(input_dir))
             continue
 
         option_figs: list[tuple[str, Figure]] = []

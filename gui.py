@@ -16,7 +16,7 @@ PIPELINE_OPTIONS = {
     "Activacion": ["V vs t","V vs I", "dV/dI"],
     "OCP": ["V vs t", "DeltaV"],
     "CV": ["I vs t", "Peak current", "Onset potential"],
-    "EIS": ["Nyquist plot", "Bode plot", "Series by Pt"],
+    "EIS": ["Nyquist plot", "Bode plot", "Series by Pt", "MultiFit"],
     "PC": ["V vs I", "Series by time", "dV/dI", "Step Stability"],
     "Deg": ["V vs t", "dV/dt"],
     "Análisis multiple": ["EIS", "CV", "PC", "OCP", "Deg"]
