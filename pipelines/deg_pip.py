@@ -259,6 +259,14 @@ def _time_unit_decimals(time_unit: str) -> int:
     return 1
 
 
+def _dv_dt_scale(time_unit: str) -> float:
+    return 1e6 * _time_unit_scale(time_unit)
+
+
+def _dv_dt_unit_label(time_unit: str) -> str:
+    return f"μV/{time_unit}" if time_unit != "s" else "μV/s"
+
+
 def _mpl_linestyle(value: str) -> str:
     return "None" if value == "none" else value
 
@@ -569,6 +577,7 @@ def build_dv_dt_rows(
 ) -> list[dict[str, float]]:
     time_values, voltage_values = _required_numeric_series(parsed, "T", "Vf")
     time_scale = _time_unit_scale(time_unit)
+    dvdt_scale = _dv_dt_scale(time_unit)
 
     dvdt_time: list[float] = []
     dvdt_values: list[float] = []
@@ -584,7 +593,7 @@ def build_dv_dt_rows(
             continue
 
         dvdt_time.append(((t0 + t1) / 2.0) / time_scale)
-        dvdt_values.append((v1 - v0) / dt)
+        dvdt_values.append(((v1 - v0) / dt) * dvdt_scale)
 
     smoothed_dvdt = apply_smoothing(dvdt_values, smoothing_algorithm, smoothing_window)
     dvdt_rows = [
@@ -776,7 +785,7 @@ def draw_dv_dt_on_figure(
     final_title = plot_title.strip() if plot_title.strip() else default_title
 
     ax.set_xlabel(f"Tiempo [{time_unit}]", fontsize=label_fontsize)
-    ax.set_ylabel("dV/dt [V/s]", fontsize=label_fontsize)
+    ax.set_ylabel(f"dV/dt [{_dv_dt_unit_label(time_unit)}]", fontsize=label_fontsize)
     ax.set_title(final_title, fontsize=title_fontsize)
     ax.grid(True, alpha=0.25)
     ax.tick_params(axis="both", labelsize=tick_fontsize)
@@ -1472,6 +1481,14 @@ def open_dv_dt_window(input_dir: Path) -> None:
         converted = seconds / _time_unit_scale(to_unit)
         return _format_time_limit(converted, to_unit)
 
+    def _convert_dvdt_limit_text(value_text: str, from_unit: str, to_unit: str) -> str:
+        value = _optional_float(value_text)
+        if value is None or from_unit == to_unit:
+            return value_text
+        base_v_per_s = value / _dv_dt_scale(from_unit)
+        converted = base_v_per_s * _dv_dt_scale(to_unit)
+        return _format_log_limit_value(converted) if logarithmic_y_var.get() else _format_adaptive_limit_value(converted)
+
     def _plot():
         plot_job["id"] = None
         try:
@@ -1559,6 +1576,10 @@ def open_dv_dt_window(input_dir: Path) -> None:
                 t_min_var.set(_convert_time_limit_text(t_min_var.get(), old_unit, new_unit))
             if not t_max_lock_var.get() and t_max_var.get().strip():
                 t_max_var.set(_convert_time_limit_text(t_max_var.get(), old_unit, new_unit))
+            if not dvdt_min_lock_var.get() and dvdt_min_var.get().strip():
+                dvdt_min_var.set(_convert_dvdt_limit_text(dvdt_min_var.get(), old_unit, new_unit))
+            if not dvdt_max_lock_var.get() and dvdt_max_var.get().strip():
+                dvdt_max_var.set(_convert_dvdt_limit_text(dvdt_max_var.get(), old_unit, new_unit))
             current_time_unit["value"] = new_unit
         finally:
             suspend_events["value"] = False
