@@ -473,6 +473,8 @@ def draw_v_vs_i_on_figure(
     marker_size: float = 6,
     hollow_markers: bool = True,
     line_width: float = 1.5,
+    show_slope_guides: bool = False,
+    indicator_current: float | None = None,
 ) -> bool:
     fig.clear()
 
@@ -546,12 +548,63 @@ def draw_v_vs_i_on_figure(
 
         return kwargs
 
+    def _draw_slope_guide(points: list[tuple[float, float]], color: str) -> None:
+        if not show_slope_guides or indicator_current is None:
+            return
+
+        state = _voltage_state_at_current_from_points(points, indicator_current)
+        if state is None:
+            return
+
+        x_values = [point[0] for point in points]
+        if len(x_values) < 2:
+            return
+
+        guide_x_min = x_min if x_min is not None else min(x_values)
+        guide_x_max = x_max if x_max is not None else max(x_values)
+        if guide_x_max <= guide_x_min:
+            guide_x_min = min(x_values)
+            guide_x_max = max(x_values)
+        if guide_x_max <= guide_x_min:
+            return
+
+        guide_x = [guide_x_min, guide_x_max]
+        guide_y = [
+            state["voltage"] + state["slope"] * (x_value - state["current"])
+            for x_value in guide_x
+        ]
+
+        ax_main.plot(
+            guide_x,
+            guide_y,
+            color=color,
+            linestyle=":",
+            linewidth=max(1.0, line_width),
+            alpha=0.85,
+            label="_nolegend_",
+        )
+        ax_main.plot(
+            [state["current"]],
+            [state["voltage"]],
+            color=color,
+            marker="o",
+            linestyle="none",
+            markersize=max(marker_size + 1.0, 4.0),
+            markerfacecolor="white",
+            markeredgecolor=color,
+            markeredgewidth=1.2,
+            label="_nolegend_",
+        )
+
     # Voltage on main axis
     if show_voltage:
+        asc_points = _v_vs_i_voltage_points(asc_rows, use_current_density, area_cm2)
+        dsc_points = _v_vs_i_voltage_points(dsc_rows, use_current_density, area_cm2)
+
         if asc_rows and _series_visible(asc_marker, voltage_linestyle):
             ax_main.plot(
-                [_scaled_current(r["Corriente"], use_current_density, area_cm2) for r in asc_rows],
-                [r["Voltaje"] for r in asc_rows],
+                [point[0] for point in asc_points],
+                [point[1] for point in asc_points],
                 label="Asc V",
                 **_line_kwargs(
                     PC_PLOT_COLORS["asc_voltage"],
@@ -561,8 +614,8 @@ def draw_v_vs_i_on_figure(
             )
         if dsc_rows and _series_visible(dsc_marker, voltage_linestyle):
             ax_main.plot(
-                [_scaled_current(r["Corriente"], use_current_density, area_cm2) for r in dsc_rows],
-                [r["Voltaje"] for r in dsc_rows],
+                [point[0] for point in dsc_points],
+                [point[1] for point in dsc_points],
                 label="Dsc V",
                 **_line_kwargs(
                     PC_PLOT_COLORS["dsc_voltage"],
@@ -570,6 +623,8 @@ def draw_v_vs_i_on_figure(
                     voltage_ls_mpl,
                 ),
             )
+        _draw_slope_guide(asc_points, PC_PLOT_COLORS["asc_voltage"])
+        _draw_slope_guide(dsc_points, PC_PLOT_COLORS["dsc_voltage"])
         ax_main.set_ylabel("Voltaje (V)", fontsize=label_fontsize)
 
     # Temperature on second axis if needed
@@ -1953,6 +2008,108 @@ def select_fractional_point_per_step(
     return selected_rows
 
 
+def _selected_v_vs_i_rows(
+    bundle: CurveBundle,
+    show_asc: bool,
+    show_dsc: bool,
+    point_fraction: float,
+) -> dict[str, list[dict[str, float]]]:
+    curve_data = build_curve_bundle_data(bundle)
+
+    asc_rows = (
+        select_fractional_point_per_step(curve_data["asc_rows"], curve_data["asc_tol"], point_fraction)
+        if show_asc and curve_data["asc_rows"]
+        else []
+    )
+    dsc_rows = (
+        select_fractional_point_per_step(curve_data["dsc_rows"], curve_data["dsc_tol"], point_fraction)
+        if show_dsc and curve_data["dsc_rows"]
+        else []
+    )
+
+    return {
+        "asc_rows": asc_rows,
+        "dsc_rows": dsc_rows,
+    }
+
+
+def _v_vs_i_voltage_points(
+    rows: list[dict[str, float]],
+    use_current_density: bool,
+    area_cm2: float | None,
+) -> list[tuple[float, float]]:
+    points = [
+        (
+            _scaled_current(row["Corriente"], use_current_density, area_cm2),
+            row["Voltaje"],
+        )
+        for row in rows
+    ]
+    points.sort(key=lambda item: item[0])
+    return points
+
+
+def _slope_at_current_from_points(
+    points: list[tuple[float, float]],
+    target_current: float,
+) -> float | None:
+    state = _voltage_state_at_current_from_points(points, target_current)
+    return state["slope"] if state is not None else None
+
+
+def _voltage_state_at_current_from_points(
+    points: list[tuple[float, float]],
+    target_current: float,
+) -> dict[str, float] | None:
+    if len(points) < 2:
+        return None
+
+    segments: list[dict[str, float]] = []
+    for index in range(len(points) - 1):
+        x0, y0 = points[index]
+        x1, y1 = points[index + 1]
+        dx = x1 - x0
+        if abs(dx) <= 1e-12:
+            continue
+        slope = (y1 - y0) / dx
+        segments.append(
+            {
+                "x0": x0,
+                "y0": y0,
+                "x1": x1,
+                "y1": y1,
+                "slope": slope,
+            }
+        )
+
+    if not segments:
+        return None
+
+    selected_segment: dict[str, float] | None = None
+    if target_current <= segments[0]["x0"]:
+        selected_segment = segments[0]
+    elif target_current >= segments[-1]["x1"]:
+        selected_segment = segments[-1]
+    else:
+        for segment in segments:
+            if segment["x0"] <= target_current <= segment["x1"]:
+                selected_segment = segment
+                break
+
+    if selected_segment is None:
+        selected_segment = min(
+            segments,
+            key=lambda item: abs(((item["x0"] + item["x1"]) / 2.0) - target_current),
+        )
+
+    voltage = selected_segment["y0"] + selected_segment["slope"] * (target_current - selected_segment["x0"])
+    return {
+        "current": target_current,
+        "voltage": voltage,
+        "slope": selected_segment["slope"],
+    }
+
+
 def open_v_vs_i_window(input_dir: Path) -> None:
     bundles = discover_curve_bundles(Path(input_dir))
     if not bundles:
@@ -2000,6 +2157,8 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     temperature_var = tk.BooleanVar(value=False)
     current_density_var = tk.BooleanVar(value=False)
     point_fraction_var = tk.DoubleVar(value=1.0)
+    indicator_current_var = tk.DoubleVar(value=0.0)
+    show_slope_guides_var = tk.BooleanVar(value=False)
 
     x_min_var = tk.StringVar(value=default_limits["x_min"])
     x_max_var = tk.StringVar(value=default_limits["x_max"])
@@ -2019,6 +2178,9 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     marker_size_var = tk.StringVar(value="6")
     hollow_markers_var = tk.BooleanVar(value=False)
     line_width_var = tk.StringVar(value="1.5")
+    indicator_current_value_var = tk.StringVar(value="-")
+    indicator_asc_slope_var = tk.StringVar(value="-")
+    indicator_dsc_slope_var = tk.StringVar(value="-")
 
     initial_state = {
         "asc": True,
@@ -2047,8 +2209,10 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         "marker_size": "6",
         "hollow_markers": False,
         "line_width": "1.5",
+        "show_slope_guides": False,
     }
     current_density_state = {"value": False}
+    indicator_scale_state = {"min": 0.0, "max": 1.0}
 
     def _schedule_plot(*_args):
         if suspend_events["value"]:
@@ -2065,6 +2229,9 @@ def open_v_vs_i_window(input_dir: Path) -> None:
 
     series_box = ttk.LabelFrame(controls_frame, text="Series")
     series_box.pack(fill="x", pady=5)
+
+    indicators_box = ttk.LabelFrame(controls_frame, text="Indicadores")
+    indicators_box.pack(fill="x", pady=5)
 
     style_box = ttk.LabelFrame(controls_frame, text="Estilo")
     style_box.pack(fill="x", pady=5)
@@ -2190,6 +2357,76 @@ def open_v_vs_i_window(input_dir: Path) -> None:
             temp_max=_optional_float(temp_max_var.get()),
         )
 
+    def _current_axis_unit_text() -> str:
+        return "A/cm^2" if current_density_var.get() else "A"
+
+    def _slope_unit_text() -> str:
+        return "V/(A/cm^2)" if current_density_var.get() else "V/A"
+
+    def _set_indicator_state(current_text: str, asc_text: str = "-", dsc_text: str = "-") -> None:
+        indicator_current_value_var.set(current_text)
+        indicator_asc_slope_var.set(asc_text)
+        indicator_dsc_slope_var.set(dsc_text)
+
+    def _update_slope_indicator(_event=None, redraw_guides: bool = False) -> None:
+        if not voltage_var.get():
+            _set_indicator_state("Voltaje oculto")
+            return
+
+        try:
+            area_cm2 = _bundle_area_cm2(bundle) if current_density_var.get() else None
+            visible = _selected_v_vs_i_rows(
+                bundle=bundle,
+                show_asc=asc_var.get(),
+                show_dsc=dsc_var.get(),
+                point_fraction=point_fraction_var.get(),
+            )
+            asc_points = _v_vs_i_voltage_points(
+                visible["asc_rows"],
+                current_density_var.get(),
+                area_cm2,
+            )
+            dsc_points = _v_vs_i_voltage_points(
+                visible["dsc_rows"],
+                current_density_var.get(),
+                area_cm2,
+            )
+        except ValueError as exc:
+            _set_indicator_state(f"Error: {exc}")
+            return
+
+        all_currents = [point[0] for point in asc_points] + [point[0] for point in dsc_points]
+        if len(all_currents) < 2:
+            _set_indicator_state("Sin puntos suficientes")
+            return
+
+        current_min = min(all_currents)
+        current_max = max(all_currents)
+        indicator_scale_state["min"] = current_min
+        indicator_scale_state["max"] = current_max
+
+        if current_max <= current_min:
+            selected_current = current_min
+        else:
+            selected_current = min(max(indicator_current_var.get(), current_min), current_max)
+
+        indicator_scale.configure(from_=current_min, to=current_max)
+        indicator_current_var.set(selected_current)
+        indicator_current_value_var.set(f"{selected_current:.6g} {_current_axis_unit_text()}")
+
+        slope_unit = _slope_unit_text()
+        asc_slope = _slope_at_current_from_points(asc_points, selected_current) if asc_points else None
+        dsc_slope = _slope_at_current_from_points(dsc_points, selected_current) if dsc_points else None
+
+        indicator_asc_slope_var.set(f"{asc_slope:.6g} {slope_unit}" if asc_slope is not None else "-")
+        indicator_dsc_slope_var.set(f"{dsc_slope:.6g} {slope_unit}" if dsc_slope is not None else "-")
+
+        if redraw_guides and show_slope_guides_var.get():
+            _schedule_plot()
+
+    def _on_indicator_scale_move(_value=None):
+        _update_slope_indicator(redraw_guides=True)
+
     def _on_current_density_toggle():
         new_state = current_density_var.get()
         old_state = current_density_state["value"]
@@ -2213,6 +2450,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
                 value = _optional_float(var.get())
                 if value is not None:
                     var.set(f"{value * factor:.6g}")
+            indicator_current_var.set(indicator_current_var.get() * factor)
         finally:
             suspend_events["value"] = False
 
@@ -2247,6 +2485,8 @@ def open_v_vs_i_window(input_dir: Path) -> None:
                 marker_size=_positive_float(marker_size_var.get(), "Marker size"),
                 hollow_markers=hollow_markers_var.get(),
                 line_width=_positive_float(line_width_var.get(), "Line width"),
+                show_slope_guides=show_slope_guides_var.get(),
+                indicator_current=indicator_current_var.get(),
                 **_collect_limits(),
             )
 
@@ -2258,9 +2498,11 @@ def open_v_vs_i_window(input_dir: Path) -> None:
             fig.clear()
             canvas.draw_idle()
             status_var.set("No se muestra gráfico: seleccione al menos una dirección y una magnitud.")
+            _update_slope_indicator()
             return
 
         canvas.draw_idle()
+        _update_slope_indicator()
         status_var.set("Gráfico actualizado.")
 
     def _update_point_label(_event=None):
@@ -2286,6 +2528,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
             )
         except ValueError as exc:
             status_var.set(f"Error: {exc}")
+            _update_slope_indicator()
             return
 
         suspend_events["value"] = True
@@ -2329,6 +2572,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
             marker_size_var.set(initial_state["marker_size"])
             hollow_markers_var.set(initial_state["hollow_markers"])
             line_width_var.set(initial_state["line_width"])
+            show_slope_guides_var.set(initial_state["show_slope_guides"])
 
             x_min_var.set(initial_state["x_min"])
             x_max_var.set(initial_state["x_max"])
@@ -2387,6 +2631,33 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         variable=current_density_var,
         command=_on_current_density_toggle,
     ).pack(anchor="w", padx=8, pady=2)
+
+    indicators_box.columnconfigure(1, weight=1)
+    ttk.Label(indicators_box, text="Corriente").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, textvariable=indicator_current_value_var).grid(row=0, column=1, sticky="w", padx=8, pady=3)
+
+    indicator_scale = ttk.Scale(
+        indicators_box,
+        from_=0.0,
+        to=1.0,
+        orient="horizontal",
+        variable=indicator_current_var,
+        command=_on_indicator_scale_move,
+    )
+    indicator_scale.grid(row=1, column=0, columnspan=2, sticky="we", padx=8, pady=4)
+
+    ttk.Label(indicators_box, text="Asc dV/dI").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, textvariable=indicator_asc_slope_var).grid(row=2, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(indicators_box, text="Dsc dV/dI").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, textvariable=indicator_dsc_slope_var).grid(row=3, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Checkbutton(
+        indicators_box,
+        text="Show dV/dI guide line",
+        variable=show_slope_guides_var,
+        command=_schedule_plot,
+    ).grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=4)
 
     point_value_label = ttk.Label(point_box, text="1.00")
     point_value_label.pack(anchor="e", padx=8, pady=(4, 0))
