@@ -46,6 +46,20 @@ OCP_PLOT_COLORS = {
 
 LINESTYLE_OPTIONS = ["none", "-", "--", ":", "-."]
 
+DVDT_UNIT_OPTIONS = ["Auto", "V/s", "mV/s", "µV/s"]
+DVDT_UNIT_SCALES = {
+    "V/s": 1.0,
+    "mV/s": 1e3,
+    "µV/s": 1e6,
+}
+
+DELTA_V_UNIT_OPTIONS = ["Auto", "V", "mV", "µV"]
+DELTA_V_UNIT_SCALES = {
+    "V": 1.0,
+    "mV": 1e3,
+    "µV": 1e6,
+}
+
 
 @dataclass
 class ParsedDTA:
@@ -360,6 +374,44 @@ def _auto_decimals(
     return max(default, decimals)
 
 
+def _auto_dvdt_unit(values: list[float]) -> str:
+    if not values:
+        return "V/s"
+    max_abs = max(abs(value) for value in values)
+    if max_abs >= 1:
+        return "V/s"
+    if max_abs >= 1e-3:
+        return "mV/s"
+    return "µV/s"
+
+
+def _resolve_dvdt_unit(values: list[float], mode: str) -> tuple[str, float]:
+    if mode == "Auto":
+        unit = _auto_dvdt_unit(values)
+    else:
+        unit = mode
+    return unit, DVDT_UNIT_SCALES[unit]
+
+
+def _auto_delta_v_unit(values: list[float]) -> str:
+    if not values:
+        return "V"
+    max_abs = max(abs(value) for value in values)
+    if max_abs >= 1:
+        return "V"
+    if max_abs >= 1e-3:
+        return "mV"
+    return "µV"
+
+
+def _resolve_delta_v_unit(values: list[float], mode: str) -> tuple[str, float]:
+    if mode == "Auto":
+        unit = _auto_delta_v_unit(values)
+    else:
+        unit = mode
+    return unit, DELTA_V_UNIT_SCALES[unit]
+
+
 def _linspace_ticks(lo: float, hi: float, count: int) -> list[float]:
     if count <= 1:
         return [lo]
@@ -512,11 +564,12 @@ def build_delta_v_data(parsed: ParsedDTA) -> dict[str, list[float]]:
     }
 
 
-def compute_default_delta_v_limits(parsed: ParsedDTA, decimals: int = 3) -> dict[str, str]:
+def compute_default_delta_v_limits(parsed: ParsedDTA, decimals: int = 3, dvdt_scale: float = 1.0) -> dict[str, str]:
     delta_data = build_delta_v_data(parsed)
     t_min, t_max = _padded_limits(delta_data["dvdt_time"], decimals=decimals)
-    dvdt_decimals = _auto_decimals(delta_data["dvdt_values"], default=decimals, max_decimals=6)
-    dvdt_min, dvdt_max = _tight_limits(delta_data["dvdt_values"], decimals=dvdt_decimals)
+    dvdt_scaled = [value * dvdt_scale for value in delta_data["dvdt_values"]]
+    dvdt_decimals = _auto_decimals(dvdt_scaled, default=decimals, max_decimals=6)
+    dvdt_min, dvdt_max = _tight_limits(dvdt_scaled, decimals=dvdt_decimals)
     return {
         "t_min": _format_limit_value(t_min, decimals),
         "t_max": _format_limit_value(t_max, decimals),
@@ -530,6 +583,7 @@ def compute_autofit_delta_v_limits(
     t_min: float | None = None,
     t_max: float | None = None,
     decimals: int = 3,
+    dvdt_scale: float = 1.0,
 ) -> dict[str, str]:
     delta_data = build_delta_v_data(parsed)
     filtered_time: list[float] = []
@@ -547,8 +601,9 @@ def compute_autofit_delta_v_limits(
         raise ValueError("No hay datos vÃ¡lidos de dV/dt en el rango de tiempo seleccionado.")
 
     t_min_fit, t_max_fit = _padded_limits(filtered_time, decimals=decimals)
-    dvdt_decimals = _auto_decimals(filtered_values, default=decimals, max_decimals=6)
-    dvdt_min_fit, dvdt_max_fit = _tight_limits(filtered_values, decimals=dvdt_decimals)
+    filtered_scaled = [value * dvdt_scale for value in filtered_values]
+    dvdt_decimals = _auto_decimals(filtered_scaled, default=decimals, max_decimals=6)
+    dvdt_min_fit, dvdt_max_fit = _tight_limits(filtered_scaled, decimals=dvdt_decimals)
 
     return {
         "t_min": _format_limit_value(t_min_fit, decimals),
@@ -856,7 +911,7 @@ def _build_v_vs_t_tab(parent: tk.Widget, source_path: Path) -> None:
             suspend_events["value"] = False
 
         _plot()
-        status_var.set("Autofit aplicado.")
+        status_var.set("Autoscale aplicado.")
 
     def _reset():
         suspend_events["value"] = True
@@ -1047,7 +1102,7 @@ def _build_v_vs_t_tab(parent: tk.Widget, source_path: Path) -> None:
     buttons_frame.pack(fill="x", pady=(5, 0))
 
     ttk.Button(buttons_frame, text="Reset", command=_reset).pack(side="left", padx=(0, 6))
-    ttk.Button(buttons_frame, text="Autofit", command=_autofit).pack(side="left")
+    ttk.Button(buttons_frame, text="Autoscale", command=_autofit).pack(side="left")
 
     _plot()
 
@@ -1098,6 +1153,8 @@ def draw_delta_v_on_figure(
     dvdt_linestyle: str = "-",
     voltage_linestyle: str = "--",
     temperature_linestyle: str = "--",
+    dvdt_scale: float = 1.0,
+    dvdt_unit: str = "V/s",
     tick_count: int = 6,
     plot_title: str = "",
     title_fontsize: float = 14,
@@ -1123,6 +1180,7 @@ def draw_delta_v_on_figure(
     delta_data = build_delta_v_data(parsed)
     raw_time = delta_data["raw_time"]
     raw_voltage = delta_data["raw_voltage"]
+    dvdt_scaled = [value * dvdt_scale for value in delta_data["dvdt_values"]]
     ax_main = fig.add_subplot(111)
     ax_voltage = None
     ax_temp = None
@@ -1132,7 +1190,7 @@ def draw_delta_v_on_figure(
     if linestyle != "None":
         ax_main.plot(
             delta_data["dvdt_time"],
-            delta_data["dvdt_values"],
+            dvdt_scaled,
             color=OCP_PLOT_COLORS["voltage"],
             linewidth=line_width,
             linestyle=linestyle,
@@ -1178,7 +1236,7 @@ def draw_delta_v_on_figure(
         ax_temp.yaxis.set_major_locator(MaxNLocator(nbins=max(2, int(tick_count))))
 
     ax_main.set_xlabel("Tiempo [s]", fontsize=label_fontsize)
-    ax_main.set_ylabel("dV/dt [V/s]", color=OCP_PLOT_COLORS["voltage"], fontsize=label_fontsize)
+    ax_main.set_ylabel(f"dV/dt [{dvdt_unit}]", color=OCP_PLOT_COLORS["voltage"], fontsize=label_fontsize)
     ax_main.tick_params(axis="x", labelsize=tick_fontsize)
     ax_main.tick_params(axis="y", labelsize=tick_fontsize, labelcolor=OCP_PLOT_COLORS["voltage"])
     ax_main.grid(True, alpha=0.25)
@@ -1224,7 +1282,7 @@ def draw_delta_v_on_figure(
     if handles:
         series_specs = []
         if linestyle != "None":
-            series_specs.append((delta_data["dvdt_time"], delta_data["dvdt_values"], ax_main.get_xlim(), ax_main.get_ylim()))
+            series_specs.append((delta_data["dvdt_time"], dvdt_scaled, ax_main.get_xlim(), ax_main.get_ylim()))
         if ax_voltage is not None:
             series_specs.append((raw_time, raw_voltage, ax_main.get_xlim(), ax_voltage.get_ylim()))
         if ax_temp is not None:
@@ -1240,7 +1298,9 @@ def draw_delta_v_on_figure(
 def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
     root = parent.winfo_toplevel()
     parsed = parse_gamry_dta(source_path)
-    default_limits = compute_default_delta_v_limits(parsed)
+    delta_data = build_delta_v_data(parsed)
+    default_unit, default_scale = _resolve_dvdt_unit(delta_data["dvdt_values"], "Auto")
+    default_limits = compute_default_delta_v_limits(parsed, dvdt_scale=default_scale)
 
 
     controls_frame = _build_scrollable_controls(parent)
@@ -1274,6 +1334,8 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
     dvdt_line_var = tk.StringVar(value="-")
     voltage_line_var = tk.StringVar(value="--")
     temperature_line_var = tk.StringVar(value="--")
+    dvdt_unit_var = tk.StringVar(value="Auto")
+    delta_v_unit_var = tk.StringVar(value="Auto")
     tick_count_var = tk.IntVar(value=6)
     plot_title_var = tk.StringVar(value="")
     title_fontsize_var = tk.StringVar(value="14")
@@ -1295,6 +1357,8 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
         "dvdt_line": "-",
         "voltage_line": "--",
         "temperature_line": "--",
+        "dvdt_unit": "Auto",
+        "delta_v_unit": "Auto",
         "tick_count": 6,
         "plot_title": "",
         "title_fontsize": "14",
@@ -1323,18 +1387,46 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
             v_max=_optional_float(v_max_var.get()),
         )
 
+    current_dvdt_scale = {"value": default_scale, "unit": default_unit}
+
+    def _filtered_dvdt_values():
+        t_min = _optional_float(t_min_var.get())
+        t_max = _optional_float(t_max_var.get())
+        values: list[float] = []
+        for time_value, dvdt_value in zip(delta_data["dvdt_time"], delta_data["dvdt_values"]):
+            if t_min is not None and time_value < t_min:
+                continue
+            if t_max is not None and time_value > t_max:
+                continue
+            values.append(dvdt_value)
+        return values
+
     def _update_indicators():
         indicators = compute_delta_v_indicators(
             parsed,
             t_min=_optional_float(t_min_var.get()),
             t_max=_optional_float(t_max_var.get()),
         )
-        avg_dvdt_var.set(f"{indicators['avg_dvdt']:.6g} V/s")
-        last_dvdt_var.set(f"{indicators['last_dvdt']:.6g} V/s")
-        total_delta_v_var.set(f"{indicators['total_delta_v']:.6g} V")
+        scale = current_dvdt_scale["value"]
+        unit = current_dvdt_scale["unit"]
+        avg_dvdt_var.set(f"{indicators['avg_dvdt'] * scale:.6g} {unit}")
+        last_dvdt_var.set(f"{indicators['last_dvdt'] * scale:.6g} {unit}")
+        delta_v_unit, delta_v_scale = _resolve_delta_v_unit(
+            [indicators["total_delta_v"]],
+            delta_v_unit_var.get(),
+        )
+        total_delta_v_var.set(f"{indicators['total_delta_v'] * delta_v_scale:.6g} {delta_v_unit}")
+
+    dvdt_min_label_var = tk.StringVar(value=f"dV/dt min ({default_unit})")
+    dvdt_max_label_var = tk.StringVar(value=f"dV/dt max ({default_unit})")
 
     def _plot():
         try:
+            unit, scale = _resolve_dvdt_unit(_filtered_dvdt_values(), dvdt_unit_var.get())
+            current_dvdt_scale["value"] = scale
+            current_dvdt_scale["unit"] = unit
+            dvdt_min_label_var.set(f"dV/dt min ({unit})")
+            dvdt_max_label_var.set(f"dV/dt max ({unit})")
             has_plot = draw_delta_v_on_figure(
                 fig=fig,
                 parsed=parsed,
@@ -1344,6 +1436,8 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
                 dvdt_linestyle=dvdt_line_var.get(),
                 voltage_linestyle=voltage_line_var.get(),
                 temperature_linestyle=temperature_line_var.get(),
+                dvdt_scale=scale,
+                dvdt_unit=unit,
                 tick_count=tick_count_var.get(),
                 plot_title=plot_title_var.get(),
                 title_fontsize=_positive_float(title_fontsize_var.get(), "Title size"),
@@ -1379,12 +1473,31 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
             root.after_cancel(plot_job["id"])
         plot_job["id"] = root.after(20, _plot)
 
+    def _on_unit_change(_event=None):
+        old_scale = current_dvdt_scale["value"]
+        _unit, new_scale = _resolve_dvdt_unit(_filtered_dvdt_values(), dvdt_unit_var.get())
+
+        suspend_events["value"] = True
+        try:
+            for var in (dvdt_min_var, dvdt_max_var):
+                current = _optional_float(var.get())
+                if current is None:
+                    continue
+                converted = current * old_scale / new_scale
+                var.set(f"{converted:.6g}")
+        finally:
+            suspend_events["value"] = False
+
+        _schedule_plot()
+
     def _autofit():
         try:
+            unit, scale = _resolve_dvdt_unit(_filtered_dvdt_values(), dvdt_unit_var.get())
             fitted = compute_autofit_delta_v_limits(
                 parsed,
                 t_min=_optional_float(t_min_var.get()),
                 t_max=_optional_float(t_max_var.get()),
+                dvdt_scale=scale,
             )
         except ValueError as exc:
             status_var.set(f"Error: {exc}")
@@ -1403,7 +1516,7 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
             suspend_events["value"] = False
 
         _plot()
-        status_var.set("Autofit aplicado.")
+        status_var.set("Autoscale aplicado.")
 
     def _reset():
         suspend_events["value"] = True
@@ -1413,6 +1526,8 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
             dvdt_line_var.set(initial_state["dvdt_line"])
             voltage_line_var.set(initial_state["voltage_line"])
             temperature_line_var.set(initial_state["temperature_line"])
+            dvdt_unit_var.set(initial_state["dvdt_unit"])
+            delta_v_unit_var.set(initial_state["delta_v_unit"])
             tick_count_var.set(initial_state["tick_count"])
             plot_title_var.set(initial_state["plot_title"])
             title_fontsize_var.set(initial_state["title_fontsize"])
@@ -1465,6 +1580,15 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
         variable=show_temperature_var,
         command=_schedule_plot,
     ).pack(anchor="w", padx=8, pady=4)
+    ttk.Label(series_box, text="dV/dt units").pack(anchor="w", padx=8, pady=(6, 2))
+    dvdt_unit_combo = ttk.Combobox(
+        series_box,
+        textvariable=dvdt_unit_var,
+        values=DVDT_UNIT_OPTIONS,
+        state="readonly",
+        width=10,
+    )
+    dvdt_unit_combo.pack(anchor="w", padx=8, pady=(0, 4))
 
     ttk.Label(indicators_box, text="Promedio dV/dt").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     ttk.Label(indicators_box, textvariable=avg_dvdt_var).grid(row=0, column=1, sticky="w", padx=8, pady=3)
@@ -1474,6 +1598,15 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
 
     ttk.Label(indicators_box, text="Delta V total").grid(row=2, column=0, sticky="w", padx=8, pady=3)
     ttk.Label(indicators_box, textvariable=total_delta_v_var).grid(row=2, column=1, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, text="Delta V units").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    delta_v_unit_combo = ttk.Combobox(
+        indicators_box,
+        textvariable=delta_v_unit_var,
+        values=DELTA_V_UNIT_OPTIONS,
+        state="readonly",
+        width=10,
+    )
+    delta_v_unit_combo.grid(row=3, column=1, sticky="w", padx=8, pady=3)
 
     ttk.Label(style_box, text="dV/dt line").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     dvdt_line_combo = ttk.Combobox(
@@ -1536,22 +1669,28 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
     limit_specs = [
         ("t min", t_min_var),
         ("t max", t_max_var),
-        ("dV/dt min", dvdt_min_var),
-        ("dV/dt max", dvdt_max_var),
+        (dvdt_min_label_var, dvdt_min_var),
+        (dvdt_max_label_var, dvdt_max_var),
         ("V min", v_min_var),
         ("V max", v_max_var),
     ]
 
     for row_idx, (label, var) in enumerate(limit_specs):
-        ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        if isinstance(label, tk.StringVar):
+            ttk.Label(limits_box, textvariable=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        else:
+            ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
         entry = ttk.Entry(limits_box, textvariable=var, width=12)
         entry.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
         entry.bind("<Return>", _schedule_plot)
         entry.bind("<KP_Enter>", _schedule_plot)
         entry.bind("<FocusOut>", _schedule_plot)
 
-    for combo in (dvdt_line_combo, voltage_line_combo, temperature_line_combo):
-        combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    for combo in (dvdt_line_combo, voltage_line_combo, temperature_line_combo, dvdt_unit_combo, delta_v_unit_combo):
+        if combo is dvdt_unit_combo:
+            combo.bind("<<ComboboxSelected>>", _on_unit_change)
+        else:
+            combo.bind("<<ComboboxSelected>>", _schedule_plot)
 
     tick_spin.bind("<Return>", _schedule_plot)
     tick_spin.bind("<FocusOut>", _schedule_plot)
@@ -1589,7 +1728,7 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
     buttons_frame.pack(fill="x", pady=(5, 0))
 
     ttk.Button(buttons_frame, text="Reset", command=_reset).pack(side="left", padx=(0, 6))
-    ttk.Button(buttons_frame, text="Autofit", command=_autofit).pack(side="left")
+    ttk.Button(buttons_frame, text="Autoscale", command=_autofit).pack(side="left")
 
     _plot()
 
