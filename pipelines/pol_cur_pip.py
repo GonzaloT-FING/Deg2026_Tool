@@ -325,8 +325,32 @@ def _padded_limits(
     return lo, hi
 
 
-def compute_default_v_vs_i_limits(bundle: CurveBundle) -> dict[str, str]:
+def _bundle_area_cm2(bundle: CurveBundle) -> float | None:
+    reference_files = bundle.asc_files or bundle.dsc_files
+    if not reference_files:
+        return None
+
+    parsed = parse_gamry_dta(reference_files[0].path)
+    area = to_float(parsed.meta_values.get("AREA", ""))
+    if area is None or area <= 0:
+        return None
+    return area
+
+
+def _scaled_current(value: float, use_current_density: bool, area_cm2: float | None) -> float:
+    if not use_current_density:
+        return value
+    if area_cm2 is None or area_cm2 <= 0:
+        raise ValueError("No se pudo leer un AREA valida de la metadata para convertir a A/cm^2.")
+    return value / area_cm2
+
+
+def compute_default_v_vs_i_limits(
+    bundle: CurveBundle,
+    use_current_density: bool = False,
+) -> dict[str, str]:
     curve_data = build_curve_bundle_data(bundle)
+    area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
 
     asc_rows = (
         select_fractional_point_per_step(curve_data["asc_rows"], curve_data["asc_tol"], 1.0)
@@ -346,7 +370,9 @@ def compute_default_v_vs_i_limits(bundle: CurveBundle) -> dict[str, str]:
             "v_max": "",
         }
 
-    x_min, x_max = _padded_limits([r["Corriente"] for r in rows])
+    x_min, x_max = _padded_limits(
+        [_scaled_current(r["Corriente"], use_current_density, area_cm2) for r in rows]
+    )
     v_min, v_max = _padded_limits([r["Voltaje"] for r in rows])
 
     return {
@@ -364,6 +390,7 @@ def compute_autofit_v_vs_i_limits(
     show_voltage: bool,
     show_temperature: bool,
     point_fraction: float,
+    use_current_density: bool = False,
     decimals: int = 1,
 ) -> dict[str, str]:
     if not (show_asc or show_dsc):
@@ -373,6 +400,7 @@ def compute_autofit_v_vs_i_limits(
         raise ValueError("Debe seleccionar al menos una magnitud para usar Autoscale.")
 
     curve_data = build_curve_bundle_data(bundle)
+    area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
 
     asc_rows = (
         select_fractional_point_per_step(curve_data["asc_rows"], curve_data["asc_tol"], point_fraction)
@@ -396,7 +424,7 @@ def compute_autofit_v_vs_i_limits(
         "t_max": "",
     }
 
-    i_values = [r["Corriente"] for r in rows]
+    i_values = [_scaled_current(r["Corriente"], use_current_density, area_cm2) for r in rows]
     if i_values:
         out["x_min"] = _format_limit_value(_round_down_dec(min(i_values), decimals), decimals)
         out["x_max"] = _format_limit_value(_round_up_dec(max(i_values), decimals), decimals)
@@ -404,8 +432,9 @@ def compute_autofit_v_vs_i_limits(
     if show_voltage:
         v_values = [r["Voltaje"] for r in rows]
         if v_values:
-            out["v_min"] = _format_limit_value(_round_down_dec(min(v_values), decimals), decimals)
-            out["v_max"] = _format_limit_value(_round_up_dec(max(v_values), decimals), decimals)
+            voltage_step = _autoscale_step_from_values(v_values)
+            out["v_min"] = _format_step_aligned_value(_round_down_to_step(min(v_values), voltage_step), voltage_step)
+            out["v_max"] = _format_step_aligned_value(_round_up_to_step(max(v_values), voltage_step), voltage_step)
 
     if show_temperature:
         t_values = [r["Temperatura"] for r in rows]
@@ -422,6 +451,7 @@ def draw_v_vs_i_on_figure(
     show_dsc: bool,
     show_voltage: bool,
     show_temperature: bool,
+    use_current_density: bool,
     point_fraction: float,
     asc_marker: str,
     dsc_marker: str,
@@ -455,6 +485,7 @@ def draw_v_vs_i_on_figure(
     y_tick_count = max(2, int(y_tick_count))
 
     curve_data = build_curve_bundle_data(bundle)
+    area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
 
     asc_rows = (
         select_fractional_point_per_step(
@@ -519,7 +550,7 @@ def draw_v_vs_i_on_figure(
     if show_voltage:
         if asc_rows and _series_visible(asc_marker, voltage_linestyle):
             ax_main.plot(
-                [r["Corriente"] for r in asc_rows],
+                [_scaled_current(r["Corriente"], use_current_density, area_cm2) for r in asc_rows],
                 [r["Voltaje"] for r in asc_rows],
                 label="Asc V",
                 **_line_kwargs(
@@ -530,7 +561,7 @@ def draw_v_vs_i_on_figure(
             )
         if dsc_rows and _series_visible(dsc_marker, voltage_linestyle):
             ax_main.plot(
-                [r["Corriente"] for r in dsc_rows],
+                [_scaled_current(r["Corriente"], use_current_density, area_cm2) for r in dsc_rows],
                 [r["Voltaje"] for r in dsc_rows],
                 label="Dsc V",
                 **_line_kwargs(
@@ -547,7 +578,7 @@ def draw_v_vs_i_on_figure(
 
         if asc_rows and _series_visible(asc_marker, temperature_linestyle):
             target_ax.plot(
-                [r["Corriente"] for r in asc_rows],
+                [_scaled_current(r["Corriente"], use_current_density, area_cm2) for r in asc_rows],
                 [r["Temperatura"] for r in asc_rows],
                 label="Asc T",
                 **_line_kwargs(
@@ -558,7 +589,7 @@ def draw_v_vs_i_on_figure(
             )
         if dsc_rows and _series_visible(dsc_marker, temperature_linestyle):
             target_ax.plot(
-                [r["Corriente"] for r in dsc_rows],
+                [_scaled_current(r["Corriente"], use_current_density, area_cm2) for r in dsc_rows],
                 [r["Temperatura"] for r in dsc_rows],
                 label="Dsc T",
                 **_line_kwargs(
@@ -585,7 +616,10 @@ def draw_v_vs_i_on_figure(
     )
     final_title = plot_title.strip() if plot_title.strip() else default_title
 
-    ax_main.set_xlabel("Corriente (A)", fontsize=label_fontsize)
+    ax_main.set_xlabel(
+        "Densidad de corriente (A/cm^2)" if use_current_density else "Corriente (A)",
+        fontsize=label_fontsize,
+    )
     ax_main.set_title(final_title, fontsize=title_fontsize)
     ax_main.grid(True)
 
@@ -728,6 +762,40 @@ def _adaptive_linear_limits(values: list[float]) -> tuple[float | None, float | 
         hi = lo + max(abs(lo) * 0.05, 1e-9)
 
     return lo, hi
+
+
+def _autoscale_step_from_values(values: list[float]) -> float:
+    if not values:
+        return 0.1
+    max_abs = max(abs(value) for value in values)
+    if max_abs <= 0:
+        return 0.1
+    return 10 ** (floor(log10(max_abs)) - 1)
+
+
+def _round_down_to_step(value: float, step: float) -> float:
+    if step <= 0:
+        return value
+    return floor(value / step) * step
+
+
+def _round_up_to_step(value: float, step: float) -> float:
+    if step <= 0:
+        return value
+    return ceil(value / step) * step
+
+
+def _format_step_aligned_value(value: float | None, step: float) -> str:
+    if value is None:
+        return ""
+    if step <= 0:
+        return f"{value:.6g}"
+
+    decimals = max(0, -floor(log10(step))) if step < 1 else 0
+    formatted = f"{value:.{decimals}f}"
+    if decimals > 0:
+        formatted = formatted.rstrip("0").rstrip(".")
+    return formatted
 
 
 def _normalize_median_window(window_size: int) -> int:
@@ -1384,10 +1452,10 @@ def compute_autofit_series_by_time_limits(
     decimals: int = 1,
 ) -> dict[str, str]:
     if not (show_asc or show_dsc):
-        raise ValueError("Debe seleccionar Asc y/o Dsc para usar Autofit.")
+        raise ValueError("Debe seleccionar Asc y/o Dsc para usar Autoscale.")
 
     if not (show_voltage or show_current or show_temperature):
-        raise ValueError("Debe seleccionar al menos una magnitud para usar Autofit.")
+        raise ValueError("Debe seleccionar al menos una magnitud para usar Autoscale.")
 
     plot_data = build_series_by_time_plot_data(bundle)
 
@@ -1419,8 +1487,9 @@ def compute_autofit_series_by_time_limits(
     if show_voltage:
         v_values = [r["Voltaje"] for r in rows]
         if v_values:
-            out["v_min"] = _format_limit_value(_round_down_dec(min(v_values), decimals), decimals)
-            out["v_max"] = _format_limit_value(_round_up_dec(max(v_values), decimals), decimals)
+            voltage_step = _autoscale_step_from_values(v_values)
+            out["v_min"] = _format_step_aligned_value(_round_down_to_step(min(v_values), voltage_step), voltage_step)
+            out["v_max"] = _format_step_aligned_value(_round_up_to_step(max(v_values), voltage_step), voltage_step)
 
     # Current axis: always start at 0
     if show_current:
@@ -1756,10 +1825,10 @@ def compute_autofit_series_by_time_limits(
     time_unit: str = "s",
 ) -> dict[str, str]:
     if not (show_asc or show_dsc):
-        raise ValueError("Debe seleccionar Asc y/o Dsc para usar Autofit.")
+        raise ValueError("Debe seleccionar Asc y/o Dsc para usar Autoscale.")
 
     if not (show_voltage or show_current or show_temperature):
-        raise ValueError("Debe seleccionar al menos una magnitud para usar Autofit.")
+        raise ValueError("Debe seleccionar al menos una magnitud para usar Autoscale.")
 
     plot_data = build_series_by_time_plot_data(bundle, time_unit=time_unit)
 
@@ -1790,8 +1859,9 @@ def compute_autofit_series_by_time_limits(
     if show_voltage:
         v_values = [r["Voltaje"] for r in rows]
         if v_values:
-            out["v_min"] = str(int(floor(min(v_values))))
-            out["v_max"] = str(int(ceil(max(v_values))))
+            voltage_step = _autoscale_step_from_values(v_values)
+            out["v_min"] = _format_step_aligned_value(_round_down_to_step(min(v_values), voltage_step), voltage_step)
+            out["v_max"] = _format_step_aligned_value(_round_up_to_step(max(v_values), voltage_step), voltage_step)
 
     if show_temperature:
         temp_values = [r["Temperatura"] for r in rows]
@@ -1928,6 +1998,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     dsc_var = tk.BooleanVar(value=True)
     voltage_var = tk.BooleanVar(value=True)
     temperature_var = tk.BooleanVar(value=False)
+    current_density_var = tk.BooleanVar(value=False)
     point_fraction_var = tk.DoubleVar(value=1.0)
 
     x_min_var = tk.StringVar(value=default_limits["x_min"])
@@ -1954,6 +2025,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         "dsc": True,
         "voltage": True,
         "temperature": False,
+        "current_density": False,
         "fraction": 1.0,
         "x_min": default_limits["x_min"],
         "x_max": default_limits["x_max"],
@@ -1976,6 +2048,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         "hollow_markers": False,
         "line_width": "1.5",
     }
+    current_density_state = {"value": False}
 
     def _schedule_plot(*_args):
         if suspend_events["value"]:
@@ -2037,6 +2110,35 @@ def open_v_vs_i_window(input_dir: Path) -> None:
 
     temperature_line_combo.grid(row=3, column=1, sticky="w", padx=8, pady=3)
 
+    ttk.Label(style_box, text="Marker size").grid(row=4, column=0, sticky="w", padx=8, pady=3)
+    marker_size_entry = ttk.Spinbox(
+        style_box,
+        from_=0.0,
+        to=20.0,
+        increment=0.5,
+        textvariable=marker_size_var,
+        width=10,
+    )
+    marker_size_entry.grid(row=4, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Checkbutton(
+        style_box,
+        text="Hollow markers",
+        variable=hollow_markers_var,
+        command=_schedule_plot,
+    ).grid(row=5, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+
+    ttk.Label(style_box, text="Line width").grid(row=6, column=0, sticky="w", padx=8, pady=3)
+    line_width_entry = ttk.Spinbox(
+        style_box,
+        from_=0.0,
+        to=10.0,
+        increment=0.1,
+        textvariable=line_width_var,
+        width=10,
+    )
+    line_width_entry.grid(row=6, column=1, sticky="w", padx=8, pady=3)
+
     point_box = ttk.LabelFrame(controls_frame, text="Punto dentro de cada step")
     point_box.pack(fill="x", pady=5)
 
@@ -2069,21 +2171,6 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     legend_size_entry = ttk.Spinbox(text_box, from_=6.0, to=40.0, increment=0.5, textvariable=legend_fontsize_var, width=10)
     legend_size_entry.grid(row=4, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Marker size").grid(row=5, column=0, sticky="w", padx=8, pady=3)
-    marker_size_entry = ttk.Spinbox(text_box, from_=0.0, to=20.0, increment=0.5, textvariable=marker_size_var, width=10)
-    marker_size_entry.grid(row=5, column=1, sticky="w", padx=8, pady=3)
-
-    ttk.Label(text_box, text="Line width").grid(row=7, column=0, sticky="w", padx=8, pady=3)
-    line_width_entry = ttk.Spinbox(text_box, from_=0.0, to=10.0, increment=0.1, textvariable=line_width_var, width=10)
-    line_width_entry.grid(row=7, column=1, sticky="w", padx=8, pady=3)
-
-    ttk.Checkbutton(
-        text_box,
-        text="Hollow markers",
-        variable=hollow_markers_var,
-        command=_schedule_plot,
-    ).grid(row=6, column=0, columnspan=2, sticky="w", padx=8, pady=4)
-
     def _positive_float(text: str, name: str) -> float:
         value = text.strip().replace(",", ".")
         if not value:
@@ -2102,6 +2189,36 @@ def open_v_vs_i_window(input_dir: Path) -> None:
             temp_min=_optional_float(temp_min_var.get()),
             temp_max=_optional_float(temp_max_var.get()),
         )
+
+    def _on_current_density_toggle():
+        new_state = current_density_var.get()
+        old_state = current_density_state["value"]
+        if new_state == old_state:
+            return
+
+        try:
+            area_cm2 = _bundle_area_cm2(bundle)
+            if area_cm2 is None or area_cm2 <= 0:
+                raise ValueError("No se pudo leer un AREA valida de la metadata para convertir la corriente.")
+        except ValueError as exc:
+            current_density_var.set(old_state)
+            status_var.set(f"Error: {exc}")
+            return
+
+        factor = 1.0 / area_cm2 if new_state else area_cm2
+
+        suspend_events["value"] = True
+        try:
+            for var in (x_min_var, x_max_var):
+                value = _optional_float(var.get())
+                if value is not None:
+                    var.set(f"{value * factor:.6g}")
+        finally:
+            suspend_events["value"] = False
+
+        current_density_state["value"] = new_state
+        _plot()
+        status_var.set("Unidad del eje x actualizada.")
     
     def _plot():
         plot_job["id"] = None
@@ -2118,6 +2235,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
                 temperature_linestyle=temperature_line_var.get(),
                 show_voltage=voltage_var.get(),
                 show_temperature=temperature_var.get(),
+                use_current_density=current_density_var.get(),
                 point_fraction=point_fraction_var.get(),
                 x_tick_count=x_tick_count_var.get(),
                 y_tick_count=y_tick_count_var.get(),
@@ -2164,6 +2282,7 @@ def open_v_vs_i_window(input_dir: Path) -> None:
                 show_voltage=voltage_var.get(),
                 show_temperature=temperature_var.get(),
                 point_fraction=point_fraction_var.get(),
+                use_current_density=current_density_var.get(),
             )
         except ValueError as exc:
             status_var.set(f"Error: {exc}")
@@ -2197,6 +2316,8 @@ def open_v_vs_i_window(input_dir: Path) -> None:
             temperature_line_var.set(initial_state["temperature_line"])
             voltage_var.set(initial_state["voltage"])
             temperature_var.set(initial_state["temperature"])
+            current_density_var.set(initial_state["current_density"])
+            current_density_state["value"] = initial_state["current_density"]
             point_fraction_var.set(initial_state["fraction"])
             x_tick_count_var.set(initial_state["x_tick_count"])
             y_tick_count_var.set(initial_state["y_tick_count"])
@@ -2260,6 +2381,12 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     ttk.Checkbutton(series_box, text="Temperatura", variable=temperature_var, command=_schedule_plot).pack(
         anchor="w", padx=8, pady=2
     )
+    ttk.Checkbutton(
+        series_box,
+        text="x-axis in A/cm^2",
+        variable=current_density_var,
+        command=_on_current_density_toggle,
+    ).pack(anchor="w", padx=8, pady=2)
 
     point_value_label = ttk.Label(point_box, text="1.00")
     point_value_label.pack(anchor="e", padx=8, pady=(4, 0))
@@ -3223,7 +3350,7 @@ def open_series_by_time_window(input_dir: Path) -> None:
             suspend_events["value"] = False
 
         _plot()
-        status_var.set("Autofit aplicado.")
+        status_var.set("Autoscale aplicado.")
 
     def _on_time_unit_changed(*_args):
         if suspend_events["value"]:
@@ -3438,7 +3565,7 @@ def open_series_by_time_window(input_dir: Path) -> None:
     buttons_frame.pack(fill="x", pady=(5, 0))
 
     ttk.Button(buttons_frame, text="Reset", command=_reset).pack(side="left", padx=(0, 6))
-    ttk.Button(buttons_frame, text="Autofit", command=_autofit).pack(side="left")
+    ttk.Button(buttons_frame, text="Autoscale", command=_autofit).pack(side="left")
 
     _plot()
 
