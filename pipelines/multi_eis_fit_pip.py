@@ -13,12 +13,14 @@ from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
+import math
 import re
 
 import tkinter as tk
 from tkinter import ttk, messagebox
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from matplotlib.ticker import LogLocator, MaxNLocator
 
 
 EIS_FILENAME_TOKEN = "EISPOT"
@@ -108,6 +110,7 @@ class SpectrumFitResult:
     message: str = ""
     sweep_parameter_value: float | None = None
     parameters: dict[str, float] = field(default_factory=dict)
+    parameter_standard_errors: dict[str, float] = field(default_factory=dict)
     objective_value: float | None = None
 
 
@@ -120,6 +123,7 @@ class MultiEISFitResult:
     objective_value: float | None = None
     nfev: int | None = None
     parameter_trajectories: dict[str, list[float]] = field(default_factory=dict)
+    parameter_standard_error_trajectories: dict[str, list[float]] = field(default_factory=dict)
     spectrum_results: list[SpectrumFitResult] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -160,6 +164,73 @@ def _extract_parenthesized_unit(text: str) -> str:
     if matches:
         return matches[-1].strip()
     return ""
+
+
+def _apply_bar_axis_tick_aligned_limits(ax, values: Iterable[float], tick_count: int = 6) -> None:
+    finite_values: list[float] = []
+    for value in values:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(numeric):
+            finite_values.append(numeric)
+
+    if not finite_values:
+        return
+
+    target_tick_count = max(3, int(tick_count))
+
+    if ax.get_yscale() == "log":
+        positive_values = [value for value in finite_values if value > 0]
+        if not positive_values:
+            return
+
+        axis_min = min(positive_values)
+        axis_max = max(positive_values)
+        if math.isclose(axis_min, axis_max):
+            axis_min /= 10.0
+            axis_max *= 10.0
+
+        locator = LogLocator(base=10.0, numticks=target_tick_count)
+    else:
+        axis_min = min(finite_values)
+        axis_max = max(finite_values)
+
+        if axis_min >= 0:
+            axis_min = 0.0
+        elif axis_max <= 0:
+            axis_max = 0.0
+
+        if math.isclose(axis_min, axis_max):
+            if math.isclose(axis_min, 0.0):
+                axis_max = 1.0
+            else:
+                padding = max(abs(axis_max) * 0.1, 1.0)
+                axis_min -= padding
+                axis_max += padding
+
+        locator = MaxNLocator(nbins=target_tick_count)
+
+    tick_values = list(locator.tick_values(axis_min, axis_max))
+    if not tick_values:
+        return
+
+    lower_candidates = [tick for tick in tick_values if tick <= axis_min + 1e-12]
+    upper_candidates = [tick for tick in tick_values if tick >= axis_max - 1e-12]
+    axis_bottom = lower_candidates[-1] if lower_candidates else axis_min
+    axis_top = upper_candidates[0] if upper_candidates else axis_max
+    visible_ticks = [
+        tick
+        for tick in tick_values
+        if axis_bottom - 1e-12 <= tick <= axis_top + 1e-12
+    ]
+
+    if len(visible_ticks) < 2:
+        return
+
+    ax.set_ylim(bottom=axis_bottom, top=axis_top)
+    ax.set_yticks(visible_ticks)
 
 
 def parse_gamry_dta(path: Path) -> ParsedDTA:
@@ -1175,16 +1246,32 @@ def _build_initial_guess_vector(
     strategy: FitStrategyConfig,
     layout: list[ParameterLayoutEntry],
     circuit_tree: object,
+    seed_trajectories: dict[str, list[float]] | None = None,
 ):
     np, _least_squares = _import_fit_backend()
 
-    seeded_values: dict[str, list[float]] = {
-        config.name: [_clip_parameter_value(config, config.initial_guess) for _ in range(dataset.count)]
-        for config in strategy.parameter_configs
-    }
+    seeded_values: dict[str, list[float]] = {}
+    for config in strategy.parameter_configs:
+        seeded_series = None
+        if seed_trajectories is not None:
+            raw_series = seed_trajectories.get(config.name)
+            if raw_series is not None and len(raw_series) == dataset.count:
+                seeded_series = [
+                    _clip_parameter_value(config, float(value))
+                    for value in raw_series
+                ]
+        if seeded_series is None:
+            seeded_series = [_clip_parameter_value(config, config.initial_guess) for _ in range(dataset.count)]
+        seeded_values[config.name] = seeded_series
+
     notes: list[str] = []
 
-    if strategy.sequential_seed:
+    if seed_trajectories is not None:
+        notes.append(
+            "Manual seed table: using the current editable parameter table as the simultaneous-fit initial seed."
+        )
+        notes.append("Sequential seeding: skipped because an explicit per-spectrum seed table was supplied.")
+    elif strategy.sequential_seed:
         current_values = [
             _clip_parameter_value(config, config.initial_guess)
             for config in strategy.parameter_configs
@@ -1316,9 +1403,179 @@ def _format_parameter_trajectory_lines(
     return lines
 
 
+def _data_residual_degrees_of_freedom(
+    prepared_spectra: list[dict[str, object]],
+    variable_count: int,
+) -> int:
+    data_points = sum(2 * int(prepared["z_exp"].size) for prepared in prepared_spectra)
+    return max(1, data_points - int(variable_count))
+
+
+def _simultaneous_scalar_objective(
+    log_vector,
+    prepared_spectra: list[dict[str, object]],
+    strategy: FitStrategyConfig,
+    layout: list[ParameterLayoutEntry],
+    circuit_tree: object,
+    axis_values,
+) -> float:
+    np, _least_squares = _import_fit_backend()
+
+    residual = np.asarray(
+        _simultaneous_objective(
+            log_vector,
+            prepared_spectra,
+            strategy,
+            layout,
+            circuit_tree,
+            axis_values,
+        ),
+        dtype=float,
+    )
+    return 0.5 * float(np.dot(residual, residual))
+
+
+def _finite_difference_hessian(objective, x0):
+    np, _least_squares = _import_fit_backend()
+
+    x0 = np.asarray(x0, dtype=float)
+    if x0.size == 0:
+        return np.zeros((0, 0), dtype=float)
+
+    steps = 1e-4 * np.maximum(1.0, np.abs(x0))
+    f0 = float(objective(x0))
+    hessian = np.zeros((x0.size, x0.size), dtype=float)
+
+    for i in range(x0.size):
+        step_i = steps[i]
+        offset_i = np.zeros_like(x0)
+        offset_i[i] = step_i
+
+        f_plus = float(objective(x0 + offset_i))
+        f_minus = float(objective(x0 - offset_i))
+        hessian[i, i] = (f_plus - 2.0 * f0 + f_minus) / (step_i ** 2)
+
+        for j in range(i + 1, x0.size):
+            step_j = steps[j]
+            offset_j = np.zeros_like(x0)
+            offset_j[j] = step_j
+
+            f_pp = float(objective(x0 + offset_i + offset_j))
+            f_pm = float(objective(x0 + offset_i - offset_j))
+            f_mp = float(objective(x0 - offset_i + offset_j))
+            f_mm = float(objective(x0 - offset_i - offset_j))
+            mixed_value = (f_pp - f_pm - f_mp + f_mm) / (4.0 * step_i * step_j)
+            hessian[i, j] = mixed_value
+            hessian[j, i] = mixed_value
+
+    return np.nan_to_num(hessian, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def _parameter_standard_error_trajectories_from_log_std(
+    std_log_vector,
+    layout: list[ParameterLayoutEntry],
+    actual_series: dict[str, object],
+    spectrum_count: int,
+) -> dict[str, list[float]]:
+    np, _least_squares = _import_fit_backend()
+
+    std_log_vector = np.asarray(std_log_vector, dtype=float)
+    error_trajectories: dict[str, list[float]] = {}
+    for entry in layout:
+        config = entry.config
+        actual_values = np.asarray(actual_series[config.name], dtype=float)
+        log_std_values = std_log_vector[entry.start:entry.stop]
+
+        if config.treatment_mode == "shared":
+            scalar_std = float(abs(log_std_values[0])) if log_std_values.size else float("nan")
+            error_values = actual_values * scalar_std
+        else:
+            expanded_log_std = np.asarray(log_std_values, dtype=float)
+            if expanded_log_std.size != spectrum_count:
+                expanded_log_std = np.resize(expanded_log_std, spectrum_count)
+            error_values = actual_values * np.abs(expanded_log_std)
+
+        error_trajectories[config.name] = [
+            float(value) if math.isfinite(float(value)) else float("nan")
+            for value in np.asarray(error_values, dtype=float)
+        ]
+    return error_trajectories
+
+
+def _compute_hessian_inverse_standard_errors(
+    optimized_log_vector,
+    prepared_spectra: list[dict[str, object]],
+    strategy: FitStrategyConfig,
+    layout: list[ParameterLayoutEntry],
+    circuit_tree: object,
+    axis_values,
+    actual_series: dict[str, object],
+) -> tuple[dict[str, list[float]], list[str]]:
+    np, _least_squares = _import_fit_backend()
+
+    optimized_log_vector = np.asarray(optimized_log_vector, dtype=float)
+    if optimized_log_vector.size == 0:
+        return {}, ["Parameter standard errors: unavailable because no fit variables were present."]
+
+    objective = lambda values: _simultaneous_scalar_objective(
+        values,
+        prepared_spectra,
+        strategy,
+        layout,
+        circuit_tree,
+        axis_values,
+    )
+    hessian = _finite_difference_hessian(objective, optimized_log_vector)
+    hessian = 0.5 * (hessian + hessian.T)
+
+    inverse_kind = "inverse"
+    try:
+        covariance_log = np.linalg.inv(hessian)
+    except np.linalg.LinAlgError:
+        covariance_log = np.linalg.pinv(hessian)
+        inverse_kind = "pseudoinverse"
+
+    residual = np.asarray(
+        _simultaneous_objective(
+            optimized_log_vector,
+            prepared_spectra,
+            strategy,
+            layout,
+            circuit_tree,
+            axis_values,
+        ),
+        dtype=float,
+    )
+    dof = _data_residual_degrees_of_freedom(prepared_spectra, optimized_log_vector.size)
+    wrms = float(np.dot(residual, residual)) / float(dof)
+    covariance_log = np.asarray(covariance_log, dtype=float) * wrms
+    covariance_log = np.nan_to_num(covariance_log, nan=0.0, posinf=0.0, neginf=0.0)
+
+    covariance_diag = np.asarray(np.diag(covariance_log), dtype=float)
+    negative_variances = int(np.count_nonzero(covariance_diag < 0.0))
+    std_log = np.sqrt(np.clip(covariance_diag, 0.0, None))
+    error_trajectories = _parameter_standard_error_trajectories_from_log_std(
+        std_log,
+        layout,
+        actual_series,
+        len(prepared_spectra),
+    )
+
+    notes = [
+        f"Parameter standard errors: Hessian {inverse_kind} in log-parameter space.",
+        f"Covariance scaling: wrms={wrms:.6g} with dof={dof}.",
+    ]
+    if negative_variances > 0:
+        notes.append(
+            f"Variance clipping: {negative_variances} negative Hessian-derived variances were clipped to zero."
+        )
+    return error_trajectories, notes
+
+
 def fit_dataset(
     dataset: MultiEISDataset,
     strategy: FitStrategyConfig,
+    seed_trajectories: dict[str, list[float]] | None = None,
 ) -> MultiEISFitResult:
     """Run a simultaneous multi-spectrum fit in log-parameter space."""
     validate_dataset(dataset)
@@ -1340,6 +1597,7 @@ def fit_dataset(
         strategy=strategy,
         layout=layout,
         circuit_tree=circuit_tree,
+        seed_trajectories=seed_trajectories,
     )
     np, least_squares = _import_fit_backend()
 
@@ -1382,11 +1640,26 @@ def fit_dataset(
         config.name: [float(value) for value in actual_series[config.name]]
         for config in strategy.parameter_configs
     }
+    parameter_standard_error_trajectories, standard_error_notes = _compute_hessian_inverse_standard_errors(
+        optimized_log_vector=result.x,
+        prepared_spectra=prepared_spectra,
+        strategy=strategy,
+        layout=layout,
+        circuit_tree=circuit_tree,
+        axis_values=axis_values,
+        actual_series=actual_series,
+    )
 
     spectrum_results: list[SpectrumFitResult] = []
     for spectrum_index, prepared in enumerate(prepared_spectra):
         parameters = {
             config.name: float(actual_series[config.name][spectrum_index])
+            for config in strategy.parameter_configs
+        }
+        parameter_standard_errors = {
+            config.name: float(
+                parameter_standard_error_trajectories.get(config.name, [float("nan")] * dataset.count)[spectrum_index]
+            )
             for config in strategy.parameter_configs
         }
         z_exp = prepared["z_exp"]
@@ -1407,13 +1680,17 @@ def fit_dataset(
                 message=result.message,
                 sweep_parameter_value=prepared["spectrum"].sweep_parameter_value,
                 parameters=parameters,
+                parameter_standard_errors=parameter_standard_errors,
                 objective_value=float(np.mean(local_residual**2)),
             )
         )
 
     notes.append(f"Global objective (sum of squared residuals): {2.0 * result.cost:.6g}")
+    notes.extend(standard_error_notes)
     notes.extend(["Parameter trajectories:"])
     notes.extend(_format_parameter_trajectory_lines(parameter_trajectories))
+    notes.extend(["Parameter standard errors:"])
+    notes.extend(_format_parameter_trajectory_lines(parameter_standard_error_trajectories))
 
     return MultiEISFitResult(
         dataset_size=dataset.count,
@@ -1423,6 +1700,7 @@ def fit_dataset(
         objective_value=float(2.0 * result.cost),
         nfev=getattr(result, "nfev", None),
         parameter_trajectories=parameter_trajectories,
+        parameter_standard_error_trajectories=parameter_standard_error_trajectories,
         spectrum_results=spectrum_results,
         notes=notes,
     )
@@ -1511,27 +1789,32 @@ def open_multifit_window(
 
     controls_outer, controls_frame = _build_scrollable_controls(main_pane, width=560)
     right_frame = ttk.Frame(main_pane, padding=10)
+    right_pane = ttk.Panedwindow(right_frame, orient="vertical")
+    right_pane.pack(fill="both", expand=True)
 
     main_pane.add(controls_outer, weight=0)
     main_pane.add(right_frame, weight=1)
 
-    preview_box = ttk.LabelFrame(right_frame, text="Nyquist preview", padding=10)
-    preview_box.pack(fill="both", expand=True, pady=(0, 10))
+    preview_box = ttk.LabelFrame(right_pane, text="Nyquist preview", padding=10)
 
     preview_fig = Figure(figsize=(7.2, 4.6), dpi=100)
     preview_canvas = FigureCanvasTkAgg(preview_fig, master=preview_box)
     preview_canvas.draw()
     preview_canvas.get_tk_widget().pack(fill="both", expand=True)
 
-    details_notebook = ttk.Notebook(right_frame)
-    details_notebook.pack(fill="both", expand=True)
+    details_notebook = ttk.Notebook(right_pane)
+
+    right_pane.add(preview_box, weight=3)
+    right_pane.add(details_notebook, weight=2)
 
     summary_tab = ttk.Frame(details_notebook, padding=10)
     validation_tab = ttk.Frame(details_notebook, padding=10)
     notes_tab = ttk.Frame(details_notebook, padding=10)
+    parameters_tab = ttk.Frame(details_notebook, padding=0)
     details_notebook.add(summary_tab, text="Summary")
     details_notebook.add(validation_tab, text="Validation")
     details_notebook.add(notes_tab, text="Notes")
+    details_notebook.add(parameters_tab, text="Parameters")
 
     summary_text = tk.Text(summary_tab, height=14, wrap="word", state="disabled")
     summary_text.pack(fill="both", expand=True)
@@ -1541,6 +1824,84 @@ def open_multifit_window(
 
     notes_text = tk.Text(notes_tab, wrap="word", state="disabled")
     notes_text.pack(fill="both", expand=True)
+
+    ttk.Label(
+        parameters_tab,
+        text="Run the simultaneous fit to populate the fitted-parameter charts grouped by voltage.",
+        wraplength=780,
+        justify="left",
+        foreground="#555555",
+    ).pack(anchor="w", fill="x", padx=10, pady=(10, 8))
+
+    parameter_plots_expanded_var = tk.BooleanVar(value=True)
+    parameter_plots_toggle_text = tk.StringVar(value="Hide parameter plots")
+
+    parameters_plot_toggle_row = ttk.Frame(parameters_tab)
+    parameters_plot_toggle_row.pack(fill="x", padx=10, pady=(0, 8))
+    ttk.Button(
+        parameters_plot_toggle_row,
+        textvariable=parameter_plots_toggle_text,
+        command=lambda: _toggle_parameter_plot_visibility(),
+    ).pack(side="left")
+
+    parameters_plot_box = ttk.LabelFrame(parameters_tab, text="Fitted parameters vs varying parameter", padding=10)
+    parameters_plot_box.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+    parameters_plot_frame = ttk.Frame(parameters_plot_box)
+    parameters_plot_frame.pack(fill="both", expand=True)
+
+    parameters_plot_view = tk.Canvas(parameters_plot_frame, highlightthickness=0)
+    parameters_plot_scrollbar = ttk.Scrollbar(
+        parameters_plot_frame,
+        orient="horizontal",
+        command=parameters_plot_view.xview,
+    )
+    parameters_plot_view.configure(xscrollcommand=parameters_plot_scrollbar.set)
+
+    parameters_plot_scrollbar.pack(side="bottom", fill="x")
+    parameters_plot_view.pack(side="top", fill="both", expand=True)
+
+    parameters_plot_inner = ttk.Frame(parameters_plot_view)
+    parameters_plot_inner.pack_propagate(False)
+    parameters_plot_window = parameters_plot_view.create_window((0, 0), window=parameters_plot_inner, anchor="nw")
+
+    parameters_fig = Figure(figsize=(8.4, 4.6), dpi=100)
+    parameters_canvas = FigureCanvasTkAgg(parameters_fig, master=parameters_plot_inner)
+    parameters_canvas.draw()
+    parameters_canvas_widget = parameters_canvas.get_tk_widget()
+    parameters_canvas_widget.pack(fill="both", expand=True)
+
+    parameters_table_box = ttk.LabelFrame(parameters_tab, text="Grouped parameter table", padding=10)
+    parameters_table_box.pack(fill="x", expand=False, padx=10, pady=(0, 10))
+
+    ttk.Label(
+        parameters_table_box,
+        text=(
+            "Edit a fitted value and press Enter or leave the field to update the Nyquist preview. "
+            "The gray SE values come from the last simultaneous fit and are not recomputed for manual edits."
+        ),
+        wraplength=820,
+        justify="left",
+        foreground="#555555",
+    ).pack(anchor="w", fill="x", pady=(0, 8))
+
+    parameters_table_frame = ttk.Frame(parameters_table_box)
+    parameters_table_frame.pack(fill="both", expand=True)
+
+    parameters_table_view = tk.Canvas(parameters_table_frame, highlightthickness=0, height=170)
+    parameters_table_y = ttk.Scrollbar(parameters_table_frame, orient="vertical", command=parameters_table_view.yview)
+    parameters_table_x = ttk.Scrollbar(parameters_table_frame, orient="horizontal", command=parameters_table_view.xview)
+    parameters_table_view.configure(
+        yscrollcommand=parameters_table_y.set,
+        xscrollcommand=parameters_table_x.set,
+    )
+
+    parameters_table_y.pack(side="right", fill="y")
+    parameters_table_x.pack(side="bottom", fill="x")
+    parameters_table_view.pack(side="left", fill="both", expand=True)
+
+    parameters_table_inner = ttk.Frame(parameters_table_view)
+    parameters_table_window = parameters_table_view.create_window((0, 0), window=parameters_table_inner, anchor="nw")
 
     status_var = tk.StringVar(value="Seleccione los archivos EIS y asigne un voltaje a cada uno.")
 
@@ -1565,6 +1926,9 @@ def open_multifit_window(
     parameter_rows: list[dict[str, object]] = []
     latest_fit_result: MultiEISFitResult | None = None
     latest_fit_signature: tuple | None = None
+    parameter_plot_refresh_after_id: str | None = None
+    parameter_table_cells: dict[tuple[int, str], dict[str, object]] = {}
+    parameter_table_content_width_px = 0
 
     ttk.Label(
         controls_frame,
@@ -1815,10 +2179,473 @@ def open_multifit_window(
         except Exception:
             pass
 
+    def _parameter_plot_view_size() -> tuple[int, int]:
+        parameters_plot_view.update_idletasks()
+
+        width = parameters_plot_view.winfo_width()
+        height = parameters_plot_view.winfo_height()
+
+        if width <= 1:
+            width = parameters_plot_box.winfo_width() - 24
+        if height <= 1:
+            height = parameters_plot_box.winfo_height() - parameters_plot_scrollbar.winfo_reqheight() - 24
+
+        if width <= 1:
+            width = 840
+        if height <= 1:
+            height = 420
+
+        return width, height
+
+    def _set_parameter_plot_widget_size(width_px: int, height_px: int) -> None:
+        width_px = max(1, int(round(width_px)))
+        height_px = max(1, int(round(height_px)))
+
+        parameters_canvas_widget.configure(width=width_px, height=height_px)
+        parameters_plot_inner.configure(width=width_px, height=height_px)
+        parameters_plot_view.itemconfigure(parameters_plot_window, width=width_px, height=height_px)
+        parameters_plot_view.configure(scrollregion=(0, 0, width_px, height_px))
+
+    def _sync_parameter_plot_scrollregion(_event=None) -> None:
+        parameters_plot_view.update_idletasks()
+        _set_parameter_plot_widget_size(
+            parameters_canvas_widget.winfo_width(),
+            parameters_canvas_widget.winfo_height(),
+        )
+
+    def _queue_parameter_plot_refresh(_event=None) -> None:
+        nonlocal parameter_plot_refresh_after_id
+
+        if parameter_plot_refresh_after_id is not None:
+            try:
+                win.after_cancel(parameter_plot_refresh_after_id)
+            except Exception:
+                pass
+
+        parameter_plot_refresh_after_id = win.after(120, _refresh_parameter_plot_layout)
+
+    def _toggle_parameter_plot_visibility() -> None:
+        expanded = not bool(parameter_plots_expanded_var.get())
+        parameter_plots_expanded_var.set(expanded)
+        if expanded:
+            parameter_plots_toggle_text.set("Hide parameter plots")
+            parameters_plot_box.pack(fill="both", expand=True, padx=10, pady=(0, 10), after=parameters_plot_toggle_row)
+            _queue_parameter_plot_refresh()
+        else:
+            parameter_plots_toggle_text.set("Show parameter plots")
+            parameters_plot_box.pack_forget()
+
+    def _parameter_plot_configs(result: MultiEISFitResult) -> list[ParameterTreatmentConfig]:
+        if result.strategy.parameter_configs:
+            return result.strategy.parameter_configs
+        return [
+            ParameterTreatmentConfig(
+                name=name,
+                element_token="",
+                quantity_label=name,
+                unit="-",
+                treatment_mode="independent",
+                initial_guess=1.0,
+                lower_bound=1e-12,
+                upper_bound=1e12,
+            )
+            for name in result.parameter_trajectories.keys()
+        ]
+
+    def _sync_parameter_table_scrollregion(_event=None) -> None:
+        nonlocal parameter_table_content_width_px
+
+        parameters_table_view.update_idletasks()
+        requested_width = max(parameters_table_inner.winfo_reqwidth(), parameter_table_content_width_px)
+        viewport_width = parameters_table_view.winfo_width()
+        table_width = max(1, requested_width, viewport_width)
+        parameters_table_view.itemconfigure(parameters_table_window, width=table_width)
+
+        table_height = max(1, parameters_table_inner.winfo_reqheight(), parameters_table_view.winfo_height())
+        parameters_table_view.configure(scrollregion=(0, 0, table_width, table_height))
+
+    def _clear_parameter_table(message: str) -> None:
+        nonlocal parameter_table_content_width_px
+
+        parameter_table_content_width_px = 0
+        parameter_table_cells.clear()
+        for child in parameters_table_inner.winfo_children():
+            child.destroy()
+        parameters_table_inner.grid_columnconfigure(0, weight=1)
+        ttk.Label(
+            parameters_table_inner,
+            text=message,
+            wraplength=820,
+            justify="left",
+            foreground="#555555",
+        ).grid(row=0, column=0, sticky="w")
+        _sync_parameter_table_scrollregion()
+
+    def _parameter_row_axis_text(spectrum_result: SpectrumFitResult, spectrum_index: int) -> str:
+        if spectrum_result.sweep_parameter_value is not None:
+            return f"{spectrum_result.sweep_parameter_value:.6g}"
+        return f"S{spectrum_index + 1}"
+
+    def _rebuild_parameter_trajectories_from_spectrum_results(result: MultiEISFitResult) -> None:
+        result.parameter_trajectories = {
+            config.name: [
+                float(spectrum_result.parameters.get(config.name, float("nan")))
+                for spectrum_result in result.spectrum_results
+            ]
+            for config in _parameter_plot_configs(result)
+        }
+
+    def _clear_parameter_results(message: str, reset_scroll: bool = True) -> None:
+        scroll_start = 0.0 if reset_scroll else parameters_plot_view.xview()[0]
+        viewport_width_px, viewport_height_px = _parameter_plot_view_size()
+
+        parameters_fig.clear()
+        parameters_fig.set_size_inches(
+            viewport_width_px / parameters_fig.dpi,
+            viewport_height_px / parameters_fig.dpi,
+        )
+        _set_parameter_plot_widget_size(viewport_width_px, viewport_height_px)
+        ax = parameters_fig.add_subplot(111)
+        ax.axis("off")
+        ax.text(0.5, 0.5, message, ha="center", va="center", wrap=True)
+        parameters_fig.tight_layout()
+        parameters_canvas.draw()
+        _sync_parameter_plot_scrollregion()
+        parameters_plot_view.xview_moveto(scroll_start)
+        _clear_parameter_table(message)
+
+    def _render_parameter_plots(result: MultiEISFitResult, reset_scroll: bool = True) -> None:
+        if not parameter_plots_expanded_var.get():
+            return
+
+        configs = _parameter_plot_configs(result)
+        axis_label = result.strategy.varying_parameter_name or "Parameter"
+        axis_values = [
+            spectrum_result.sweep_parameter_value
+            for spectrum_result in result.spectrum_results
+        ]
+        x_labels = [
+            f"{value:.6g}" if value is not None else f"S{index + 1}"
+            for index, value in enumerate(axis_values)
+        ]
+        x_positions = list(range(len(x_labels)))
+        palette = [
+            "#4c78a8",
+            "#f58518",
+            "#54a24b",
+            "#e45756",
+            "#72b7b2",
+            "#b279a2",
+            "#ff9da6",
+            "#9d755d",
+            "#bab0ab",
+        ]
+
+        scroll_start = 0.0 if reset_scroll else parameters_plot_view.xview()[0]
+        viewport_width_px, viewport_height_px = _parameter_plot_view_size()
+        subplot_count = len(configs)
+        min_subplot_width_px = 300
+        figure_width_px = max(viewport_width_px, subplot_count * min_subplot_width_px)
+        figure_height_px = viewport_height_px
+
+        parameters_fig.clear()
+        parameters_fig.set_size_inches(
+            figure_width_px / parameters_fig.dpi,
+            figure_height_px / parameters_fig.dpi,
+        )
+        _set_parameter_plot_widget_size(figure_width_px, figure_height_px)
+        axes = parameters_fig.subplots(nrows=1, ncols=subplot_count, squeeze=False).ravel()
+
+        for axis_index, config in enumerate(configs):
+            ax = axes[axis_index]
+            values = result.parameter_trajectories.get(config.name)
+            if not values:
+                values = [
+                    float(spectrum_result.parameters.get(config.name, float("nan")))
+                    for spectrum_result in result.spectrum_results
+                ]
+            color = palette[axis_index % len(palette)]
+            bars = ax.bar(
+                x_positions,
+                values,
+                width=0.68,
+                color=color,
+                edgecolor="#333333",
+                linewidth=0.6,
+            )
+            positive_values = [value for value in values if value > 0]
+            if len(positive_values) >= 2:
+                spread = max(positive_values) / min(positive_values)
+                if spread >= 100.0:
+                    ax.set_yscale("log")
+            _apply_bar_axis_tick_aligned_limits(ax, values)
+            ax.set_ylabel(config.unit if config.unit != "-" else config.name)
+            ax.set_title(
+                f"{config.name} ({config.quantity_label})",
+                loc="left",
+                fontsize=10,
+                pad=6,
+            )
+            ax.grid(True, axis="y", alpha=0.25)
+            ax.set_xticks(x_positions)
+            ax.set_xticklabels(x_labels, rotation=35, ha="right")
+            ax.set_xlabel(f"{axis_label} (V)" if axis_label == "Voltage" else axis_label)
+            for bar, value in zip(bars, values):
+                if value <= 0:
+                    label_y = bar.get_height()
+                else:
+                    label_y = value
+                ax.annotate(
+                    f"{value:.3g}",
+                    xy=(bar.get_x() + bar.get_width() / 2.0, label_y),
+                    xytext=(0, 3),
+                    textcoords="offset points",
+                    ha="center",
+                    va="bottom",
+                    fontsize=8,
+                    rotation=0,
+                )
+
+        parameters_fig.suptitle(
+            f"Fitted parameters grouped by {axis_label}",
+            fontsize=12,
+        )
+        parameters_fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96), w_pad=2.0)
+        parameters_canvas.draw()
+        _sync_parameter_plot_scrollregion()
+        parameters_plot_view.xview_moveto(scroll_start)
+
+    def _apply_parameter_table_value(
+        *,
+        spectrum_index: int,
+        config: ParameterTreatmentConfig,
+        value_var: tk.StringVar,
+    ) -> None:
+        nonlocal latest_fit_result
+
+        if latest_fit_result is None or spectrum_index >= len(latest_fit_result.spectrum_results):
+            return
+
+        spectrum_result = latest_fit_result.spectrum_results[spectrum_index]
+        previous_value = float(spectrum_result.parameters.get(config.name, float("nan")))
+        raw_value = value_var.get().strip()
+        parsed_value = to_float(raw_value)
+
+        if parsed_value is None or parsed_value <= 0.0:
+            value_var.set("" if not math.isfinite(previous_value) else f"{previous_value:.6g}")
+            axis_label = latest_fit_result.strategy.varying_parameter_name or "Parameter"
+            status_var.set(
+                f"{config.name} for {axis_label} {_parameter_row_axis_text(spectrum_result, spectrum_index)} "
+                "must be a positive number."
+            )
+            return
+
+        spectrum_result.parameters[config.name] = float(parsed_value)
+        value_var.set(f"{parsed_value:.6g}")
+        _rebuild_parameter_trajectories_from_spectrum_results(latest_fit_result)
+        if parameter_plots_expanded_var.get():
+            _render_parameter_plots(latest_fit_result, reset_scroll=False)
+        _update_nyquist_preview()
+
+        axis_label = latest_fit_result.strategy.varying_parameter_name or "Parameter"
+        status_var.set(
+            f"Updated {config.name} for {axis_label} {_parameter_row_axis_text(spectrum_result, spectrum_index)}."
+        )
+
+    def _populate_editable_parameter_table(result: MultiEISFitResult) -> None:
+        nonlocal parameter_table_content_width_px
+
+        configs = _parameter_plot_configs(result)
+        if not configs or not result.spectrum_results:
+            _clear_parameter_table("No fitted parameter values are available yet.")
+            return
+
+        parameter_table_cells.clear()
+        for child in parameters_table_inner.winfo_children():
+            child.destroy()
+
+        axis_label = result.strategy.varying_parameter_name or "Parameter"
+        axis_unit = "V" if axis_label == "Voltage" else ""
+        row_label_width_px = 110
+        parameter_column_width_px = 160
+        parameter_table_content_width_px = row_label_width_px + len(configs) * parameter_column_width_px
+        parameters_table_inner.grid_columnconfigure(0, weight=0, minsize=row_label_width_px)
+
+        ttk.Label(
+            parameters_table_inner,
+            text=axis_label,
+            font=("", 9, "bold"),
+            justify="center",
+        ).grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=(0, 2))
+        ttk.Label(
+            parameters_table_inner,
+            text=axis_unit,
+            foreground="#555555",
+            justify="center",
+        ).grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=(0, 6))
+
+        for col_index, config in enumerate(configs, start=1):
+            parameters_table_inner.grid_columnconfigure(col_index, weight=0, minsize=parameter_column_width_px)
+            ttk.Label(
+                parameters_table_inner,
+                text=config.name,
+                font=("", 9, "bold"),
+                justify="center",
+            ).grid(row=0, column=col_index, sticky="nsew", padx=(0, 6), pady=(0, 2))
+            ttk.Label(
+                parameters_table_inner,
+                text=config.unit,
+                foreground="#555555",
+                justify="center",
+            ).grid(row=1, column=col_index, sticky="nsew", padx=(0, 6), pady=(0, 6))
+
+        for spectrum_index, spectrum_result in enumerate(result.spectrum_results):
+            grid_row = spectrum_index + 2
+            ttk.Label(
+                parameters_table_inner,
+                text=_parameter_row_axis_text(spectrum_result, spectrum_index),
+                justify="center",
+            ).grid(row=grid_row, column=0, sticky="nsew", padx=(0, 6), pady=(0, 4))
+
+            for col_index, config in enumerate(configs, start=1):
+                current_value = float(spectrum_result.parameters.get(config.name, float("nan")))
+                current_error = float(spectrum_result.parameter_standard_errors.get(config.name, float("nan")))
+                value_var = tk.StringVar(value="" if not math.isfinite(current_value) else f"{current_value:.6g}")
+                cell_frame = ttk.Frame(parameters_table_inner)
+                cell_frame.grid(row=grid_row, column=col_index, sticky="ew", padx=(0, 6), pady=(0, 4))
+                entry = ttk.Entry(
+                    cell_frame,
+                    textvariable=value_var,
+                    width=max(12, len(config.name) + 2),
+                )
+                entry.pack(fill="x", expand=True)
+                ttk.Label(
+                    cell_frame,
+                    text="SE +- n/a" if not math.isfinite(current_error) else f"SE +- {current_error:.3g}",
+                    foreground="#666666",
+                    font=("", 8),
+                    justify="left",
+                ).pack(anchor="w", pady=(1, 0))
+                entry.bind(
+                    "<Return>",
+                    lambda _event, spectrum_index=spectrum_index, config=config, value_var=value_var: (
+                        _apply_parameter_table_value(
+                            spectrum_index=spectrum_index,
+                            config=config,
+                            value_var=value_var,
+                        )
+                    ),
+                )
+                entry.bind(
+                    "<FocusOut>",
+                    lambda _event, spectrum_index=spectrum_index, config=config, value_var=value_var: (
+                        _apply_parameter_table_value(
+                            spectrum_index=spectrum_index,
+                            config=config,
+                            value_var=value_var,
+                        )
+                    ),
+                )
+                parameter_table_cells[(spectrum_index, config.name)] = {
+                    "var": value_var,
+                    "entry": entry,
+                    "error": current_error,
+                }
+
+        _sync_parameter_table_scrollregion()
+
+    def _update_parameter_results(result: MultiEISFitResult | None, reset_scroll: bool = True) -> None:
+        if result is None:
+            _clear_parameter_results(
+                "Run the simultaneous fit to populate the fitted-parameter charts.",
+                reset_scroll=reset_scroll,
+            )
+            return
+
+        configs = _parameter_plot_configs(result)
+        if not configs or not result.spectrum_results:
+            _clear_parameter_results(
+                "The fit finished without fitted parameter trajectories to display.",
+                reset_scroll=reset_scroll,
+            )
+            return
+
+        _rebuild_parameter_trajectories_from_spectrum_results(result)
+        if parameter_plots_expanded_var.get():
+            _render_parameter_plots(result, reset_scroll=reset_scroll)
+        _populate_editable_parameter_table(result)
+
+    def _refresh_parameter_plot_layout() -> None:
+        nonlocal parameter_plot_refresh_after_id
+
+        parameter_plot_refresh_after_id = None
+        if latest_fit_result is None:
+            _clear_parameter_results(
+                "Run the simultaneous fit to populate the fitted-parameter charts.",
+                reset_scroll=False,
+            )
+            return
+
+        if not parameter_plots_expanded_var.get():
+            return
+
+        _render_parameter_plots(latest_fit_result, reset_scroll=False)
+
+    def _on_parameter_plot_viewport_configure(_event=None) -> None:
+        if not parameter_plots_expanded_var.get():
+            return
+        _sync_parameter_plot_scrollregion()
+        _queue_parameter_plot_refresh()
+
+    def _on_details_notebook_tab_changed(_event=None) -> None:
+        selected_tab = details_notebook.select()
+        if selected_tab == str(parameters_tab) and parameter_plots_expanded_var.get():
+            _queue_parameter_plot_refresh()
+
     def _fit_result_key(source_name: str, sweep_value: float | None) -> tuple[str, float | None]:
         if sweep_value is None:
             return source_name, None
         return source_name, round(float(sweep_value), 12)
+
+    def _seed_trajectories_from_current_table(
+        selected_dataset: MultiEISDataset,
+        strategy: FitStrategyConfig,
+    ) -> dict[str, list[float]]:
+        if latest_fit_result is None or not latest_fit_result.spectrum_results:
+            raise ValueError("Run the simultaneous fit once before using Re-fit from current table.")
+
+        if latest_fit_result.strategy.circuit_expression != strategy.circuit_expression:
+            raise ValueError(
+                "The current table belongs to a different circuit expression. Run a fresh fit first."
+            )
+
+        fit_lookup = {
+            _fit_result_key(spectrum_result.source_name, spectrum_result.sweep_parameter_value): spectrum_result
+            for spectrum_result in latest_fit_result.spectrum_results
+        }
+        seed_trajectories = {config.name: [] for config in strategy.parameter_configs}
+
+        for spectrum in selected_dataset.spectra:
+            fit_key = _fit_result_key(spectrum.source.path.name, spectrum.sweep_parameter_value)
+            spectrum_result = fit_lookup.get(fit_key)
+            if spectrum_result is None:
+                raise ValueError(
+                    "The current table no longer matches the selected spectra/voltages. Run a fresh fit first."
+                )
+
+            for config in strategy.parameter_configs:
+                if config.name not in spectrum_result.parameters:
+                    raise ValueError(
+                        f"The current table does not contain a seed value for {config.name}. Run a fresh fit first."
+                    )
+                value = float(spectrum_result.parameters[config.name])
+                if not math.isfinite(value) or value <= 0.0:
+                    raise ValueError(
+                        f"{config.name} for {spectrum.source.path.name} is not a valid positive seed value."
+                    )
+                seed_trajectories[config.name].append(_clip_parameter_value(config, value))
+
+        return seed_trajectories
 
     def _current_fit_signature() -> tuple:
         file_signature = []
@@ -1882,9 +2709,16 @@ def open_multifit_window(
             except Exception:
                 show_fit_overlay = False
 
+        np, _least_squares = _import_fit_backend()
+        data_x_values: list[float] = []
+        data_y_values: list[float] = []
+        fit_overlay_specs: list[tuple[object, object, str, str]] = []
+
         for plot_index, row in enumerate(selected_rows):
             spectrum = row["spectrum"]
             color = f"C{plot_index}"
+            data_x_values.extend(float(value) for value in spectrum.z_real_ohm)
+            data_y_values.extend(float(-value) for value in spectrum.z_imag_ohm)
             ax.plot(
                 spectrum.z_real_ohm,
                 [-value for value in spectrum.z_imag_ohm],
@@ -1901,26 +2735,84 @@ def open_multifit_window(
                 voltage = to_float(row["voltage_var"].get())
                 fit_result = fit_lookup.get(_fit_result_key(spectrum.source.path.name, voltage))
                 if fit_result is not None and fit_result.parameters:
-                    np, _least_squares = _import_fit_backend()
-                    omega = 2.0 * np.pi * np.asarray(spectrum.frequency_hz, dtype=float)
-                    z_model = _evaluate_circuit_impedance(circuit_tree, fit_result.parameters, omega)
-                    ax.plot(
-                        z_model.real,
-                        -z_model.imag,
-                        linestyle="-",
-                        marker=None,
-                        linewidth=1.5,
-                        color=color,
-                        label=f"{_preview_label(row)} fit",
+                    try:
+                        omega = 2.0 * np.pi * np.asarray(spectrum.frequency_hz, dtype=float)
+                        z_model = _evaluate_circuit_impedance(circuit_tree, fit_result.parameters, omega)
+                    except Exception as exc:
+                        status_var.set(
+                            f"No se pudo actualizar el overlay para {spectrum.source.path.name}: {exc}"
+                        )
+                        continue
+
+                    fit_overlay_specs.append(
+                        (
+                            z_model.real,
+                            -z_model.imag,
+                            f"{_preview_label(row)} fit",
+                            color,
+                        )
                     )
+
+        if data_x_values and data_y_values:
+            finite_x = [value for value in data_x_values if math.isfinite(value)]
+            finite_y = [value for value in data_y_values if math.isfinite(value)]
+            if finite_x and finite_y:
+                x_min = min(finite_x)
+                x_max = max(finite_x)
+                y_min = min(finite_y)
+                y_max = max(finite_y)
+
+                x_padding = max((x_max - x_min) * 0.05, 1e-9)
+                y_padding = max((y_max - y_min) * 0.05, 1e-9)
+
+                if math.isclose(x_min, x_max):
+                    x_min -= x_padding
+                    x_max += x_padding
+                else:
+                    x_min -= x_padding
+                    x_max += x_padding
+
+                if math.isclose(y_min, y_max):
+                    y_min -= y_padding
+                    y_max += y_padding
+                else:
+                    y_min -= y_padding
+                    y_max += y_padding
+
+                ax.set_xlim(x_min, x_max)
+                ax.set_ylim(y_min, y_max)
+
+        for x_fit, y_fit, fit_label, color in fit_overlay_specs:
+            ax.plot(
+                x_fit,
+                y_fit,
+                linestyle="-",
+                marker=None,
+                linewidth=1.5,
+                color=color,
+                label=fit_label,
+                scalex=False,
+                scaley=False,
+            )
 
         ax.set_title("Nyquist")
         ax.set_xlabel("Zreal")
         ax.set_ylabel("-Zimag")
         ax.grid(True, alpha=0.25)
-        ax.legend(fontsize=8)
         ax.set_aspect("equal", adjustable="box")
-        preview_fig.tight_layout()
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(
+                handles,
+                labels,
+                fontsize=8,
+                loc="upper left",
+                bbox_to_anchor=(1.02, 1.0),
+                borderaxespad=0.0,
+            )
+            preview_fig.tight_layout(rect=(0.0, 0.0, 0.78, 1.0))
+        else:
+            preview_fig.tight_layout()
         preview_canvas.draw_idle()
 
     def _sync_zhit_visibility() -> None:
@@ -2258,13 +3150,19 @@ def open_multifit_window(
             f"Z-HIT OK: {report.zhit_success_count}/{selected_dataset.count}."
         )
 
-    def _prepare_fit_session():
+    def _prepare_fit_session(use_current_table_seed: bool = False):
         nonlocal latest_fit_result, latest_fit_signature
         try:
             selected_dataset, strategy = _validate_configuration()
-            status_var.set("Ejecutando fitting simultaneo...")
+            seed_trajectories = None
+            if use_current_table_seed:
+                seed_trajectories = _seed_trajectories_from_current_table(selected_dataset, strategy)
+                strategy = replace(strategy, sequential_seed=False)
+                status_var.set("Re-ejecutando fitting desde la tabla actual...")
+            else:
+                status_var.set("Ejecutando fitting simultaneo...")
             win.update_idletasks()
-            result = fit_dataset(selected_dataset, strategy)
+            result = fit_dataset(selected_dataset, strategy, seed_trajectories=seed_trajectories)
         except ValueError as exc:
             _show_ui_error("MultiFit - Simultaneous fit", str(exc))
             return
@@ -2282,6 +3180,12 @@ def open_multifit_window(
             f"Message: {result.message}",
             f"Objective: {result.objective_value:.6g}" if result.objective_value is not None else "Objective: n/a",
             f"Function evaluations: {result.nfev}" if result.nfev is not None else "Function evaluations: n/a",
+            "Parameter SE: Hessian inverse in log-parameter space.",
+            (
+                "Initial seed source: current editable parameter table."
+                if use_current_table_seed
+                else "Initial seed source: standard fit setup."
+            ),
             "",
             "Per-spectrum fit quality:",
         ]
@@ -2301,12 +3205,17 @@ def open_multifit_window(
         ]
         notes_lines.extend(result.notes)
         _set_text(notes_text, "\n".join(notes_lines))
-        details_notebook.select(notes_tab)
         latest_fit_result = result
         latest_fit_signature = _current_fit_signature()
+        details_notebook.select(parameters_tab)
+        win.update_idletasks()
+        _update_parameter_results(result)
         _update_nyquist_preview()
         if result.success:
-            status_var.set("Fitting simultaneo finalizado. Resultado: OK.")
+            if use_current_table_seed:
+                status_var.set("Re-fit desde la tabla actual finalizado. Resultado: OK.")
+            else:
+                status_var.set("Fitting simultaneo finalizado. Resultado: OK.")
         else:
             _show_ui_warning(
                 "MultiFit - Simultaneous fit",
@@ -2340,6 +3249,7 @@ def open_multifit_window(
         _set_text(summary_text, "No validation has been run yet.")
         _set_text(validation_text, "No pyimpspec validation has been run yet.")
         _set_text(notes_text, "Use Validate selection or run pyimpspec validation before starting the simultaneous fit.")
+        _clear_parameter_results("Run the simultaneous fit to populate the fitted-parameter charts.")
         status_var.set("Valores restaurados.")
 
     def _apply_template(*_args):
@@ -2353,12 +3263,22 @@ def open_multifit_window(
     circuit_entry.bind("<Return>", lambda _event: _sync_parameter_rows())
     circuit_entry.bind("<FocusOut>", lambda _event: _sync_parameter_rows())
     zhit_toggle_button.configure(command=_toggle_zhit_visibility)
+    details_notebook.bind("<<NotebookTabChanged>>", _on_details_notebook_tab_changed)
+    parameters_plot_inner.bind("<Configure>", _sync_parameter_plot_scrollregion)
+    parameters_plot_view.bind("<Configure>", _on_parameter_plot_viewport_configure)
+    parameters_table_inner.bind("<Configure>", _sync_parameter_table_scrollregion)
+    parameters_table_view.bind("<Configure>", _sync_parameter_table_scrollregion)
 
     buttons_row = ttk.Frame(controls_frame)
     buttons_row.pack(fill="x", pady=(12, 0))
     ttk.Button(buttons_row, text="Validate selection", command=_validate_and_preview).pack(side="left", padx=(0, 6))
     ttk.Button(buttons_row, text="Run pyimpspec validation", command=_run_pyimpspec_validation).pack(side="left", padx=(0, 6))
     ttk.Button(buttons_row, text="Run simultaneous fit", command=_prepare_fit_session).pack(side="left", padx=(0, 6))
+    ttk.Button(
+        buttons_row,
+        text="Re-fit from current table",
+        command=lambda: _prepare_fit_session(use_current_table_seed=True),
+    ).pack(side="left", padx=(0, 6))
     ttk.Button(buttons_row, text="Reset", command=_reset_form).pack(side="left")
 
     ttk.Label(
@@ -2371,6 +3291,7 @@ def open_multifit_window(
     _set_text(summary_text, "No validation has been run yet.")
     _set_text(validation_text, "No pyimpspec validation has been run yet.")
     _set_text(notes_text, "Use Validate selection or run pyimpspec validation before starting the simultaneous fit.")
+    _clear_parameter_results("Run the simultaneous fit to populate the fitted-parameter charts.")
     _sync_parameter_rows()
     _sync_zhit_visibility()
     _update_nyquist_preview()

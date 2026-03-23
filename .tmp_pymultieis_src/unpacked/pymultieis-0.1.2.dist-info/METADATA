@@ -1,0 +1,81 @@
+Metadata-Version: 2.1
+Name: pymultieis
+Version: 0.1.2
+Summary: A library for fitting a sequence of electrochemical impedance spectra (PyTorch version).
+Home-page: https://github.com/richinex/pymultieis
+License: MIT
+Keywords: electrochemical impedance spectroscopy, eis, batch fitting, multiple spectra, torch
+Author: Richard Chukwu
+Author-email: richinex@gmail.com
+Maintainer: Richard Chukwu
+Maintainer-email: richinex@gmail.com
+Requires-Python: >=3.8,<3.11
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Provides-Extra: docs
+Requires-Dist: matplotlib (==3.5)
+Requires-Dist: numpy (==1.23.1)
+Requires-Dist: pandas (>=1.4.4,<2.0.0)
+Requires-Dist: pytorch-minimize (>=0.0.2,<0.0.3)
+Requires-Dist: scipy (==1.9.3)
+Requires-Dist: torch (>=1.13.0,<2.0.0)
+Project-URL: Documentation, https://pymultieis.readthedocs.io/en/latest/index.html
+Project-URL: Repository, https://github.com/richinex/pymultieis
+Description-Content-Type: text/markdown
+
+
+# pymultieis
+
+[**Installation**](#installation)
+| [**Examples**](https://github.com/richinex/pymultieis/tree/main/docs/source/examples)
+| [**Documentation**](https://pymultieis.readthedocs.io/en/latest/index.html)
+| [**Citing this work**](#citation)
+
+
+A library for fitting a sequence of electrochemical impedance spectra (PyTorch version).
+
+- Implements algorithms for simultaneous and sequential fitting.
+
+- Written in python and based on the [PyTorch](https://pytorch.org/) library.
+
+- Leverages deterministic solvers from [pytorch-minimize](https://pytorch-minimize.readthedocs.io/en/latest/api/index.html) which compute the first- and second-order derivatives via autograd.
+
+## Installation<a id="installation"></a>
+
+Installation of pymultieis should be done via pip:
+
+```bash
+pip install pymultieis
+```
+
+[Getting started with pymultieis](https://pymultieis.readthedocs.io/en/latest/quick-start-guide.html#) contains a quick start guide to
+fitting your data with ``pymultieis``.
+
+
+## Examples
+
+Jupyter notebooks which cover several aspects of ``pymultieis`` can be found in [Examples](https://github.com/richinex/pymultieis/tree/main/docs/source/examples).
+
+## Documentation
+
+Details about the ``pymultieis`` API, can be found in the [reference documentation](https://pymultieis.readthedocs.io/en/latest/index.html).
+
+
+## Citing this work<a id="citation"></a>
+
+If you use pymultieis for academic research, you may cite the library as follows:
+
+```
+@misc{Chukwu2022,
+  author = {Chukwu, Richard},
+  title = {pymultieis: a library for fitting a sequence of electrochemical impedance spectra},
+  publisher = {GitHub},
+  year = {2022},
+  url = {https://github.com/richinex/pymultieis},
+}
+```
