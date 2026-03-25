@@ -7,6 +7,7 @@ from pipelines.pol_cur_pip import run_pipeline as run_pc_pipeline
 from pipelines.ocp_pip import run_pipeline as run_ocp_pipeline
 from pipelines.deg_pip import run_pipeline as run_deg_pipeline
 from pipelines.activ_pip import run_pipeline as run_activ_pipeline
+from pipelines.cic_vol_pip import run_pipeline as run_cv_pipeline
 
 from tkinter import filedialog, ttk
 
@@ -15,7 +16,7 @@ from tkinter import filedialog, ttk
 PIPELINE_OPTIONS = {
     "Activacion": ["V vs t","V vs I", "dV/dI"],
     "OCP": ["V vs t", "DeltaV"],
-    "CV": ["I vs t", "Peak current", "Onset potential"],
+    "CV": ["I vs V", "Peak current"],
     "EIS": ["Nyquist plot", "Bode plot", "Series by Pt", "MultiFit"],
     "PC": ["V vs I", "Series by time", "dV/dI", "Step Stability"],
     "Deg": ["V vs t", "dV/dt"],
@@ -26,6 +27,7 @@ RUNNERS = {
     "EIS": run_eis_pipeline,
     "PC": run_pc_pipeline,
     "OCP": run_ocp_pipeline,
+    "CV": run_cv_pipeline,
     "Deg": run_deg_pipeline,
     "Activacion": run_activ_pipeline,
 }
@@ -34,6 +36,7 @@ NOT_FOUND_MSG = {
     "EIS": "No se encontraron archivos .DTA con 'EISPOT' en la carpeta de entrada.",
     "PC": "No se encontraron archivos .DTA con 'Curva_Polarizacion_' en la carpeta de entrada.",
     "OCP": "No se encontraron archivos .DTA con 'OCP_' en la carpeta de entrada.",
+    "CV": "No se encontraron archivos .DTA con 'Voltametria_ciclica' en la carpeta de entrada.",
     "Deg": "No se encontraron archivos .DTA con 'Degradacion_galvanostatica_19A_60C_' en la carpeta de entrada.",
     "Activacion": "No se encontraron archivos .DTA con 'Activacion_' en la carpeta de entrada.",
 }
