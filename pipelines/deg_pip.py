@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date as date_cls, datetime, time as time_cls, timedelta
 from pathlib import Path
 from math import ceil, floor, log10
 import re
 
 import tkinter as tk
+import matplotlib.dates as mdates
 from tkinter import ttk, messagebox
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
@@ -61,7 +63,35 @@ DEG_PLOT_COLORS = {
 
 SECONDS_PER_MINUTE = 60.0
 SECONDS_PER_HOUR = 3600.0
-TIME_UNIT_OPTIONS = ["s", "min", "h"]
+DATE_AXIS_OPTION = "fecha"
+TIME_UNIT_OPTIONS = ["s", "min", "h", DATE_AXIS_OPTION]
+DATETIME_DISPLAY_FORMAT = "%Y-%m-%d %H:%M:%S"
+DATE_INPUT_FORMATS = (
+    "%d/%m/%Y",
+    "%d/%m/%y",
+    "%m/%d/%Y",
+    "%m/%d/%y",
+    "%Y-%m-%d",
+)
+TIME_INPUT_FORMATS = (
+    "%H:%M:%S",
+    "%H:%M",
+    "%I:%M:%S %p",
+    "%I:%M %p",
+)
+DATETIME_INPUT_FORMATS = (
+    DATETIME_DISPLAY_FORMAT,
+    "%Y-%m-%d %H:%M",
+    "%d/%m/%Y %H:%M:%S",
+    "%d/%m/%Y %H:%M",
+    "%d/%m/%y %H:%M:%S",
+    "%d/%m/%y %H:%M",
+    "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y %H:%M",
+    "%m/%d/%y %H:%M:%S",
+    "%m/%d/%y %H:%M",
+)
+TimeAxisValue = float | datetime
 
 
 @dataclass(frozen=True)
@@ -241,6 +271,187 @@ def _positive_float(text: str, name: str) -> float:
     if num <= 0:
         raise ValueError(f"{name} debe ser mayor que 0.")
     return num
+
+
+def _is_date_axis(time_unit: str) -> bool:
+    return time_unit == DATE_AXIS_OPTION
+
+
+def _parse_date_text(text: str) -> date_cls:
+    normalized = text.strip()
+    if not normalized:
+        raise ValueError("DATE esta vacio.")
+
+    for date_format in DATE_INPUT_FORMATS:
+        try:
+            return datetime.strptime(normalized, date_format).date()
+        except ValueError:
+            continue
+
+    raise ValueError(f"DATE no tiene un formato valido: {normalized!r}")
+
+
+def _parse_time_text(text: str) -> time_cls:
+    normalized = text.strip()
+    if not normalized:
+        raise ValueError("TIME esta vacio.")
+
+    for time_format in TIME_INPUT_FORMATS:
+        try:
+            return datetime.strptime(normalized, time_format).time()
+        except ValueError:
+            continue
+
+    raise ValueError(f"TIME no tiene un formato valido: {normalized!r}")
+
+
+def _parse_datetime_text(text: str) -> datetime:
+    normalized = text.strip()
+    if not normalized:
+        raise ValueError("La fecha no puede estar vacia.")
+
+    iso_candidate = normalized.replace("T", " ")
+    try:
+        return datetime.fromisoformat(iso_candidate)
+    except ValueError:
+        pass
+
+    for datetime_format in DATETIME_INPUT_FORMATS:
+        try:
+            return datetime.strptime(normalized, datetime_format)
+        except ValueError:
+            continue
+
+    try:
+        parsed_date = _parse_date_text(normalized)
+    except ValueError as exc:
+        raise ValueError(
+            "La fecha debe tener formato YYYY-MM-DD HH:MM[:SS] o DD/MM/YYYY HH:MM[:SS]."
+        ) from exc
+
+    return datetime.combine(parsed_date, time_cls.min)
+
+
+def _start_datetime(parsed: ParsedDTA, source_name: str) -> datetime:
+    raw_date = parsed.meta_values.get("DATE", "")
+    raw_time = parsed.meta_values.get("TIME", "")
+
+    if not raw_date.strip():
+        raise ValueError(f"{source_name}: falta DATE para construir el eje de fecha.")
+    if not raw_time.strip():
+        raise ValueError(f"{source_name}: falta TIME para construir el eje de fecha.")
+
+    try:
+        return datetime.combine(_parse_date_text(raw_date), _parse_time_text(raw_time))
+    except ValueError as exc:
+        raise ValueError(f"{source_name}: {exc}") from exc
+
+
+def _reference_start_datetime(parsed_items: list[tuple[DegFile, ParsedDTA]]) -> datetime:
+    if not parsed_items:
+        raise ValueError("No hay archivos de degradacion para construir el eje de fecha.")
+
+    return min(_start_datetime(parsed, deg_file.path.name) for deg_file, parsed in parsed_items)
+
+
+def _format_datetime_value(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    return value.strftime(DATETIME_DISPLAY_FORMAT)
+
+
+def _format_time_limit(value: TimeAxisValue | None, time_unit: str) -> str:
+    if value is None:
+        return ""
+    if _is_date_axis(time_unit):
+        if not isinstance(value, datetime):
+            raise ValueError("Los limites del eje de fecha deben ser fechas validas.")
+        return _format_datetime_value(value)
+    return _format_limit_value(float(value), _time_unit_decimals(time_unit))
+
+
+def _parse_time_limit_text(value_text: str, time_unit: str) -> TimeAxisValue | None:
+    if not value_text.strip():
+        return None
+    if _is_date_axis(time_unit):
+        return _parse_datetime_text(value_text)
+    return _optional_float(value_text)
+
+
+def _time_limit_to_seconds(value: TimeAxisValue, time_unit: str, reference_start: datetime) -> float:
+    if _is_date_axis(time_unit):
+        if not isinstance(value, datetime):
+            raise ValueError("Los limites del eje de fecha deben ser fechas validas.")
+        return (value - reference_start).total_seconds()
+    return float(value) * _time_unit_scale(time_unit)
+
+
+def _seconds_to_time_limit(value_seconds: float, time_unit: str, reference_start: datetime) -> TimeAxisValue:
+    if _is_date_axis(time_unit):
+        return reference_start + timedelta(seconds=value_seconds)
+    return value_seconds / _time_unit_scale(time_unit)
+
+
+def _convert_time_limit_text(
+    value_text: str,
+    from_unit: str,
+    to_unit: str,
+    reference_start: datetime,
+) -> str:
+    if from_unit == to_unit or not value_text.strip():
+        return value_text
+
+    parsed_value = _parse_time_limit_text(value_text, from_unit)
+    if parsed_value is None:
+        return value_text
+
+    seconds = _time_limit_to_seconds(parsed_value, from_unit, reference_start)
+    converted_value = _seconds_to_time_limit(seconds, to_unit, reference_start)
+    return _format_time_limit(converted_value, to_unit)
+
+
+def _plot_time_values(
+    parsed: ParsedDTA,
+    elapsed_seconds: list[float],
+    time_unit: str,
+    source_name: str,
+) -> list[TimeAxisValue]:
+    if _is_date_axis(time_unit):
+        start_dt = _start_datetime(parsed, source_name)
+        return [start_dt + timedelta(seconds=value) for value in elapsed_seconds]
+
+    time_scale = _time_unit_scale(time_unit)
+    return [value / time_scale for value in elapsed_seconds]
+
+
+def _padded_datetime_limits(
+    values: list[datetime],
+    rel_pad: float = 0.05,
+) -> tuple[datetime | None, datetime | None]:
+    if not values:
+        return None, None
+
+    vmin = min(values)
+    vmax = max(values)
+    span_seconds = (vmax - vmin).total_seconds()
+    pad_seconds = 1.0 if span_seconds == 0 else span_seconds * rel_pad
+    pad = timedelta(seconds=pad_seconds)
+    return vmin - pad, vmax + pad
+
+
+def _apply_time_axis_format(ax, time_unit: str, tick_count: int) -> None:
+    if _is_date_axis(time_unit):
+        tick_target = max(2, int(tick_count))
+        locator = mdates.AutoDateLocator(
+            minticks=max(2, min(4, tick_target)),
+            maxticks=tick_target,
+        )
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+        return
+
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=max(2, int(tick_count))))
+    ax.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
 
 def _time_unit_scale(time_unit: str) -> float:
@@ -488,12 +699,16 @@ def compute_default_v_vs_t_limits(
     time_unit: str = "s",
 ) -> dict[str, str]:
     time_values: list[float] = []
+    datetime_values: list[datetime] = []
     voltage_values: list[float] = []
     temperature_values: list[float] = []
 
-    for _deg_file, parsed in parsed_items:
+    for deg_file, parsed in parsed_items:
         t_vals, v_vals = _required_numeric_series(parsed, "T", "Vf")
-        time_values.extend(t_vals)
+        if _is_date_axis(time_unit):
+            datetime_values.extend(_plot_time_values(parsed, t_vals, time_unit, deg_file.path.name))
+        else:
+            time_values.extend(t_vals)
         voltage_values.extend(v_vals)
         try:
             _temp_time, temp_vals = _required_numeric_series(parsed, "T", "Temp")
@@ -501,21 +716,24 @@ def compute_default_v_vs_t_limits(
         except ValueError:
             pass
 
-    if not time_values or not voltage_values:
+    if (not time_values and not datetime_values) or not voltage_values:
         return {"t_min": "", "t_max": "", "v_min": "", "v_max": "", "temp_min": "", "temp_max": ""}
 
-    time_scale = _time_unit_scale(time_unit)
-    time_decimals = _time_unit_decimals(time_unit)
-    scaled_time_values = [value / time_scale for value in time_values]
-
-    _t_min, t_max = _padded_limits(scaled_time_values, decimals=time_decimals)
-    t_min = 0.0
+    if _is_date_axis(time_unit):
+        _t_min, t_max = _padded_datetime_limits(datetime_values)
+        t_min = min(datetime_values)
+    else:
+        time_scale = _time_unit_scale(time_unit)
+        time_decimals = _time_unit_decimals(time_unit)
+        scaled_time_values = [value / time_scale for value in time_values]
+        _t_min, t_max = _padded_limits(scaled_time_values, decimals=time_decimals)
+        t_min = 0.0
     v_min, v_max = _padded_limits(voltage_values)
     temp_min, temp_max = _padded_limits(temperature_values) if temperature_values else (None, None)
 
     return {
-        "t_min": _format_limit_value(t_min, time_decimals),
-        "t_max": _format_limit_value(t_max, time_decimals),
+        "t_min": _format_time_limit(t_min, time_unit),
+        "t_max": _format_time_limit(t_max, time_unit),
         "v_min": _format_limit_value(v_min),
         "v_max": _format_limit_value(v_max),
         "temp_min": _format_limit_value(temp_min) if temp_min is not None else "",
@@ -529,12 +747,16 @@ def compute_autofit_v_vs_t_limits(
     time_unit: str = "s",
 ) -> dict[str, str]:
     time_values: list[float] = []
+    datetime_values: list[datetime] = []
     voltage_values: list[float] = []
     temperature_values: list[float] = []
 
-    for _deg_file, parsed in parsed_items:
+    for deg_file, parsed in parsed_items:
         t_vals, v_vals = _required_numeric_series(parsed, "T", "Vf")
-        time_values.extend(t_vals)
+        if _is_date_axis(time_unit):
+            datetime_values.extend(_plot_time_values(parsed, t_vals, time_unit, deg_file.path.name))
+        else:
+            time_values.extend(t_vals)
         voltage_values.extend(v_vals)
         if show_temperature:
             try:
@@ -543,20 +765,23 @@ def compute_autofit_v_vs_t_limits(
             except ValueError:
                 pass
 
-    if not time_values or not voltage_values:
+    if (not time_values and not datetime_values) or not voltage_values:
         raise ValueError("No hay datos validos para ajustar los ejes.")
 
-    time_scale = _time_unit_scale(time_unit)
-    time_decimals = _time_unit_decimals(time_unit)
-    scaled_time_values = [value / time_scale for value in time_values]
-
-    _t_min, t_max = _padded_limits(scaled_time_values, decimals=time_decimals)
-    t_min = 0.0
+    if _is_date_axis(time_unit):
+        _t_min, t_max = _padded_datetime_limits(datetime_values)
+        t_min = min(datetime_values)
+    else:
+        time_scale = _time_unit_scale(time_unit)
+        time_decimals = _time_unit_decimals(time_unit)
+        scaled_time_values = [value / time_scale for value in time_values]
+        _t_min, t_max = _padded_limits(scaled_time_values, decimals=time_decimals)
+        t_min = 0.0
     v_min, v_max = _padded_limits(voltage_values)
 
     out = {
-        "t_min": _format_limit_value(t_min, time_decimals),
-        "t_max": _format_limit_value(t_max, time_decimals),
+        "t_min": _format_time_limit(t_min, time_unit),
+        "t_max": _format_time_limit(t_max, time_unit),
         "v_min": _format_limit_value(v_min),
         "v_max": _format_limit_value(v_max),
         "temp_min": "",
@@ -574,12 +799,12 @@ def build_dv_dt_rows(
     time_unit: str = "s",
     smoothing_algorithm: str = "Median filter",
     smoothing_window: int = 1,
-) -> list[dict[str, float]]:
+    source_name: str = "",
+) -> list[dict[str, float | datetime]]:
     time_values, voltage_values = _required_numeric_series(parsed, "T", "Vf")
-    time_scale = _time_unit_scale(time_unit)
     dvdt_scale = _dv_dt_scale(time_unit)
 
-    dvdt_time: list[float] = []
+    elapsed_seconds: list[float] = []
     dvdt_values: list[float] = []
 
     for idx in range(len(time_values) - 1):
@@ -592,13 +817,14 @@ def build_dv_dt_rows(
         if dt <= 0:
             continue
 
-        dvdt_time.append(((t0 + t1) / 2.0) / time_scale)
+        elapsed_seconds.append((t0 + t1) / 2.0)
         dvdt_values.append(((v1 - v0) / dt) * dvdt_scale)
 
     smoothed_dvdt = apply_smoothing(dvdt_values, smoothing_algorithm, smoothing_window)
+    plot_time_values = _plot_time_values(parsed, elapsed_seconds, time_unit, source_name or "archivo")
     dvdt_rows = [
         {"time": time_value, "dVdt": dvdt_value}
-        for time_value, dvdt_value in zip(dvdt_time, smoothed_dvdt)
+        for time_value, dvdt_value in zip(plot_time_values, smoothed_dvdt)
     ]
 
     if not dvdt_rows:
@@ -615,16 +841,17 @@ def compute_default_dv_dt_limits(
     logarithmic_y: bool = True,
     decimals: int = 3,
 ) -> dict[str, str]:
-    time_values: list[float] = []
+    time_values: list[TimeAxisValue] = []
     dvdt_values: list[float] = []
 
-    for _deg_file, parsed in parsed_items:
+    for deg_file, parsed in parsed_items:
         rows = _scale_compatible_dv_dt_rows(
             build_dv_dt_rows(
                 parsed,
                 time_unit=time_unit,
                 smoothing_algorithm=smoothing_algorithm,
                 smoothing_window=smoothing_window,
+                source_name=deg_file.path.name,
             ),
             logarithmic_y=logarithmic_y,
         )
@@ -639,16 +866,21 @@ def compute_default_dv_dt_limits(
             "dvdt_max": "",
         }
 
-    _t_min, t_max = _padded_limits(time_values, decimals=_time_unit_decimals(time_unit))
-    t_min = 0.0
+    if _is_date_axis(time_unit):
+        datetime_time_values = [value for value in time_values if isinstance(value, datetime)]
+        _t_min, t_max = _padded_datetime_limits(datetime_time_values)
+        t_min = min(datetime_time_values)
+    else:
+        _t_min, t_max = _padded_limits([float(value) for value in time_values], decimals=_time_unit_decimals(time_unit))
+        t_min = 0.0
     if logarithmic_y:
         dvdt_min, dvdt_max = _log_axis_limits(dvdt_values)
     else:
         dvdt_min, dvdt_max = _adaptive_linear_limits(dvdt_values)
 
     return {
-        "t_min": _format_limit_value(t_min, _time_unit_decimals(time_unit)),
-        "t_max": _format_limit_value(t_max, _time_unit_decimals(time_unit)),
+        "t_min": _format_time_limit(t_min, time_unit),
+        "t_max": _format_time_limit(t_max, time_unit),
         "dvdt_min": _format_log_limit_value(dvdt_min) if logarithmic_y else _format_adaptive_limit_value(dvdt_min),
         "dvdt_max": _format_log_limit_value(dvdt_max) if logarithmic_y else _format_adaptive_limit_value(dvdt_max),
     }
@@ -660,15 +892,15 @@ def compute_autofit_dv_dt_limits(
     smoothing_algorithm: str = "Median filter",
     smoothing_window: int = 1,
     logarithmic_y: bool = True,
-    locked_t_min: float | None = None,
-    locked_t_max: float | None = None,
+    locked_t_min: TimeAxisValue | None = None,
+    locked_t_max: TimeAxisValue | None = None,
     locked_dvdt_min: float | None = None,
     locked_dvdt_max: float | None = None,
     decimals: int = 3,
 ) -> dict[str, str]:
-    rows: list[dict[str, float]] = []
+    rows: list[dict[str, float | datetime]] = []
 
-    for _deg_file, parsed in parsed_items:
+    for deg_file, parsed in parsed_items:
         rows.extend(
             _scale_compatible_dv_dt_rows(
                 build_dv_dt_rows(
@@ -676,12 +908,13 @@ def compute_autofit_dv_dt_limits(
                     time_unit=time_unit,
                     smoothing_algorithm=smoothing_algorithm,
                     smoothing_window=smoothing_window,
+                    source_name=deg_file.path.name,
                 ),
                 logarithmic_y=logarithmic_y,
             )
         )
 
-    filtered_rows: list[dict[str, float]] = []
+    filtered_rows: list[dict[str, float | datetime]] = []
     for row in rows:
         if locked_t_min is not None and row["time"] < locked_t_min:
             continue
@@ -699,16 +932,21 @@ def compute_autofit_dv_dt_limits(
     time_values = [row["time"] for row in filtered_rows]
     dvdt_values = [row["dVdt"] for row in filtered_rows]
 
-    _t_min, t_max = _padded_limits(time_values, decimals=_time_unit_decimals(time_unit))
-    t_min = 0.0
+    if _is_date_axis(time_unit):
+        datetime_time_values = [value for value in time_values if isinstance(value, datetime)]
+        _t_min, t_max = _padded_datetime_limits(datetime_time_values)
+        t_min = min(datetime_time_values)
+    else:
+        _t_min, t_max = _padded_limits([float(value) for value in time_values], decimals=_time_unit_decimals(time_unit))
+        t_min = 0.0
     if logarithmic_y:
         dvdt_min, dvdt_max = _log_axis_limits(dvdt_values)
     else:
         dvdt_min, dvdt_max = _padded_limits(dvdt_values, decimals=decimals)
 
     return {
-        "t_min": _format_limit_value(t_min, _time_unit_decimals(time_unit)),
-        "t_max": _format_limit_value(t_max, _time_unit_decimals(time_unit)),
+        "t_min": _format_time_limit(t_min, time_unit),
+        "t_max": _format_time_limit(t_max, time_unit),
         "dvdt_min": _format_log_limit_value(dvdt_min) if logarithmic_y else _format_adaptive_limit_value(dvdt_min),
         "dvdt_max": _format_log_limit_value(dvdt_max) if logarithmic_y else _format_adaptive_limit_value(dvdt_max),
     }
@@ -724,8 +962,8 @@ def draw_dv_dt_on_figure(
     logarithmic_y: bool = True,
     x_tick_count: int = 6,
     y_tick_count: int = 6,
-    t_min: float | None = None,
-    t_max: float | None = None,
+    t_min: TimeAxisValue | None = None,
+    t_max: TimeAxisValue | None = None,
     dvdt_min: float | None = None,
     dvdt_max: float | None = None,
     plot_title: str = "",
@@ -763,6 +1001,7 @@ def draw_dv_dt_on_figure(
                 time_unit=time_unit,
                 smoothing_algorithm=smoothing_algorithm,
                 smoothing_window=smoothing_window,
+                source_name=deg_file.path.name,
             ),
             logarithmic_y=logarithmic_y,
         )
@@ -784,17 +1023,19 @@ def draw_dv_dt_on_figure(
     default_title = "dV/dt vs t - Degradacion galvanostatica"
     final_title = plot_title.strip() if plot_title.strip() else default_title
 
-    ax.set_xlabel(f"Tiempo [{time_unit}]", fontsize=label_fontsize)
-    ax.set_ylabel(f"dV/dt [{_dv_dt_unit_label(time_unit)}]", fontsize=label_fontsize)
+    x_label = "Fecha / hora" if _is_date_axis(time_unit) else f"Tiempo [{time_unit}]"
+    dvdt_label_unit = "s" if _is_date_axis(time_unit) else time_unit
+    ax.set_xlabel(x_label, fontsize=label_fontsize)
+    ax.set_ylabel(f"dV/dt [{_dv_dt_unit_label(dvdt_label_unit)}]", fontsize=label_fontsize)
     ax.set_title(final_title, fontsize=title_fontsize)
     ax.grid(True, alpha=0.25)
     ax.tick_params(axis="both", labelsize=tick_fontsize)
-    ax.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
-    ax.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    _apply_time_axis_format(ax, time_unit, x_tick_count)
 
     if t_min is not None or t_max is not None:
         ax.set_xlim(left=t_min, right=t_max)
-        apply_x_edge_ticks(ax, t_min, t_max, x_tick_count)
+        if not _is_date_axis(time_unit):
+            apply_x_edge_ticks(ax, t_min, t_max, x_tick_count)
 
     if logarithmic_y:
         if dvdt_min is not None and dvdt_min <= 0:
@@ -839,8 +1080,8 @@ def draw_v_vs_t_on_figure(
     label_fontsize: float = 11,
     legend_fontsize: float = 10,
     line_width: float = 1.5,
-    t_min: float | None = None,
-    t_max: float | None = None,
+    t_min: TimeAxisValue | None = None,
+    t_max: TimeAxisValue | None = None,
     v_min: float | None = None,
     v_max: float | None = None,
     temp_min: float | None = None,
@@ -858,11 +1099,10 @@ def draw_v_vs_t_on_figure(
 
     ax = fig.add_subplot(111)
     ax_temp = ax.twinx() if has_temperature else None
-    time_scale = _time_unit_scale(time_unit)
 
     for idx, (deg_file, parsed) in enumerate(parsed_items):
         t_vals, v_vals = _required_numeric_series(parsed, "T", "Vf")
-        plot_t_vals = [value / time_scale for value in t_vals]
+        plot_t_vals = _plot_time_values(parsed, t_vals, time_unit, deg_file.path.name)
         stage_color = DEG_STAGE_COLORS[idx % len(DEG_STAGE_COLORS)]
         if has_voltage:
             ax.plot(
@@ -875,7 +1115,7 @@ def draw_v_vs_t_on_figure(
             )
         if has_temperature and ax_temp is not None:
             temp_time, temp_vals = _required_numeric_series(parsed, "T", "Temp")
-            plot_temp_time = [value / time_scale for value in temp_time]
+            plot_temp_time = _plot_time_values(parsed, temp_time, time_unit, deg_file.path.name)
             ax_temp.plot(
                 plot_temp_time,
                 temp_vals,
@@ -888,20 +1128,21 @@ def draw_v_vs_t_on_figure(
     default_title = "V vs t - Degradacion galvanostatica"
     final_title = plot_title.strip() if plot_title.strip() else default_title
 
-    ax.set_xlabel(f"Tiempo [{time_unit}]", fontsize=label_fontsize)
+    x_label = "Fecha / hora" if _is_date_axis(time_unit) else f"Tiempo [{time_unit}]"
+    ax.set_xlabel(x_label, fontsize=label_fontsize)
     if has_voltage:
         ax.set_ylabel("Voltaje [V]", fontsize=label_fontsize)
     ax.set_title(final_title, fontsize=title_fontsize)
     ax.grid(True, alpha=0.25)
     ax.tick_params(axis="both", labelsize=tick_fontsize)
-    ax.xaxis.set_major_locator(MaxNLocator(nbins=max(2, int(x_tick_count))))
+    _apply_time_axis_format(ax, time_unit, x_tick_count)
     ax.yaxis.set_major_locator(MaxNLocator(nbins=max(2, int(y_tick_count))))
-    ax.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
     ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
     if t_min is not None or t_max is not None:
         ax.set_xlim(left=t_min, right=t_max)
-        apply_x_edge_ticks(ax, t_min, t_max, x_tick_count)
+        if not _is_date_axis(time_unit):
+            apply_x_edge_ticks(ax, t_min, t_max, x_tick_count)
     if has_voltage and (v_min is not None or v_max is not None):
         ax.set_ylim(bottom=v_min, top=v_max)
         ax.yaxis.set_major_locator(LinearLocator(max(2, int(y_tick_count))))
@@ -1007,30 +1248,22 @@ def open_v_vs_t_window(input_dir: Path) -> None:
     plot_job = {"id": None}
     current_time_unit = {"value": time_unit_var.get()}
     suspend_events = {"value": False}
+    reference_start_cache: dict[str, datetime | None] = {"value": None}
+
+    def _reference_start() -> datetime:
+        if reference_start_cache["value"] is None:
+            reference_start_cache["value"] = _reference_start_datetime(parsed_items)
+        return reference_start_cache["value"]
 
     def _collect_limits():
         return dict(
-            t_min=_optional_float(t_min_var.get()),
-            t_max=_optional_float(t_max_var.get()),
+            t_min=_parse_time_limit_text(t_min_var.get(), time_unit_var.get()),
+            t_max=_parse_time_limit_text(t_max_var.get(), time_unit_var.get()),
             v_min=_optional_float(v_min_var.get()),
             v_max=_optional_float(v_max_var.get()),
             temp_min=_optional_float(temp_min_var.get()),
             temp_max=_optional_float(temp_max_var.get()),
         )
-
-    def _format_time_limit(value: float | None, time_unit: str) -> str:
-        if value is None:
-            return ""
-        return _format_limit_value(value, _time_unit_decimals(time_unit))
-
-    def _convert_time_limit_text(value_text: str, from_unit: str, to_unit: str) -> str:
-        value = _optional_float(value_text)
-        if value is None or from_unit == to_unit:
-            return value_text
-
-        seconds = value * _time_unit_scale(from_unit)
-        converted = seconds / _time_unit_scale(to_unit)
-        return _format_time_limit(converted, to_unit)
 
     def _plot():
         plot_job["id"] = None
@@ -1105,14 +1338,23 @@ def open_v_vs_t_window(input_dir: Path) -> None:
 
         old_unit = current_time_unit["value"]
         new_unit = time_unit_var.get()
+        old_t_min = t_min_var.get()
+        old_t_max = t_max_var.get()
 
         suspend_events["value"] = True
         try:
             if t_min_var.get().strip():
-                t_min_var.set(_convert_time_limit_text(t_min_var.get(), old_unit, new_unit))
+                t_min_var.set(_convert_time_limit_text(t_min_var.get(), old_unit, new_unit, _reference_start()))
             if t_max_var.get().strip():
-                t_max_var.set(_convert_time_limit_text(t_max_var.get(), old_unit, new_unit))
+                t_max_var.set(_convert_time_limit_text(t_max_var.get(), old_unit, new_unit, _reference_start()))
             current_time_unit["value"] = new_unit
+        except ValueError as exc:
+            t_min_var.set(old_t_min)
+            t_max_var.set(old_t_max)
+            current_time_unit["value"] = old_unit
+            time_unit_var.set(old_unit)
+            status_var.set(f"Error: {exc}")
+            return
         finally:
             suspend_events["value"] = False
 
@@ -1288,7 +1530,7 @@ def open_v_vs_t_window(input_dir: Path) -> None:
 
     for row_idx, (label, var) in enumerate(limit_specs):
         ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
-        entry = ttk.Entry(limits_box, textvariable=var, width=12)
+        entry = ttk.Entry(limits_box, textvariable=var, width=22)
         entry.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
         entry.bind("<Return>", _schedule_plot)
         entry.bind("<KP_Enter>", _schedule_plot)
@@ -1438,6 +1680,12 @@ def open_dv_dt_window(input_dir: Path) -> None:
     current_time_unit = {"value": time_unit_var.get()}
     suspend_events = {"value": False}
     limit_entries: dict[str, ttk.Entry] = {}
+    reference_start_cache: dict[str, datetime | None] = {"value": None}
+
+    def _reference_start() -> datetime:
+        if reference_start_cache["value"] is None:
+            reference_start_cache["value"] = _reference_start_datetime(parsed_items)
+        return reference_start_cache["value"]
 
     def _smoothing_config() -> dict[str, object]:
         return {
@@ -1452,8 +1700,8 @@ def open_dv_dt_window(input_dir: Path) -> None:
 
     def _collect_limits():
         return dict(
-            t_min=_optional_float(t_min_var.get()),
-            t_max=_optional_float(t_max_var.get()),
+            t_min=_parse_time_limit_text(t_min_var.get(), time_unit_var.get()),
+            t_max=_parse_time_limit_text(t_max_var.get(), time_unit_var.get()),
             dvdt_min=_optional_float(dvdt_min_var.get()),
             dvdt_max=_optional_float(dvdt_max_var.get()),
         )
@@ -1468,25 +1716,14 @@ def open_dv_dt_window(input_dir: Path) -> None:
         for key, entry in limit_entries.items():
             entry.state(["disabled"] if states[key] else ["!disabled"])
 
-    def _format_time_limit(value: float | None, time_unit: str) -> str:
-        if value is None:
-            return ""
-        return _format_limit_value(value, _time_unit_decimals(time_unit))
-
-    def _convert_time_limit_text(value_text: str, from_unit: str, to_unit: str) -> str:
-        value = _optional_float(value_text)
-        if value is None or from_unit == to_unit:
-            return value_text
-        seconds = value * _time_unit_scale(from_unit)
-        converted = seconds / _time_unit_scale(to_unit)
-        return _format_time_limit(converted, to_unit)
-
     def _convert_dvdt_limit_text(value_text: str, from_unit: str, to_unit: str) -> str:
         value = _optional_float(value_text)
         if value is None or from_unit == to_unit:
             return value_text
-        base_v_per_s = value / _dv_dt_scale(from_unit)
-        converted = base_v_per_s * _dv_dt_scale(to_unit)
+        from_dvdt_unit = "s" if _is_date_axis(from_unit) else from_unit
+        to_dvdt_unit = "s" if _is_date_axis(to_unit) else to_unit
+        base_v_per_s = value / _dv_dt_scale(from_dvdt_unit)
+        converted = base_v_per_s * _dv_dt_scale(to_dvdt_unit)
         return _format_log_limit_value(converted) if logarithmic_y_var.get() else _format_adaptive_limit_value(converted)
 
     def _plot():
@@ -1538,8 +1775,8 @@ def open_dv_dt_window(input_dir: Path) -> None:
                 time_unit=time_unit_var.get(),
                 **_smoothing_config(),
                 **_axis_mode_config(),
-                locked_t_min=_optional_float(t_min_var.get()) if t_min_lock_var.get() else None,
-                locked_t_max=_optional_float(t_max_var.get()) if t_max_lock_var.get() else None,
+                locked_t_min=_parse_time_limit_text(t_min_var.get(), time_unit_var.get()) if t_min_lock_var.get() else None,
+                locked_t_max=_parse_time_limit_text(t_max_var.get(), time_unit_var.get()) if t_max_lock_var.get() else None,
                 locked_dvdt_min=_optional_float(dvdt_min_var.get()) if dvdt_min_lock_var.get() else None,
                 locked_dvdt_max=_optional_float(dvdt_max_var.get()) if dvdt_max_lock_var.get() else None,
             )
@@ -1569,18 +1806,31 @@ def open_dv_dt_window(input_dir: Path) -> None:
 
         old_unit = current_time_unit["value"]
         new_unit = time_unit_var.get()
+        old_t_min = t_min_var.get()
+        old_t_max = t_max_var.get()
+        old_dvdt_min = dvdt_min_var.get()
+        old_dvdt_max = dvdt_max_var.get()
 
         suspend_events["value"] = True
         try:
             if not t_min_lock_var.get() and t_min_var.get().strip():
-                t_min_var.set(_convert_time_limit_text(t_min_var.get(), old_unit, new_unit))
+                t_min_var.set(_convert_time_limit_text(t_min_var.get(), old_unit, new_unit, _reference_start()))
             if not t_max_lock_var.get() and t_max_var.get().strip():
-                t_max_var.set(_convert_time_limit_text(t_max_var.get(), old_unit, new_unit))
+                t_max_var.set(_convert_time_limit_text(t_max_var.get(), old_unit, new_unit, _reference_start()))
             if not dvdt_min_lock_var.get() and dvdt_min_var.get().strip():
                 dvdt_min_var.set(_convert_dvdt_limit_text(dvdt_min_var.get(), old_unit, new_unit))
             if not dvdt_max_lock_var.get() and dvdt_max_var.get().strip():
                 dvdt_max_var.set(_convert_dvdt_limit_text(dvdt_max_var.get(), old_unit, new_unit))
             current_time_unit["value"] = new_unit
+        except ValueError as exc:
+            t_min_var.set(old_t_min)
+            t_max_var.set(old_t_max)
+            dvdt_min_var.set(old_dvdt_min)
+            dvdt_max_var.set(old_dvdt_max)
+            current_time_unit["value"] = old_unit
+            time_unit_var.set(old_unit)
+            status_var.set(f"Error: {exc}")
+            return
         finally:
             suspend_events["value"] = False
 
@@ -1729,7 +1979,7 @@ def open_dv_dt_window(input_dir: Path) -> None:
 
     for row_idx, (label, key, var, lock_var) in enumerate(limit_specs):
         ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
-        entry = ttk.Entry(limits_box, textvariable=var, width=12)
+        entry = ttk.Entry(limits_box, textvariable=var, width=22)
         entry.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
         entry.bind("<Return>", _schedule_plot)
         entry.bind("<KP_Enter>", _schedule_plot)
