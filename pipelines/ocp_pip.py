@@ -17,6 +17,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
+from plot_defaults import PlotFontDefaults, resolve_plot_font_defaults
+
 
 META_FIELDS = [
     ("TITLE", "Técnica"),
@@ -775,10 +777,16 @@ def draw_v_vs_t_on_figure(
     return True
 
 
-def _build_v_vs_t_tab(parent: tk.Widget, source_path: Path) -> None:
+def _build_v_vs_t_tab(
+    parent: tk.Widget,
+    source_path: Path,
+    font_defaults: PlotFontDefaults | None = None,
+) -> None:
     root = parent.winfo_toplevel()
     parsed = parse_gamry_dta(source_path)
     default_limits = compute_default_v_vs_t_limits(parsed)
+    font_defaults = resolve_plot_font_defaults(font_defaults)
+    font_default_values = font_defaults.as_strings()
 
 
     controls_frame = _build_scrollable_controls(parent)
@@ -808,10 +816,10 @@ def _build_v_vs_t_tab(parent: tk.Widget, source_path: Path) -> None:
     temperature_line_var = tk.StringVar(value="--")
     tick_count_var = tk.IntVar(value=6)
     plot_title_var = tk.StringVar(value="")
-    title_fontsize_var = tk.StringVar(value="14")
-    tick_fontsize_var = tk.StringVar(value="10")
-    label_fontsize_var = tk.StringVar(value="11")
-    legend_fontsize_var = tk.StringVar(value="10")
+    title_fontsize_var = tk.StringVar(value=font_default_values["title"])
+    tick_fontsize_var = tk.StringVar(value=font_default_values["tick"])
+    label_fontsize_var = tk.StringVar(value=font_default_values["label"])
+    legend_fontsize_var = tk.StringVar(value=font_default_values["legend"])
     line_width_var = tk.StringVar(value="1.5")
     t_min_var = tk.StringVar(value=default_limits["t_min"])
     t_max_var = tk.StringVar(value=default_limits["t_max"])
@@ -826,10 +834,10 @@ def _build_v_vs_t_tab(parent: tk.Widget, source_path: Path) -> None:
         "temperature_line": "--",
         "tick_count": 6,
         "plot_title": "",
-        "title_fontsize": "14",
-        "tick_fontsize": "10",
-        "label_fontsize": "11",
-        "legend_fontsize": "10",
+        "title_fontsize": font_default_values["title"],
+        "tick_fontsize": font_default_values["tick"],
+        "label_fontsize": font_default_values["label"],
+        "legend_fontsize": font_default_values["legend"],
         "line_width": "1.5",
         "t_min": default_limits["t_min"],
         "t_max": default_limits["t_max"],
@@ -1107,7 +1115,7 @@ def _build_v_vs_t_tab(parent: tk.Widget, source_path: Path) -> None:
     _plot()
 
 
-def open_delta_v_window(input_dir: Path) -> None:
+def open_delta_v_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
     ocp_files = find_ocp_files(Path(input_dir))
     if not ocp_files:
         raise ValueError("No se encontraron archivos OCP válidos.")
@@ -1122,10 +1130,10 @@ def open_delta_v_window(input_dir: Path) -> None:
     for source_path in ocp_files:
         tab_frame = ttk.Frame(notebook)
         notebook.add(tab_frame, text=source_path.stem)
-        _build_delta_v_tab(tab_frame, source_path)
+        _build_delta_v_tab(tab_frame, source_path, font_defaults=font_defaults)
 
 
-def open_v_vs_t_window(input_dir: Path) -> None:
+def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
     ocp_files = find_ocp_files(Path(input_dir))
     if not ocp_files:
         raise ValueError("No se encontraron archivos OCP válidos.")
@@ -1141,7 +1149,7 @@ def open_v_vs_t_window(input_dir: Path) -> None:
     for source_path in ocp_files:
         tab_frame = ttk.Frame(notebook)
         notebook.add(tab_frame, text=source_path.stem)
-        _build_v_vs_t_tab(tab_frame, source_path)
+        _build_v_vs_t_tab(tab_frame, source_path, font_defaults=font_defaults)
 
 
 def draw_delta_v_on_figure(
@@ -1295,12 +1303,18 @@ def draw_delta_v_on_figure(
     return True
 
 
-def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
+def _build_delta_v_tab(
+    parent: tk.Widget,
+    source_path: Path,
+    font_defaults: PlotFontDefaults | None = None,
+) -> None:
     root = parent.winfo_toplevel()
     parsed = parse_gamry_dta(source_path)
     delta_data = build_delta_v_data(parsed)
     default_unit, default_scale = _resolve_dvdt_unit(delta_data["dvdt_values"], "Auto")
     default_limits = compute_default_delta_v_limits(parsed, dvdt_scale=default_scale)
+    font_defaults = resolve_plot_font_defaults(font_defaults)
+    font_default_values = font_defaults.as_strings()
 
 
     controls_frame = _build_scrollable_controls(parent)
@@ -1338,10 +1352,10 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
     delta_v_unit_var = tk.StringVar(value="Auto")
     tick_count_var = tk.IntVar(value=6)
     plot_title_var = tk.StringVar(value="")
-    title_fontsize_var = tk.StringVar(value="14")
-    tick_fontsize_var = tk.StringVar(value="10")
-    label_fontsize_var = tk.StringVar(value="11")
-    legend_fontsize_var = tk.StringVar(value="10")
+    title_fontsize_var = tk.StringVar(value=font_default_values["title"])
+    tick_fontsize_var = tk.StringVar(value=font_default_values["tick"])
+    label_fontsize_var = tk.StringVar(value=font_default_values["label"])
+    legend_fontsize_var = tk.StringVar(value=font_default_values["legend"])
     line_width_var = tk.StringVar(value="1.5")
     t_min_var = tk.StringVar(value=default_limits["t_min"])
     t_max_var = tk.StringVar(value=default_limits["t_max"])
@@ -1361,10 +1375,10 @@ def _build_delta_v_tab(parent: tk.Widget, source_path: Path) -> None:
         "delta_v_unit": "Auto",
         "tick_count": 6,
         "plot_title": "",
-        "title_fontsize": "14",
-        "tick_fontsize": "10",
-        "label_fontsize": "11",
-        "legend_fontsize": "10",
+        "title_fontsize": font_default_values["title"],
+        "tick_fontsize": font_default_values["tick"],
+        "label_fontsize": font_default_values["label"],
+        "legend_fontsize": font_default_values["legend"],
         "line_width": "1.5",
         "t_min": default_limits["t_min"],
         "t_max": default_limits["t_max"],
@@ -1783,6 +1797,7 @@ def run_pipeline(
     input_dir: Path,
     output_dir: Path,
     selected_options: list[str] | None = None,
+    font_defaults: PlotFontDefaults | None = None,
 ) -> list[Path]:
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -1794,10 +1809,10 @@ def run_pipeline(
     chosen = set(selected_options or [])
 
     if "V vs t" in chosen:
-        open_v_vs_t_window(input_dir)
+        open_v_vs_t_window(input_dir, font_defaults=font_defaults)
 
     if "DeltaV" in chosen:
-        open_delta_v_window(input_dir)
+        open_delta_v_window(input_dir, font_defaults=font_defaults)
 
     return exported_files
 

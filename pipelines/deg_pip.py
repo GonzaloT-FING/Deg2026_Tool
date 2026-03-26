@@ -19,6 +19,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
+from plot_defaults import PlotFontDefaults, resolve_plot_font_defaults
+
 
 META_FIELDS = [
     ("TITLE", "Tecnica"),
@@ -1171,11 +1173,13 @@ def draw_v_vs_t_on_figure(
     return True
 
 
-def open_v_vs_t_window(input_dir: Path) -> None:
+def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
     deg_files = find_deg_files(Path(input_dir))
     if not deg_files:
         raise ValueError("No se encontraron archivos de degradacion validos.")
 
+    font_defaults = resolve_plot_font_defaults(font_defaults)
+    font_default_values = font_defaults.as_strings()
     parsed_items = [(deg_file, parse_gamry_dta(deg_file.path)) for deg_file in deg_files]
     default_limits = compute_default_v_vs_t_limits(parsed_items, time_unit="s")
 
@@ -1212,10 +1216,10 @@ def open_v_vs_t_window(input_dir: Path) -> None:
     x_tick_count_var = tk.IntVar(value=6)
     y_tick_count_var = tk.IntVar(value=6)
     plot_title_var = tk.StringVar(value="")
-    title_fontsize_var = tk.StringVar(value="14")
-    tick_fontsize_var = tk.StringVar(value="10")
-    label_fontsize_var = tk.StringVar(value="11")
-    legend_fontsize_var = tk.StringVar(value="10")
+    title_fontsize_var = tk.StringVar(value=font_default_values["title"])
+    tick_fontsize_var = tk.StringVar(value=font_default_values["tick"])
+    label_fontsize_var = tk.StringVar(value=font_default_values["label"])
+    legend_fontsize_var = tk.StringVar(value=font_default_values["legend"])
     line_width_var = tk.StringVar(value="1.5")
     t_min_var = tk.StringVar(value=default_limits["t_min"])
     t_max_var = tk.StringVar(value=default_limits["t_max"])
@@ -1232,10 +1236,10 @@ def open_v_vs_t_window(input_dir: Path) -> None:
         "x_tick_count": 6,
         "y_tick_count": 6,
         "plot_title": "",
-        "title_fontsize": "14",
-        "tick_fontsize": "10",
-        "label_fontsize": "11",
-        "legend_fontsize": "10",
+        "title_fontsize": font_default_values["title"],
+        "tick_fontsize": font_default_values["tick"],
+        "label_fontsize": font_default_values["label"],
+        "legend_fontsize": font_default_values["legend"],
         "line_width": "1.5",
         "t_min": default_limits["t_min"],
         "t_max": default_limits["t_max"],
@@ -1590,11 +1594,13 @@ def open_v_vs_t_window(input_dir: Path) -> None:
     _plot()
 
 
-def open_dv_dt_window(input_dir: Path) -> None:
+def open_dv_dt_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
     deg_files = find_deg_files(Path(input_dir))
     if not deg_files:
         raise ValueError("No se encontraron archivos de degradacion validos.")
 
+    font_defaults = resolve_plot_font_defaults(font_defaults)
+    font_default_values = font_defaults.as_strings()
     parsed_items = [(deg_file, parse_gamry_dta(deg_file.path)) for deg_file in deg_files]
     default_limits = compute_default_dv_dt_limits(
         parsed_items,
@@ -1638,10 +1644,10 @@ def open_dv_dt_window(input_dir: Path) -> None:
     x_tick_count_var = tk.IntVar(value=6)
     y_tick_count_var = tk.IntVar(value=6)
     plot_title_var = tk.StringVar(value="")
-    title_fontsize_var = tk.StringVar(value="14")
-    tick_fontsize_var = tk.StringVar(value="10")
-    label_fontsize_var = tk.StringVar(value="11")
-    legend_fontsize_var = tk.StringVar(value="10")
+    title_fontsize_var = tk.StringVar(value=font_default_values["title"])
+    tick_fontsize_var = tk.StringVar(value=font_default_values["tick"])
+    label_fontsize_var = tk.StringVar(value=font_default_values["label"])
+    legend_fontsize_var = tk.StringVar(value=font_default_values["legend"])
     line_width_var = tk.StringVar(value="1.5")
     t_min_var = tk.StringVar(value=default_limits["t_min"])
     t_max_var = tk.StringVar(value=default_limits["t_max"])
@@ -1661,10 +1667,10 @@ def open_dv_dt_window(input_dir: Path) -> None:
         "x_tick_count": 6,
         "y_tick_count": 6,
         "plot_title": "",
-        "title_fontsize": "14",
-        "tick_fontsize": "10",
-        "label_fontsize": "11",
-        "legend_fontsize": "10",
+        "title_fontsize": font_default_values["title"],
+        "tick_fontsize": font_default_values["tick"],
+        "label_fontsize": font_default_values["label"],
+        "legend_fontsize": font_default_values["legend"],
         "line_width": "1.5",
         "t_min": default_limits["t_min"],
         "t_max": default_limits["t_max"],
@@ -2145,6 +2151,7 @@ def run_pipeline(
     input_dir: Path,
     output_dir: Path,
     selected_options: list[str] | None = None,
+    font_defaults: PlotFontDefaults | None = None,
 ) -> list[Path]:
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -2156,9 +2163,9 @@ def run_pipeline(
     chosen = set(selected_options or [])
 
     if "V vs t" in chosen:
-        open_v_vs_t_window(input_dir)
+        open_v_vs_t_window(input_dir, font_defaults=font_defaults)
 
     if "dV/dt" in chosen:
-        open_dv_dt_window(input_dir)
+        open_dv_dt_window(input_dir, font_defaults=font_defaults)
 
     return exported_files

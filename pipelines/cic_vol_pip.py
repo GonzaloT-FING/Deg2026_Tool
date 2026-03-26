@@ -18,6 +18,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
+from plot_defaults import PlotFontDefaults, resolve_plot_font_defaults
+
 from pipelines.activ_pip import (
     ACTIV_CYCLE_GRADIENTS,
     ACTIV_PLOT_COLORS,
@@ -809,11 +811,13 @@ def draw_i_vs_v_on_figure(
     return True
 
 
-def open_i_vs_v_window(input_dir: Path) -> None:
+def open_i_vs_v_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
     datasets = discover_cv_datasets(Path(input_dir))
     if not datasets:
         raise ValueError("No se encontraron archivos de voltametria ciclica validos.")
 
+    font_defaults = resolve_plot_font_defaults(font_defaults)
+    font_default_values = font_defaults.as_strings()
     dataset = datasets[0]
     default_limits = compute_default_i_vs_v_limits(dataset)
     cycle_ids = [cycle_number for cycle_number in range(1, len(dataset.cycle_rows) + 1)]
@@ -864,10 +868,10 @@ def open_i_vs_v_window(input_dir: Path) -> None:
     y_tick_count_var = tk.IntVar(value=6)
 
     plot_title_var = tk.StringVar(value="")
-    title_fontsize_var = tk.StringVar(value="14")
-    tick_fontsize_var = tk.StringVar(value="10")
-    label_fontsize_var = tk.StringVar(value="11")
-    legend_fontsize_var = tk.StringVar(value="10")
+    title_fontsize_var = tk.StringVar(value=font_default_values["title"])
+    tick_fontsize_var = tk.StringVar(value=font_default_values["tick"])
+    label_fontsize_var = tk.StringVar(value=font_default_values["label"])
+    legend_fontsize_var = tk.StringVar(value=font_default_values["legend"])
     legend_scale_var = tk.StringVar(value="1.0")
     line_width_var = tk.StringVar(value="1.5")
 
@@ -890,10 +894,10 @@ def open_i_vs_v_window(input_dir: Path) -> None:
         "x_tick_count": 6,
         "y_tick_count": 6,
         "plot_title": "",
-        "title_fontsize": "14",
-        "tick_fontsize": "10",
-        "label_fontsize": "11",
-        "legend_fontsize": "10",
+        "title_fontsize": font_default_values["title"],
+        "tick_fontsize": font_default_values["tick"],
+        "label_fontsize": font_default_values["label"],
+        "legend_fontsize": font_default_values["legend"],
         "legend_scale": "1.0",
         "line_width": "1.5",
         "visible_cycles": {cycle: True for cycle in cycle_ids},
@@ -1227,6 +1231,7 @@ def run_pipeline(
     input_dir: Path,
     output_dir: Path,
     selected_options: list[str] | None = None,
+    font_defaults: PlotFontDefaults | None = None,
 ) -> list[Path]:
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -1238,7 +1243,7 @@ def run_pipeline(
     chosen = set(selected_options or [])
 
     if "I vs V" in chosen:
-        open_i_vs_v_window(input_dir)
+        open_i_vs_v_window(input_dir, font_defaults=font_defaults)
 
     _show_cv_stub(chosen - {"I vs V"})
     return exported_files

@@ -36,6 +36,8 @@ import tkinter as tk
 from tkinter import ttk, colorchooser
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
+from plot_defaults import PlotFontDefaults, apply_plot_font_defaults, resolve_plot_font_defaults
+
 
 # ---------------------------------------------------------------------------
 # Labels to export (Spanish-friendly names)
@@ -440,7 +442,7 @@ def _new_figure() -> Figure:
     # You can tweak size if you want bigger/smaller default tabs
     return Figure(figsize=(6.8, 4.8), dpi=100)
 
-def fig_nyquist(parsed: ParsedDTA) -> Figure | None:
+def fig_nyquist(parsed: ParsedDTA, font_defaults: PlotFontDefaults | None = None) -> Figure | None:
     x, y, f = _triplet_series(parsed, "Zreal", "Zimag", "Freq")
     if not x or not y or not f:
         return None
@@ -463,10 +465,11 @@ def fig_nyquist(parsed: ParsedDTA) -> Figure | None:
     ax.set_ylabel(f"-Zimag ({y_unit})" if y_unit else "-Zimag")
     ax.grid(True)
 
+    apply_plot_font_defaults(fig, font_defaults)
     fig.tight_layout()
     return fig
 
-def fig_bode(parsed: ParsedDTA) -> Figure | None:
+def fig_bode(parsed: ParsedDTA, font_defaults: PlotFontDefaults | None = None) -> Figure | None:
     freq_unit = _column_unit(parsed, "Freq")
     zmod_unit = _column_unit(parsed, "Zmod")
     zphz_unit = _column_unit(parsed, "Zphz")
@@ -520,6 +523,7 @@ def fig_bode(parsed: ParsedDTA) -> Figure | None:
     fig._bode_plot = True
     fig._bode_lines = bode_lines
     fig._bode_axes = bode_axes
+    apply_plot_font_defaults(fig, font_defaults)
     fig.tight_layout()
     return fig
 
@@ -591,7 +595,7 @@ def _update_right_axis_spacing(fig, canvas, axes, pad_px: float = 12.0, min_outw
         extra = overflow / fig_px
         fig.subplots_adjust(right=max(0.50, fig._default_right_margin - extra))
 
-def fig_series_vs_pt(parsed: ParsedDTA) -> Figure | None:
+def fig_series_vs_pt(parsed: ParsedDTA, font_defaults: PlotFontDefaults | None = None) -> Figure | None:
     fig = _new_figure()
     axI = fig.add_subplot(111)
 
@@ -685,10 +689,16 @@ def fig_series_vs_pt(parsed: ParsedDTA) -> Figure | None:
     fig._pt_ylabels = ylabels
     fig._pt_base_key = base_key  # which axis drives the grid/tick alignment
 
+    apply_plot_font_defaults(fig, font_defaults)
     fig.tight_layout()
     return fig
 
-def build_figures(parsed: ParsedDTA, base_name: str, selected_options: Iterable[str] | None) -> list[tuple[str, Figure]]:
+def build_figures(
+    parsed: ParsedDTA,
+    base_name: str,
+    selected_options: Iterable[str] | None,
+    font_defaults: PlotFontDefaults | None = None,
+) -> list[tuple[str, Figure]]:
     """Create only the figures requested by the GUI."""
     if not selected_options:
         return []
@@ -697,30 +707,38 @@ def build_figures(parsed: ParsedDTA, base_name: str, selected_options: Iterable[
     figs: list[tuple[str, Figure]] = []
 
     if "Nyquist plot" in chosen:
-        f = fig_nyquist(parsed)
+        f = fig_nyquist(parsed, font_defaults=font_defaults)
         if f is not None:
             figs.append((f"{base_name} — Nyquist", f))
 
     if "Bode plot" in chosen:
-        f = fig_bode(parsed)
+        f = fig_bode(parsed, font_defaults=font_defaults)
         if f is not None:
             figs.append((f"{base_name} — Bode", f))
 
     if "Series by Pt" in chosen:
-        f = fig_series_vs_pt(parsed)
+        f = fig_series_vs_pt(parsed, font_defaults=font_defaults)
         if f is not None:
             figs.append((f"{base_name} — Series vs Pt", f))
 
     # "Equivalent circuit fit" is listed in GUI but not implemented here yet.
     return figs
 
-def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS plots") -> None:
+def show_figures_tk(
+    figures: list[tuple[str, Figure]],
+    window_title: str = "EIS plots",
+    font_defaults: PlotFontDefaults | None = None,
+) -> None:
+    font_defaults = resolve_plot_font_defaults(font_defaults)
 
     tab_id_by_title: dict[str, str] = {}
     title_by_tab_id: dict[str, str] = {}
 
     if not figures:
         return
+
+    for _tab_title, fig in figures:
+        apply_plot_font_defaults(fig, font_defaults)
 
     root = tk._default_root
     created_root = False
@@ -998,7 +1016,10 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                         handles.append(ln)
                         labels.append(ln.get_label())
 
-                legend_fs = float(base_ax.xaxis.label.get_fontsize())  # ties to your label size control
+                try:
+                    legend_fs = float(legend_fs_var.get())
+                except Exception:
+                    legend_fs = float(font_defaults.legend)
 
                 leg = base_ax.get_legend()
                 if leg is not None:
@@ -1650,7 +1671,11 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             if leg is not None:
                 leg.remove()
             if handles:
-                ax.legend(handles, labels, loc="best", fontsize=float(label_fs_var.get()))
+                try:
+                    legend_fs = float(legend_fs_var.get())
+                except Exception:
+                    legend_fs = float(font_defaults.legend)
+                ax.legend(handles, labels, loc="best", fontsize=legend_fs)
 
             for key in visible_keys:
                 bode_axes[key].yaxis.set_major_locator(LinearLocator(max(2, int(tick_count_var.get()))))
@@ -1707,10 +1732,15 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             init_title_fs = float(ax.title.get_fontsize() or 14.0)
         except Exception:
             init_title_fs = 14.0
+        try:
+            init_legend_fs = float(ax.get_legend().get_texts()[0].get_fontsize()) if ax.get_legend() else float(font_defaults.legend)
+        except Exception:
+            init_legend_fs = float(font_defaults.legend)
 
         tick_fs_var = tk.DoubleVar(value=init_tick_fs)
         label_fs_var = tk.DoubleVar(value=init_label_fs)
         title_fs_var = tk.DoubleVar(value=init_title_fs)
+        legend_fs_var = tk.DoubleVar(value=init_legend_fs)
 
         def apply_fonts():
 
@@ -1723,6 +1753,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 tfs = float(tick_fs_var.get())
                 lfs = float(label_fs_var.get())
                 hfs = float(title_fs_var.get())
+                gfs = float(legend_fs_var.get())
             except Exception:
                 return
 
@@ -1734,8 +1765,12 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 leg = ax_.get_legend()
                 if leg is not None:
                     for t in leg.get_texts():
-                        t.set_fontsize(float(label_fs_var.get()))
-                
+                        t.set_fontsize(gfs)
+
+            if is_pt_series:
+                _update_legend()
+            if is_bode_plot:
+                _apply_bode_visibility()
 
             # Layout may need refresh when fonts change
             try:
@@ -1749,6 +1784,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             tick_fs_var.set(init_tick_fs)
             label_fs_var.set(init_label_fs)
             title_fs_var.set(init_title_fs)
+            legend_fs_var.set(init_legend_fs)
             title_text_var.set(init_title_text)
             apply_fonts()
             apply_title_text()
@@ -1917,18 +1953,23 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                                 textvariable=label_fs_var, width=10)
         label_spin.grid(row=1, column=1, sticky="w", pady=2)
 
-        ttk.Label(fonts_box, text="Title").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(fonts_box, text="Legend").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
+        legend_spin = ttk.Spinbox(fonts_box, from_=6.0, to=40.0, increment=0.5,
+                                textvariable=legend_fs_var, width=10)
+        legend_spin.grid(row=2, column=1, sticky="w", pady=2)
+
+        ttk.Label(fonts_box, text="Title").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
         title_spin = ttk.Spinbox(fonts_box, from_=6.0, to=50.0, increment=0.5,
                                 textvariable=title_fs_var, width=10)
-        title_spin.grid(row=2, column=1, sticky="w", pady=2)
+        title_spin.grid(row=3, column=1, sticky="w", pady=2)
 
-        ttk.Label(fonts_box, text="Text").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(fonts_box, text="Text").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
         title_entry = ttk.Entry(fonts_box, textvariable=title_text_var, width=18)
-        title_entry.grid(row=3, column=1, sticky="w", pady=2)
-        title_entry.grid(row=3, column=1, sticky="ew", pady=2)
+        title_entry.grid(row=4, column=1, sticky="w", pady=2)
+        title_entry.grid(row=4, column=1, sticky="ew", pady=2)
 
         btns_fonts = ttk.Frame(fonts_box)
-        btns_fonts.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        btns_fonts.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Button(btns_fonts, text="Reset", command=reset_fonts).pack(side="left", expand=True, fill="x")
 
         ttk.Label(style_box, text="Color").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
@@ -1957,10 +1998,12 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         # Apply on arrow clicks + typing
         tick_spin.configure(command=apply_fonts)
         label_spin.configure(command=apply_fonts)
+        legend_spin.configure(command=apply_fonts)
         title_spin.configure(command=apply_fonts)
 
         tick_spin.bind("<KeyRelease>", lambda e: apply_fonts())
         label_spin.bind("<KeyRelease>", lambda e: apply_fonts())
+        legend_spin.bind("<KeyRelease>", lambda e: apply_fonts())
         title_spin.bind("<KeyRelease>", lambda e: apply_fonts())
 
         # Comboboxes apply instantly on selection
@@ -2375,21 +2418,12 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
         legend_var = tk.BooleanVar(value=True)
         title_text_var = tk.StringVar(value=axc.get_title() or "Composite - Nyquist")
-        try:
-            init_title_fs = float(axc.title.get_fontsize() or 14.0)
-        except Exception:
-            init_title_fs = 14.0
-        try:
-            init_label_fs = float(axc.xaxis.label.get_fontsize() or 12.0)
-        except Exception:
-            init_label_fs = 12.0
-        try:
-            init_tick_fs = float(axc.get_xticklabels()[0].get_fontsize()) if axc.get_xticklabels() else 10.0
-        except Exception:
-            init_tick_fs = 10.0
+        init_title_fs = float(font_defaults.title)
+        init_label_fs = float(font_defaults.label)
+        init_tick_fs = float(font_defaults.tick)
         title_fs_var = tk.DoubleVar(value=init_title_fs)
         label_fs_var = tk.DoubleVar(value=init_label_fs)
-        legend_fs_var = tk.DoubleVar(value=9.0)
+        legend_fs_var = tk.DoubleVar(value=float(font_defaults.legend))
         tick_fs_var = tk.DoubleVar(value=init_tick_fs)
         x_tick_count_var = tk.IntVar(value=6)
         y_tick_count_var = tk.IntVar(value=6)
@@ -2417,7 +2451,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             try:
                 legend_fs = float(legend_fs_var.get())
             except (tk.TclError, ValueError):
-                legend_fs = 9.0
+                legend_fs = float(font_defaults.legend)
             axc.legend(h2, l2, loc="best", fontsize=legend_fs)
             if redraw:
                 canvas.draw_idle()
@@ -2833,21 +2867,12 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         show_mod_var = tk.BooleanVar(value=True)
         show_phz_var = tk.BooleanVar(value=True)
         title_text_var = tk.StringVar(value=axc_mod.get_title() or default_title)
-        try:
-            init_title_fs = float(axc_mod.title.get_fontsize() or 14.0)
-        except Exception:
-            init_title_fs = 14.0
-        try:
-            init_label_fs = float(axc_mod.xaxis.label.get_fontsize() or 12.0)
-        except Exception:
-            init_label_fs = 12.0
-        try:
-            init_tick_fs = float(axc_mod.get_xticklabels()[0].get_fontsize()) if axc_mod.get_xticklabels() else 10.0
-        except Exception:
-            init_tick_fs = 10.0
+        init_title_fs = float(font_defaults.title)
+        init_label_fs = float(font_defaults.label)
+        init_tick_fs = float(font_defaults.tick)
         title_fs_var = tk.DoubleVar(value=init_title_fs)
         label_fs_var = tk.DoubleVar(value=init_label_fs)
-        legend_fs_var = tk.DoubleVar(value=9.0)
+        legend_fs_var = tk.DoubleVar(value=float(font_defaults.legend))
         tick_fs_var = tk.DoubleVar(value=init_tick_fs)
         x_tick_count_var = tk.IntVar(value=6)
         y_tick_count_var = tk.IntVar(value=6)
@@ -2895,7 +2920,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 try:
                     legend_fs = float(legend_fs_var.get())
                 except (tk.TclError, ValueError):
-                    legend_fs = 9.0
+                    legend_fs = float(font_defaults.legend)
                 axc_mod.legend(handles, labels, loc="best", fontsize=legend_fs)
             if redraw:
                 canvas.draw_idle()
@@ -3265,6 +3290,7 @@ def run_pipeline(
     input_dir: Path,
     output_dir: Path,
     selected_options: Iterable[str] | None = None,
+    font_defaults: PlotFontDefaults | None = None,
 ) -> list[Path]:
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -3299,10 +3325,10 @@ def run_pipeline(
         option_figs: list[tuple[str, Figure]] = []
         for dta_file in find_eis_files(input_dir):
             parsed = parse_gamry_dta(dta_file)
-            option_figs.extend(build_figures(parsed, dta_file.stem, [option]))
+            option_figs.extend(build_figures(parsed, dta_file.stem, [option], font_defaults=font_defaults))
 
         if option_figs:
-            show_figures_tk(option_figs, window_title=f"EIS - {option}")
+            show_figures_tk(option_figs, window_title=f"EIS - {option}", font_defaults=font_defaults)
 
     return exported_xlsx
 

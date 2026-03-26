@@ -17,6 +17,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
+from plot_defaults import PlotFontDefaults, resolve_plot_font_defaults
+
 
 META_ROWS_ORDER = [
     "Tecnica",
@@ -48,6 +50,7 @@ LINESTYLE_OPTIONS = ["none", "-", "--", ":", "-."]
 TIME_UNIT_OPTIONS = ["s", "min", "h"]
 SECONDS_PER_MINUTE = 60.0
 SECONDS_PER_HOUR = 3600.0
+ACTIV_CYCLE_SELECTOR_HEIGHT = 176
 
 ACTIV_PLOT_COLORS = {
     "voltage": "#1f5f99",
@@ -1001,6 +1004,47 @@ def _build_scrollable_controls(parent) -> ttk.Frame:
     return inner
 
 
+def _build_scrollable_cycle_selector(parent, *, height: int = ACTIV_CYCLE_SELECTOR_HEIGHT):
+    outer = ttk.Frame(parent)
+    outer.pack(fill="x", expand=True, padx=8, pady=6)
+
+    canvas = tk.Canvas(outer, height=height, highlightthickness=0, borderwidth=0)
+    scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+    inner = ttk.Frame(canvas)
+    canvas.configure(yscrollcommand=scrollbar.set)
+    window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+    def _update_scrollregion(_event=None):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def _sync_width(event):
+        canvas.itemconfigure(window_id, width=event.width)
+
+    def _on_mousewheel(event):
+        if event.delta:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        else:
+            step = -1 if event.num == 4 else 1
+            canvas.yview_scroll(step, "units")
+        return "break"
+
+    def _bind_mousewheel(widget):
+        widget.bind("<MouseWheel>", _on_mousewheel, add="+")
+        widget.bind("<Button-4>", _on_mousewheel, add="+")
+        widget.bind("<Button-5>", _on_mousewheel, add="+")
+
+    inner.bind("<Configure>", _update_scrollregion)
+    canvas.bind("<Configure>", _sync_width)
+
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+
+    _bind_mousewheel(canvas)
+    _bind_mousewheel(inner)
+
+    return inner, _bind_mousewheel
+
+
 def _axis_right_footprint_px(fig: Figure, ax) -> float:
     renderer = fig.canvas.get_renderer()
     axis_bbox = ax.yaxis.get_tightbbox(renderer)
@@ -1471,11 +1515,13 @@ def export_activation_bundle(bundle: ActivationBundle, out_path: Path) -> None:
     wb.save(out_path)
 
 
-def open_v_vs_t_window(input_dir: Path) -> None:
+def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
     bundles = discover_activation_bundles(Path(input_dir))
     if not bundles:
         raise ValueError("No se encontraron archivos de activacion validos.")
 
+    font_defaults = resolve_plot_font_defaults(font_defaults)
+    font_default_values = font_defaults.as_strings()
     bundle = bundles[0]
     default_limits = compute_default_v_vs_t_limits(bundle, time_unit="s")
     ramps = build_activation_ramps(bundle)
@@ -1533,10 +1579,10 @@ def open_v_vs_t_window(input_dir: Path) -> None:
     y_tick_count_var = tk.IntVar(value=6)
 
     plot_title_var = tk.StringVar(value="")
-    title_fontsize_var = tk.StringVar(value="14")
-    tick_fontsize_var = tk.StringVar(value="10")
-    label_fontsize_var = tk.StringVar(value="11")
-    legend_fontsize_var = tk.StringVar(value="10")
+    title_fontsize_var = tk.StringVar(value=font_default_values["title"])
+    tick_fontsize_var = tk.StringVar(value=font_default_values["tick"])
+    label_fontsize_var = tk.StringVar(value=font_default_values["label"])
+    legend_fontsize_var = tk.StringVar(value=font_default_values["legend"])
     legend_scale_var = tk.StringVar(value="1.0")
     line_width_var = tk.StringVar(value="1.5")
 
@@ -1565,10 +1611,10 @@ def open_v_vs_t_window(input_dir: Path) -> None:
         "x_tick_count": 6,
         "y_tick_count": 6,
         "plot_title": "",
-        "title_fontsize": "14",
-        "tick_fontsize": "10",
-        "label_fontsize": "11",
-        "legend_fontsize": "10",
+        "title_fontsize": font_default_values["title"],
+        "tick_fontsize": font_default_values["tick"],
+        "label_fontsize": font_default_values["label"],
+        "legend_fontsize": font_default_values["legend"],
         "legend_scale": "1.0",
         "line_width": "1.5",
         "visible_cycles": {cycle: True for cycle in cycle_ids},
@@ -1780,30 +1826,17 @@ def open_v_vs_t_window(input_dir: Path) -> None:
     limits_box = ttk.LabelFrame(controls_frame, text="Limites de ejes")
     limits_box.pack(fill="x", pady=5)
 
-    cycles_canvas = tk.Canvas(cycles_box, height=120, highlightthickness=0)
-    cycles_scrollbar = ttk.Scrollbar(cycles_box, orient="vertical", command=cycles_canvas.yview)
-    cycles_inner = ttk.Frame(cycles_canvas)
-    cycles_canvas.configure(yscrollcommand=cycles_scrollbar.set)
-    cycles_window = cycles_canvas.create_window((0, 0), window=cycles_inner, anchor="nw")
-
-    def _update_cycles_scroll(_event=None):
-        cycles_canvas.configure(scrollregion=cycles_canvas.bbox("all"))
-
-    def _sync_cycles_width(event):
-        cycles_canvas.itemconfigure(cycles_window, width=event.width)
-
-    cycles_inner.bind("<Configure>", _update_cycles_scroll)
-    cycles_canvas.bind("<Configure>", _sync_cycles_width)
-    cycles_canvas.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=6)
-    cycles_scrollbar.pack(side="right", fill="y", pady=6)
+    cycles_inner, bind_cycle_scroll = _build_scrollable_cycle_selector(cycles_box)
 
     for cycle in cycle_ids:
-        ttk.Checkbutton(
+        cycle_toggle = ttk.Checkbutton(
             cycles_inner,
             text=f"Cycle #{cycle}",
             variable=cycle_vars[cycle],
             command=_schedule_plot,
-        ).pack(anchor="w", padx=4, pady=2)
+        )
+        cycle_toggle.pack(anchor="w", padx=4, pady=2)
+        bind_cycle_scroll(cycle_toggle)
 
     ttk.Checkbutton(series_box, text="Ascending", variable=asc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Descending", variable=dsc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
@@ -1919,11 +1952,13 @@ def open_v_vs_t_window(input_dir: Path) -> None:
     _plot()
 
 
-def open_v_vs_i_window(input_dir: Path) -> None:
+def open_v_vs_i_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
     bundles = discover_activation_bundles(Path(input_dir))
     if not bundles:
         raise ValueError("No se encontraron archivos de activacion validos.")
 
+    font_defaults = resolve_plot_font_defaults(font_defaults)
+    font_default_values = font_defaults.as_strings()
     bundle = bundles[0]
     default_limits = compute_default_v_vs_i_limits(bundle)
     ramps = build_activation_ramps(bundle)
@@ -1975,10 +2010,10 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     y_tick_count_var = tk.IntVar(value=6)
 
     plot_title_var = tk.StringVar(value="")
-    title_fontsize_var = tk.StringVar(value="14")
-    tick_fontsize_var = tk.StringVar(value="10")
-    label_fontsize_var = tk.StringVar(value="11")
-    legend_fontsize_var = tk.StringVar(value="10")
+    title_fontsize_var = tk.StringVar(value=font_default_values["title"])
+    tick_fontsize_var = tk.StringVar(value=font_default_values["tick"])
+    label_fontsize_var = tk.StringVar(value=font_default_values["label"])
+    legend_fontsize_var = tk.StringVar(value=font_default_values["legend"])
     legend_scale_var = tk.StringVar(value="1.0")
     line_width_var = tk.StringVar(value="1.5")
 
@@ -2001,10 +2036,10 @@ def open_v_vs_i_window(input_dir: Path) -> None:
         "x_tick_count": 6,
         "y_tick_count": 6,
         "plot_title": "",
-        "title_fontsize": "14",
-        "tick_fontsize": "10",
-        "label_fontsize": "11",
-        "legend_fontsize": "10",
+        "title_fontsize": font_default_values["title"],
+        "tick_fontsize": font_default_values["tick"],
+        "label_fontsize": font_default_values["label"],
+        "legend_fontsize": font_default_values["legend"],
         "legend_scale": "1.0",
         "line_width": "1.5",
         "visible_cycles": {cycle: True for cycle in cycle_ids},
@@ -2164,30 +2199,17 @@ def open_v_vs_i_window(input_dir: Path) -> None:
     limits_box = ttk.LabelFrame(controls_frame, text="Limites de ejes")
     limits_box.pack(fill="x", pady=5)
 
-    cycles_canvas = tk.Canvas(cycles_box, height=120, highlightthickness=0)
-    cycles_scrollbar = ttk.Scrollbar(cycles_box, orient="vertical", command=cycles_canvas.yview)
-    cycles_inner = ttk.Frame(cycles_canvas)
-    cycles_canvas.configure(yscrollcommand=cycles_scrollbar.set)
-    cycles_window = cycles_canvas.create_window((0, 0), window=cycles_inner, anchor="nw")
-
-    def _update_cycles_scroll(_event=None):
-        cycles_canvas.configure(scrollregion=cycles_canvas.bbox("all"))
-
-    def _sync_cycles_width(event):
-        cycles_canvas.itemconfigure(cycles_window, width=event.width)
-
-    cycles_inner.bind("<Configure>", _update_cycles_scroll)
-    cycles_canvas.bind("<Configure>", _sync_cycles_width)
-    cycles_canvas.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=6)
-    cycles_scrollbar.pack(side="right", fill="y", pady=6)
+    cycles_inner, bind_cycle_scroll = _build_scrollable_cycle_selector(cycles_box)
 
     for cycle in cycle_ids:
-        ttk.Checkbutton(
+        cycle_toggle = ttk.Checkbutton(
             cycles_inner,
             text=f"Cycle #{cycle}",
             variable=cycle_vars[cycle],
             command=_schedule_plot,
-        ).pack(anchor="w", padx=4, pady=2)
+        )
+        cycle_toggle.pack(anchor="w", padx=4, pady=2)
+        bind_cycle_scroll(cycle_toggle)
 
     ttk.Checkbutton(series_box, text="Ascending", variable=asc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Descending", variable=dsc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
@@ -2311,6 +2333,7 @@ def run_pipeline(
     input_dir: Path,
     output_dir: Path,
     selected_options: list[str] | None = None,
+    font_defaults: PlotFontDefaults | None = None,
 ) -> list[Path]:
     exported_files = export_folder(input_dir, output_dir)
     if not exported_files:
@@ -2318,8 +2341,8 @@ def run_pipeline(
 
     chosen = set(selected_options or [])
     if "V vs t" in chosen:
-        open_v_vs_t_window(input_dir)
+        open_v_vs_t_window(input_dir, font_defaults=font_defaults)
     if "V vs I" in chosen:
-        open_v_vs_i_window(input_dir)
+        open_v_vs_i_window(input_dir, font_defaults=font_defaults)
 
     return exported_files
