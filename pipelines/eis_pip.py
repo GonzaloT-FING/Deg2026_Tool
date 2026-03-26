@@ -26,7 +26,7 @@ import re
 import math
 
 from matplotlib.figure import Figure
-from matplotlib.ticker import LinearLocator, MaxNLocator, StrMethodFormatter
+from matplotlib.ticker import LinearLocator, LogLocator, MaxNLocator, StrMethodFormatter
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
@@ -2374,27 +2374,82 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             comp_label_artists[key] = arts
 
         legend_var = tk.BooleanVar(value=True)
+        title_text_var = tk.StringVar(value=axc.get_title() or "Composite - Nyquist")
+        try:
+            init_title_fs = float(axc.title.get_fontsize() or 14.0)
+        except Exception:
+            init_title_fs = 14.0
+        try:
+            init_label_fs = float(axc.xaxis.label.get_fontsize() or 12.0)
+        except Exception:
+            init_label_fs = 12.0
+        try:
+            init_tick_fs = float(axc.get_xticklabels()[0].get_fontsize()) if axc.get_xticklabels() else 10.0
+        except Exception:
+            init_tick_fs = 10.0
+        title_fs_var = tk.DoubleVar(value=init_title_fs)
+        label_fs_var = tk.DoubleVar(value=init_label_fs)
+        legend_fs_var = tk.DoubleVar(value=9.0)
+        tick_fs_var = tk.DoubleVar(value=init_tick_fs)
+        x_tick_count_var = tk.IntVar(value=6)
+        y_tick_count_var = tk.IntVar(value=6)
 
-        def _apply_legend():
+        def _apply_legend(redraw: bool = True):
             # Always remove existing legend first (prevents stacking / stale legends)
             leg = axc.get_legend()
             if leg is not None:
                 leg.remove()
 
             if not legend_var.get():
-                canvas.draw_idle()
+                if redraw:
+                    canvas.draw_idle()
                 return
 
             handles, labels = axc.get_legend_handles_labels()
             # Keep only meaningful labels (ignore '_' internal ones)
             pairs = [(h, l) for h, l in zip(handles, labels) if l and not l.startswith("_")]
             if not pairs:
-                canvas.draw_idle()
+                if redraw:
+                    canvas.draw_idle()
                 return
 
             h2, l2 = zip(*pairs)
-            axc.legend(h2, l2, loc="best", fontsize=9)
-            canvas.draw_idle()
+            try:
+                legend_fs = float(legend_fs_var.get())
+            except (tk.TclError, ValueError):
+                legend_fs = 9.0
+            axc.legend(h2, l2, loc="best", fontsize=legend_fs)
+            if redraw:
+                canvas.draw_idle()
+
+        def _apply_plot_settings(redraw: bool = True):
+            try:
+                title_fs = float(title_fs_var.get())
+                label_fs = float(label_fs_var.get())
+                tick_fs = float(tick_fs_var.get())
+                x_tick_count = max(2, int(x_tick_count_var.get()))
+                y_tick_count = max(2, int(y_tick_count_var.get()))
+            except (tk.TclError, ValueError):
+                return
+
+            axc.set_title(title_text_var.get(), fontsize=title_fs)
+            axc.xaxis.label.set_fontsize(label_fs)
+            axc.yaxis.label.set_fontsize(label_fs)
+            axc.tick_params(axis="both", labelsize=tick_fs)
+            axc.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
+            axc.yaxis.set_major_locator(MaxNLocator(nbins=y_tick_count))
+            axc.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+            axc.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+            _apply_legend(redraw=False)
+            if redraw:
+                canvas.draw_idle()
+
+        pending_plot_settings = {"id": None}
+
+        def _schedule_plot_settings(_evt=None):
+            if pending_plot_settings["id"] is not None:
+                comp.after_cancel(pending_plot_settings["id"])
+            pending_plot_settings["id"] = comp.after(180, _apply_plot_settings)
 
         def _copy_style(src_line, dst_line):
             # Copy *current* formatting from source line
@@ -2447,6 +2502,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             axc.set_ylim(y0 - pad_y, y1 + pad_y)
             axc.set_aspect("equal", adjustable="box")
 
+            _apply_plot_settings(redraw=False)
             canvas.draw_idle()
             _sync_limit_entries()
 
@@ -2503,6 +2559,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             # Clear the axes in one shot (fast, removes lines + annotations + legend)
             axc.cla()
             _reset_composite_axes()
+            _apply_plot_settings(redraw=False)
 
             # Redraw + sync UI fields
             canvas.draw_idle()
@@ -2540,6 +2597,38 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
 
         ttk.Button(src_box, text="Refresh formatting", command=refresh_formatting).pack(fill="x", pady=(8, 0))
         ttk.Checkbutton(ctrl, text="Legend", variable=legend_var, command=_apply_legend).pack(anchor="w", pady=(0, 10))
+
+        plot_box = ttk.LabelFrame(ctrl, text="Plot", padding=8)
+        plot_box.pack(fill="x", pady=(0, 10))
+        plot_box.columnconfigure(1, weight=1)
+
+        ttk.Label(plot_box, text="Title").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
+        title_entry = ttk.Entry(plot_box, textvariable=title_text_var, width=20)
+        title_entry.grid(row=0, column=1, sticky="ew", pady=2)
+
+        ttk.Label(plot_box, text="Title size").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
+        title_spin = ttk.Spinbox(plot_box, from_=6.0, to=50.0, increment=0.5, textvariable=title_fs_var, width=10)
+        title_spin.grid(row=1, column=1, sticky="w", pady=2)
+
+        ttk.Label(plot_box, text="Label size").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
+        label_spin = ttk.Spinbox(plot_box, from_=6.0, to=40.0, increment=0.5, textvariable=label_fs_var, width=10)
+        label_spin.grid(row=2, column=1, sticky="w", pady=2)
+
+        ttk.Label(plot_box, text="Legend size").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
+        legend_spin = ttk.Spinbox(plot_box, from_=6.0, to=40.0, increment=0.5, textvariable=legend_fs_var, width=10)
+        legend_spin.grid(row=3, column=1, sticky="w", pady=2)
+
+        ttk.Label(plot_box, text="Tick size").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
+        tick_spin = ttk.Spinbox(plot_box, from_=6.0, to=40.0, increment=0.5, textvariable=tick_fs_var, width=10)
+        tick_spin.grid(row=4, column=1, sticky="w", pady=2)
+
+        ttk.Label(plot_box, text="X ticks").grid(row=5, column=0, sticky="w", padx=(0, 6), pady=2)
+        x_tick_spin = ttk.Spinbox(plot_box, from_=2, to=20, increment=1, textvariable=x_tick_count_var, width=10)
+        x_tick_spin.grid(row=5, column=1, sticky="w", pady=2)
+
+        ttk.Label(plot_box, text="Y ticks").grid(row=6, column=0, sticky="w", padx=(0, 6), pady=2)
+        y_tick_spin = ttk.Spinbox(plot_box, from_=2, to=20, increment=1, textvariable=y_tick_count_var, width=10)
+        y_tick_spin.grid(row=6, column=1, sticky="w", pady=2)
 
         # ---- Axis limits (independent in composite) ----
         lim_box = ttk.LabelFrame(ctrl, text="Axes limits", padding=8)
@@ -2590,6 +2679,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             axc.set_xlim(cx0 if nx0 is None else nx0, cx1 if nx1 is None else nx1)
             axc.set_ylim(cy0 if ny0 is None else ny0, cy1 if ny1 is None else ny1)
             axc.set_aspect("equal", adjustable="box")
+            _apply_plot_settings(redraw=False)
             canvas.draw_idle()
             _sync_limit_entries()
 
@@ -2615,10 +2705,21 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             e.bind("<Return>", lambda ev: apply_limits(live=False))
             e.bind("<FocusOut>", lambda ev: apply_limits(live=False))
 
+        title_entry.bind("<Return>", lambda ev: _apply_plot_settings())
+        title_entry.bind("<FocusOut>", lambda ev: _apply_plot_settings())
+        title_entry.bind("<KeyRelease>", _schedule_plot_settings)
+
+        for spin in (title_spin, label_spin, legend_spin, tick_spin, x_tick_spin, y_tick_spin):
+            spin.configure(command=_apply_plot_settings)
+            spin.bind("<Return>", lambda ev: _apply_plot_settings())
+            spin.bind("<FocusOut>", lambda ev: _apply_plot_settings())
+
         b2 = ttk.Frame(lim_box)
         b2.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Button(b2, text="Fit all", command=_fit_all).pack(side="left", expand=True, fill="x", padx=(0, 6))
         ttk.Button(b2, text="Refresh fields", command=_sync_limit_entries).pack(side="left", expand=True, fill="x")
+
+        _apply_plot_settings(redraw=False)
 
         def _on_close():
             comp.destroy()
@@ -2731,7 +2832,25 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         legend_var = tk.BooleanVar(value=True)
         show_mod_var = tk.BooleanVar(value=True)
         show_phz_var = tk.BooleanVar(value=True)
-        tick_count_var = tk.IntVar(value=6)
+        title_text_var = tk.StringVar(value=axc_mod.get_title() or default_title)
+        try:
+            init_title_fs = float(axc_mod.title.get_fontsize() or 14.0)
+        except Exception:
+            init_title_fs = 14.0
+        try:
+            init_label_fs = float(axc_mod.xaxis.label.get_fontsize() or 12.0)
+        except Exception:
+            init_label_fs = 12.0
+        try:
+            init_tick_fs = float(axc_mod.get_xticklabels()[0].get_fontsize()) if axc_mod.get_xticklabels() else 10.0
+        except Exception:
+            init_tick_fs = 10.0
+        title_fs_var = tk.DoubleVar(value=init_title_fs)
+        label_fs_var = tk.DoubleVar(value=init_label_fs)
+        legend_fs_var = tk.DoubleVar(value=9.0)
+        tick_fs_var = tk.DoubleVar(value=init_tick_fs)
+        x_tick_count_var = tk.IntVar(value=6)
+        y_tick_count_var = tk.IntVar(value=6)
 
         def _copy_style(src_line, dst_line):
             dst_line.set_color(src_line.get_color())
@@ -2752,14 +2871,15 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             except Exception:
                 pass
 
-        def _apply_legend():
+        def _apply_legend(redraw: bool = True):
             for axis in (axc_mod, axc_phz):
                 leg = axis.get_legend()
                 if leg is not None:
                     leg.remove()
 
             if not legend_var.get():
-                canvas.draw_idle()
+                if redraw:
+                    canvas.draw_idle()
                 return
 
             handles = []
@@ -2772,15 +2892,54 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                         labels.append(ln.get_label())
 
             if handles:
-                axc_mod.legend(handles, labels, loc="best", fontsize=9)
-            canvas.draw_idle()
+                try:
+                    legend_fs = float(legend_fs_var.get())
+                except (tk.TclError, ValueError):
+                    legend_fs = 9.0
+                axc_mod.legend(handles, labels, loc="best", fontsize=legend_fs)
+            if redraw:
+                canvas.draw_idle()
 
         def _apply_tick_settings():
-            tick_count = max(2, int(tick_count_var.get()))
+            try:
+                x_tick_count = max(2, int(x_tick_count_var.get()))
+            except (tk.TclError, ValueError):
+                x_tick_count = 6
+            try:
+                y_tick_count = max(2, int(y_tick_count_var.get()))
+            except (tk.TclError, ValueError):
+                y_tick_count = 6
+            axc_mod.xaxis.set_major_locator(LogLocator(base=10.0, numticks=x_tick_count))
             for axis in (axc_mod, axc_phz):
-                axis.yaxis.set_major_locator(LinearLocator(tick_count))
+                axis.yaxis.set_major_locator(LinearLocator(y_tick_count))
                 axis.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
                 axis.yaxis.get_offset_text().set_visible(False)
+
+        def _apply_plot_settings(redraw: bool = True):
+            try:
+                title_fs = float(title_fs_var.get())
+                label_fs = float(label_fs_var.get())
+                tick_fs = float(tick_fs_var.get())
+            except (tk.TclError, ValueError):
+                return
+
+            axc_mod.set_title(title_text_var.get(), fontsize=title_fs)
+            axc_mod.xaxis.label.set_fontsize(label_fs)
+            axc_mod.yaxis.label.set_fontsize(label_fs)
+            axc_phz.yaxis.label.set_fontsize(label_fs)
+            axc_mod.tick_params(axis="both", labelsize=tick_fs)
+            axc_phz.tick_params(axis="y", labelsize=tick_fs)
+            _apply_tick_settings()
+            _apply_legend(redraw=False)
+            if redraw:
+                canvas.draw_idle()
+
+        pending_plot_settings = {"id": None}
+
+        def _schedule_plot_settings(_evt=None):
+            if pending_plot_settings["id"] is not None:
+                comp.after_cancel(pending_plot_settings["id"])
+            pending_plot_settings["id"] = comp.after(180, _apply_plot_settings)
 
         def _sync_axis_visibility():
             mod_visible = bool(show_mod_var.get() and comp_lines["zmod"])
@@ -2837,7 +2996,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
                 dy = (y1 - y0) if y1 != y0 else (abs(y0) * 0.1 + 1.0)
                 axc_phz.set_ylim(y0 - 0.05 * dy, y1 + 0.05 * dy)
 
-            _apply_tick_settings()
+            _apply_plot_settings(redraw=False)
             canvas.draw_idle()
             _sync_limit_entries()
 
@@ -2887,6 +3046,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             comp_lines["zmod"].clear()
             comp_lines["zphz"].clear()
             _reset_axes()
+            _apply_plot_settings(redraw=False)
             canvas.draw_idle()
             _sync_limit_entries()
             _apply_legend()
@@ -2916,6 +3076,38 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
         ttk.Checkbutton(ctrl, text="Legend", variable=legend_var, command=_apply_legend).pack(anchor="w", pady=(0, 4))
         ttk.Checkbutton(ctrl, text="Zmod", variable=show_mod_var, command=_sync_axis_visibility).pack(anchor="w")
         ttk.Checkbutton(ctrl, text="Zphz", variable=show_phz_var, command=_sync_axis_visibility).pack(anchor="w", pady=(0, 10))
+
+        plot_box = ttk.LabelFrame(ctrl, text="Plot", padding=8)
+        plot_box.pack(fill="x", pady=(0, 10))
+        plot_box.columnconfigure(1, weight=1)
+
+        ttk.Label(plot_box, text="Title").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
+        title_entry = ttk.Entry(plot_box, textvariable=title_text_var, width=20)
+        title_entry.grid(row=0, column=1, sticky="ew", pady=2)
+
+        ttk.Label(plot_box, text="Title size").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
+        title_spin = ttk.Spinbox(plot_box, from_=6.0, to=50.0, increment=0.5, textvariable=title_fs_var, width=10)
+        title_spin.grid(row=1, column=1, sticky="w", pady=2)
+
+        ttk.Label(plot_box, text="Label size").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
+        label_spin = ttk.Spinbox(plot_box, from_=6.0, to=40.0, increment=0.5, textvariable=label_fs_var, width=10)
+        label_spin.grid(row=2, column=1, sticky="w", pady=2)
+
+        ttk.Label(plot_box, text="Legend size").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
+        legend_spin = ttk.Spinbox(plot_box, from_=6.0, to=40.0, increment=0.5, textvariable=legend_fs_var, width=10)
+        legend_spin.grid(row=3, column=1, sticky="w", pady=2)
+
+        ttk.Label(plot_box, text="Tick size").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
+        tick_spin = ttk.Spinbox(plot_box, from_=6.0, to=40.0, increment=0.5, textvariable=tick_fs_var, width=10)
+        tick_spin.grid(row=4, column=1, sticky="w", pady=2)
+
+        ttk.Label(plot_box, text="X ticks").grid(row=5, column=0, sticky="w", padx=(0, 6), pady=2)
+        x_tick_spin = ttk.Spinbox(plot_box, from_=2, to=20, increment=1, textvariable=x_tick_count_var, width=10)
+        x_tick_spin.grid(row=5, column=1, sticky="w", pady=2)
+
+        ttk.Label(plot_box, text="Y ticks").grid(row=6, column=0, sticky="w", padx=(0, 6), pady=2)
+        y_tick_spin = ttk.Spinbox(plot_box, from_=2, to=20, increment=1, textvariable=y_tick_count_var, width=10)
+        y_tick_spin.grid(row=6, column=1, sticky="w", pady=2)
 
         lim_box = ttk.LabelFrame(ctrl, text="Axes limits", padding=8)
         lim_box.pack(fill="x", pady=(0, 10))
@@ -2966,7 +3158,7 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             cur_p0, cur_p1 = axc_phz.get_ylim()
             axc_mod.set_ylim(cur_m0 if nm0 is None else nm0, cur_m1 if nm1 is None else nm1)
             axc_phz.set_ylim(cur_p0 if np0 is None else np0, cur_p1 if np1 is None else np1)
-            _apply_tick_settings()
+            _apply_plot_settings(redraw=False)
             canvas.draw_idle()
             _sync_limit_entries()
 
@@ -2989,19 +3181,21 @@ def show_figures_tk(figures: list[tuple[str, Figure]], window_title: str = "EIS 
             e.bind("<Return>", lambda ev: apply_limits())
             e.bind("<FocusOut>", lambda ev: apply_limits())
 
-        ttk.Label(lim_box, text="Ticks", width=7).grid(row=6, column=0, sticky="w", padx=(0, 6), pady=2)
-        tick_spin = ttk.Spinbox(lim_box, from_=2, to=12, increment=1, textvariable=tick_count_var, width=12)
-        tick_spin.grid(row=6, column=1, sticky="w", pady=2)
-        tick_spin.configure(command=lambda: (_apply_tick_settings(), canvas.draw_idle()))
-        tick_spin.bind("<Return>", lambda ev: (_apply_tick_settings(), canvas.draw_idle()))
-        tick_spin.bind("<FocusOut>", lambda ev: (_apply_tick_settings(), canvas.draw_idle()))
+        title_entry.bind("<Return>", lambda ev: _apply_plot_settings())
+        title_entry.bind("<FocusOut>", lambda ev: _apply_plot_settings())
+        title_entry.bind("<KeyRelease>", _schedule_plot_settings)
+
+        for spin in (title_spin, label_spin, legend_spin, tick_spin, x_tick_spin, y_tick_spin):
+            spin.configure(command=_apply_plot_settings)
+            spin.bind("<Return>", lambda ev: _apply_plot_settings())
+            spin.bind("<FocusOut>", lambda ev: _apply_plot_settings())
 
         b2 = ttk.Frame(lim_box)
-        b2.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        b2.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Button(b2, text="Fit all", command=_fit_all).pack(side="left", expand=True, fill="x", padx=(0, 6))
         ttk.Button(b2, text="Refresh fields", command=_sync_limit_entries).pack(side="left", expand=True, fill="x")
 
-        _apply_tick_settings()
+        _apply_plot_settings(redraw=False)
 
         def _on_close():
             comp.destroy()
