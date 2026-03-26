@@ -52,7 +52,7 @@ class GamryProtocolApp:
         self.repo_dir = pathlib.Path(__file__).resolve().parent
 
         # Default folders relative to the repo
-        self.default_input_dir = self.repo_dir / "data2/MEA_1_02_25_3_26_60C"
+        self.default_input_dir = self.repo_dir / "data2/MEA_1_02_18_3_26_60C"
         self.default_output_dir = self.repo_dir / "outputs"
 
         # Ensure output folder exists
