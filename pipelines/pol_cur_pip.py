@@ -2768,6 +2768,9 @@ def _build_v_vs_i_tab(
     notebook: ttk.Notebook,
     bundle: CurveBundle,
     font_default_values: dict[str, str],
+    composer_parent,
+    source_contexts: dict[str, dict[str, object]],
+    font_defaults: PlotFontDefaults,
 ) -> dict[str, object]:
     tab_title = f"Etapa {bundle.curve_id} - {bundle.description}"
     default_limits = compute_default_v_vs_i_limits(bundle)
@@ -2776,6 +2779,11 @@ def _build_v_vs_i_tab(
     notebook.add(tab, text=tab_title[:28] + ("..." if len(tab_title) > 28 else ""))
 
     controls_frame = _build_scrollable_controls(tab)
+    ttk.Button(
+        controls_frame,
+        text="Componer",
+        command=lambda: _open_v_vs_i_composer(composer_parent, source_contexts, font_defaults),
+    ).pack(fill="x", pady=(0, 8))
 
     plot_outer = ttk.Frame(tab, padding=10)
     plot_outer.pack(side="right", fill="both", expand=True)
@@ -3540,21 +3548,19 @@ def open_v_vs_i_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
         or ttk.Style(win).lookup("TFrame", "background")
     )
 
-    header = ttk.Frame(win, padding=(10, 10, 10, 0))
-    header.pack(fill="x")
-    ttk.Label(header, text="Curvas detectadas por etapa").pack(side="left")
-    ttk.Button(
-        header,
-        text="Componer curvas",
-        command=lambda: _open_v_vs_i_composer(win, source_contexts, font_defaults),
-    ).pack(side="right")
-
     notebook = ttk.Notebook(win)
     notebook.pack(fill="both", expand=True, padx=8, pady=8)
 
     source_contexts: dict[str, dict[str, object]] = {}
     for bundle in bundles:
-        context = _build_v_vs_i_tab(notebook, bundle, font_default_values)
+        context = _build_v_vs_i_tab(
+            notebook,
+            bundle,
+            font_default_values,
+            win,
+            source_contexts,
+            font_defaults,
+        )
         source_contexts[str(context["tab_title"])] = context
 
     def _on_close() -> None:
