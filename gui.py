@@ -207,6 +207,7 @@ class GamryProtocolApp:
             increment=0.5,
             textvariable=self.plot_title_fontsize_var,
             width=10,
+            style="App.TSpinbox",
         ).grid(row=0, column=1, sticky="w", padx=(0, 12), pady=(12, 6))
 
         ttk.Label(plot_defaults_box, text="Tick size", style="FieldLabel.TLabel").grid(
@@ -219,6 +220,7 @@ class GamryProtocolApp:
             increment=0.5,
             textvariable=self.plot_tick_fontsize_var,
             width=10,
+            style="App.TSpinbox",
         ).grid(row=0, column=3, sticky="w", padx=(0, 12), pady=(12, 6))
 
         ttk.Label(plot_defaults_box, text="Label size", style="FieldLabel.TLabel").grid(
@@ -231,6 +233,7 @@ class GamryProtocolApp:
             increment=0.5,
             textvariable=self.plot_label_fontsize_var,
             width=10,
+            style="App.TSpinbox",
         ).grid(row=1, column=1, sticky="w", padx=(0, 12), pady=(6, 12))
 
         ttk.Label(plot_defaults_box, text="Legend size", style="FieldLabel.TLabel").grid(
@@ -243,6 +246,7 @@ class GamryProtocolApp:
             increment=0.5,
             textvariable=self.plot_legend_fontsize_var,
             width=10,
+            style="App.TSpinbox",
         ).grid(row=1, column=3, sticky="w", padx=(0, 12), pady=(6, 12))
 
         action_row = ttk.Frame(workspace_card, style="Card.TFrame")

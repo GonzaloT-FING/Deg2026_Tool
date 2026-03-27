@@ -162,6 +162,21 @@ def apply_theme(window: tk.Misc, style: ttk.Style, theme_name: str) -> AppTheme:
     )
 
     style.configure(
+        "TEntry",
+        foreground=theme.input_fg,
+        fieldbackground=theme.input_bg,
+        bordercolor=theme.input_border,
+        lightcolor=theme.input_border,
+        darkcolor=theme.input_border,
+        padding=(10, 8),
+    )
+    style.map(
+        "TEntry",
+        bordercolor=[("focus", theme.accent)],
+        lightcolor=[("focus", theme.accent)],
+        darkcolor=[("focus", theme.accent)],
+    )
+    style.configure(
         "App.TEntry",
         foreground=theme.input_fg,
         fieldbackground=theme.input_bg,
@@ -177,6 +192,28 @@ def apply_theme(window: tk.Misc, style: ttk.Style, theme_name: str) -> AppTheme:
         darkcolor=[("focus", theme.accent)],
     )
 
+    style.configure(
+        "TCombobox",
+        foreground=theme.input_fg,
+        fieldbackground=theme.input_bg,
+        background=theme.surface_alt,
+        bordercolor=theme.input_border,
+        lightcolor=theme.input_border,
+        darkcolor=theme.input_border,
+        arrowcolor=theme.text,
+        padding=(8, 7),
+    )
+    style.map(
+        "TCombobox",
+        fieldbackground=[("readonly", theme.input_bg)],
+        foreground=[("readonly", theme.input_fg)],
+        background=[("readonly", theme.surface_alt), ("active", theme.surface)],
+        bordercolor=[("focus", theme.accent)],
+        lightcolor=[("focus", theme.accent)],
+        darkcolor=[("focus", theme.accent)],
+        selectbackground=[("readonly", theme.accent)],
+        selectforeground=[("readonly", theme.accent_text)],
+    )
     style.configure(
         "App.TCombobox",
         foreground=theme.input_fg,
@@ -199,6 +236,51 @@ def apply_theme(window: tk.Misc, style: ttk.Style, theme_name: str) -> AppTheme:
         selectbackground=[("readonly", theme.accent)],
         selectforeground=[("readonly", theme.accent_text)],
     )
+
+    style.configure(
+        "TSpinbox",
+        foreground=theme.input_fg,
+        fieldbackground=theme.input_bg,
+        background=theme.surface_alt,
+        bordercolor=theme.input_border,
+        lightcolor=theme.input_border,
+        darkcolor=theme.input_border,
+        arrowcolor=theme.text,
+        padding=(8, 7),
+    )
+    style.map(
+        "TSpinbox",
+        bordercolor=[("focus", theme.accent)],
+        lightcolor=[("focus", theme.accent)],
+        darkcolor=[("focus", theme.accent)],
+        background=[("active", theme.surface)],
+        arrowcolor=[("disabled", theme.muted_text)],
+    )
+    style.configure(
+        "App.TSpinbox",
+        foreground=theme.input_fg,
+        fieldbackground=theme.input_bg,
+        background=theme.surface_alt,
+        bordercolor=theme.input_border,
+        lightcolor=theme.input_border,
+        darkcolor=theme.input_border,
+        arrowcolor=theme.text,
+        padding=(8, 7),
+    )
+    style.map(
+        "App.TSpinbox",
+        bordercolor=[("focus", theme.accent)],
+        lightcolor=[("focus", theme.accent)],
+        darkcolor=[("focus", theme.accent)],
+        background=[("active", theme.surface)],
+        arrowcolor=[("disabled", theme.muted_text)],
+    )
+
+    window.option_add("*TCombobox*Listbox.background", theme.input_bg)
+    window.option_add("*TCombobox*Listbox.foreground", theme.input_fg)
+    window.option_add("*TCombobox*Listbox.selectBackground", theme.accent)
+    window.option_add("*TCombobox*Listbox.selectForeground", theme.accent_text)
+    window.option_add("*TCombobox*Listbox.highlightThickness", 0)
 
     style.configure("Card.TCheckbutton", background=theme.surface, foreground=theme.text, font=base_font)
     style.map(
