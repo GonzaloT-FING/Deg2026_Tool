@@ -19,6 +19,7 @@ This version is written to match the real structure of the uploaded Gamry files.
 
 from __future__ import annotations
 
+import colorsys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -183,6 +184,18 @@ class ParsedDTA:
     rows: list[list[str]]
 
 
+@dataclass
+class EISPlotEntry:
+    path: Path
+    parsed: ParsedDTA
+    display_name: str
+    stage_number: int | None = None
+    current_label: str | None = None
+    voltage_label: str | None = None
+    current_value: float | None = None
+    nyquist_color: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Parsing
 # ---------------------------------------------------------------------------
@@ -345,6 +358,130 @@ def _technique_name(parsed: ParsedDTA) -> str:
     return parsed.meta_values.get("TITLE", "").strip() or "Potentiostatic EIS"
 
 
+def _extract_stage_number(stem: str) -> int | None:
+    match = re.search(r"#(\d+)", stem)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _extract_current_label(stem: str) -> tuple[str | None, float | None]:
+    for token in re.split(r"[_\s]+", stem):
+        clean = token.strip()
+        if not clean:
+            continue
+        if re.fullmatch(r"[+-]?\d+(?:[.,]\d+)?A", clean, flags=re.IGNORECASE):
+            return clean, to_float(clean[:-1])
+    return None, None
+
+
+def _format_voltage_label(parsed: ParsedDTA) -> str | None:
+    raw_value = parsed.meta_values.get("VDC", "").strip()
+    if not raw_value:
+        return None
+
+    compact = raw_value.replace(" ", "").replace(".", ",")
+    if compact.upper().endswith("V"):
+        return compact
+    return f"{compact}V"
+
+
+def _build_eis_display_name(path: Path, parsed: ParsedDTA) -> tuple[str, int | None, str | None, str | None, float | None]:
+    stem = path.stem
+    stage_number = _extract_stage_number(stem)
+    current_label, current_value = _extract_current_label(stem)
+    voltage_label = _format_voltage_label(parsed)
+
+    parts: list[str] = []
+    if stage_number is not None:
+        parts.append(f"Stage {stage_number}")
+    if current_label:
+        parts.append(current_label)
+    if voltage_label:
+        parts.append(voltage_label)
+
+    display_name = " / ".join(parts) if parts else stem
+    return display_name, stage_number, current_label, voltage_label, current_value
+
+
+def _hls_to_hex(hue: float, lightness: float, saturation: float) -> str:
+    r, g, b = colorsys.hls_to_rgb(hue % 1.0, max(0.0, min(1.0, lightness)), max(0.0, min(1.0, saturation)))
+    return f"#{int(round(r * 255)):02x}{int(round(g * 255)):02x}{int(round(b * 255)):02x}"
+
+
+def _assign_nyquist_stage_colors(entries: list[EISPlotEntry]) -> None:
+    if not entries:
+        return
+
+    grouped: dict[int | None, list[EISPlotEntry]] = {}
+    for entry in entries:
+        grouped.setdefault(entry.stage_number, []).append(entry)
+
+    ordered_stage_keys = sorted(
+        grouped,
+        key=lambda stage: (stage is None, stage if stage is not None else math.inf),
+    )
+
+    stage_count = max(1, len(ordered_stage_keys))
+    for stage_index, stage_key in enumerate(ordered_stage_keys):
+        stage_entries = grouped[stage_key]
+        stage_entries.sort(
+            key=lambda entry: (
+                entry.current_value is None,
+                entry.current_value if entry.current_value is not None else math.inf,
+                entry.current_label or "",
+                entry.path.stem.lower(),
+            )
+        )
+
+        base_hue = (0.58 + (stage_index / stage_count)) % 1.0
+        if len(stage_entries) == 1:
+            lightness_values = [0.46]
+        else:
+            lightness_values = [
+                0.36 + (0.24 * idx / (len(stage_entries) - 1))
+                for idx in range(len(stage_entries))
+            ]
+
+        for idx, entry in enumerate(stage_entries):
+            hue_offset = 0.015 * (idx - (len(stage_entries) - 1) / 2)
+            entry.nyquist_color = _hls_to_hex(base_hue + hue_offset, lightness_values[idx], 0.72)
+
+
+def _collect_eis_plot_entries(dta_files: list[Path]) -> list[EISPlotEntry]:
+    entries: list[EISPlotEntry] = []
+    for dta_file in dta_files:
+        parsed = parse_gamry_dta(dta_file)
+        display_name, stage_number, current_label, voltage_label, current_value = _build_eis_display_name(dta_file, parsed)
+        entries.append(
+            EISPlotEntry(
+                path=dta_file,
+                parsed=parsed,
+                display_name=display_name,
+                stage_number=stage_number,
+                current_label=current_label,
+                voltage_label=voltage_label,
+                current_value=current_value,
+            )
+        )
+
+    _assign_nyquist_stage_colors(entries)
+    entries.sort(
+        key=lambda entry: (
+            entry.stage_number is None,
+            entry.stage_number if entry.stage_number is not None else math.inf,
+            entry.current_value is None,
+            entry.current_value if entry.current_value is not None else math.inf,
+            entry.current_label or "",
+            entry.path.stem.lower(),
+        )
+    )
+    return entries
+
+
 # ---------------------------------------------------------------------------
 # Excel export
 # ---------------------------------------------------------------------------
@@ -442,7 +579,13 @@ def _new_figure() -> Figure:
     # You can tweak size if you want bigger/smaller default tabs
     return Figure(figsize=(6.8, 4.8), dpi=100)
 
-def fig_nyquist(parsed: ParsedDTA, font_defaults: PlotFontDefaults | None = None) -> Figure | None:
+def fig_nyquist(
+    parsed: ParsedDTA,
+    *,
+    plot_title: str | None = None,
+    line_color: str | None = None,
+    font_defaults: PlotFontDefaults | None = None,
+) -> Figure | None:
     x, y, f = _triplet_series(parsed, "Zreal", "Zimag", "Freq")
     if not x or not y or not f:
         return None
@@ -452,7 +595,16 @@ def fig_nyquist(parsed: ParsedDTA, font_defaults: PlotFontDefaults | None = None
     fig = _new_figure()
     ax = fig.add_subplot(111)
 
-    (line,) = ax.plot(x, y_plot, marker="o", linestyle="-", markerfacecolor="none")
+    line_kwargs = {
+        "marker": "o",
+        "linestyle": "-",
+        "markerfacecolor": "none",
+    }
+    if line_color:
+        line_kwargs["color"] = line_color
+        line_kwargs["markeredgecolor"] = line_color
+
+    (line,) = ax.plot(x, y_plot, **line_kwargs)
     line._eis_freq = f  # attach frequency array (same index as points)
 
     ax.set_aspect("equal", adjustable="box")
@@ -460,7 +612,7 @@ def fig_nyquist(parsed: ParsedDTA, font_defaults: PlotFontDefaults | None = None
 
     x_unit = _column_unit(parsed, "Zreal")
     y_unit = _column_unit(parsed, "Zimag")
-    ax.set_title(f"{_technique_name(parsed)} - Nyquist")
+    ax.set_title(plot_title or _technique_name(parsed))
     ax.set_xlabel(f"Zreal ({x_unit})" if x_unit else "Zreal")
     ax.set_ylabel(f"-Zimag ({y_unit})" if y_unit else "-Zimag")
     ax.grid(True)
@@ -469,7 +621,12 @@ def fig_nyquist(parsed: ParsedDTA, font_defaults: PlotFontDefaults | None = None
     fig.tight_layout()
     return fig
 
-def fig_bode(parsed: ParsedDTA, font_defaults: PlotFontDefaults | None = None) -> Figure | None:
+def fig_bode(
+    parsed: ParsedDTA,
+    *,
+    plot_title: str | None = None,
+    font_defaults: PlotFontDefaults | None = None,
+) -> Figure | None:
     freq_unit = _column_unit(parsed, "Freq")
     zmod_unit = _column_unit(parsed, "Zmod")
     zphz_unit = _column_unit(parsed, "Zphz")
@@ -516,7 +673,7 @@ def fig_bode(parsed: ParsedDTA, font_defaults: PlotFontDefaults | None = None) -
     if "phz" in bode_lines:
         ax_phz.set_ylabel(f"Zphz ({zphz_unit})" if zphz_unit else "Zphz")
 
-    ax_mod.set_title(f"{_technique_name(parsed)} - Bode")
+    ax_mod.set_title(plot_title or f"{_technique_name(parsed)} - Bode")
     ax_mod.set_xlabel(f"Frecuencia ({freq_unit})" if freq_unit else "Frecuencia")
     ax_mod.grid(True, which="both")
 
@@ -595,7 +752,12 @@ def _update_right_axis_spacing(fig, canvas, axes, pad_px: float = 12.0, min_outw
         extra = overflow / fig_px
         fig.subplots_adjust(right=max(0.50, fig._default_right_margin - extra))
 
-def fig_series_vs_pt(parsed: ParsedDTA, font_defaults: PlotFontDefaults | None = None) -> Figure | None:
+def fig_series_vs_pt(
+    parsed: ParsedDTA,
+    *,
+    plot_title: str | None = None,
+    font_defaults: PlotFontDefaults | None = None,
+) -> Figure | None:
     fig = _new_figure()
     axI = fig.add_subplot(111)
 
@@ -680,7 +842,7 @@ def fig_series_vs_pt(parsed: ParsedDTA, font_defaults: PlotFontDefaults | None =
     if "T" in lines: axT.set_ylabel(ylabels["T"])
 
     # Title
-    axI.set_title(f"{_technique_name(parsed)} - Series vs Pt")
+    axI.set_title(plot_title or f"{_technique_name(parsed)} - Series vs Pt")
 
     # Save metadata for the UI
     fig._pt_series = True
@@ -694,8 +856,7 @@ def fig_series_vs_pt(parsed: ParsedDTA, font_defaults: PlotFontDefaults | None =
     return fig
 
 def build_figures(
-    parsed: ParsedDTA,
-    base_name: str,
+    entry: EISPlotEntry,
     selected_options: Iterable[str] | None,
     font_defaults: PlotFontDefaults | None = None,
 ) -> list[tuple[str, Figure]]:
@@ -705,19 +866,26 @@ def build_figures(
 
     chosen = set(selected_options)
     figs: list[tuple[str, Figure]] = []
+    parsed = entry.parsed
+    base_name = entry.display_name
 
     if "Nyquist plot" in chosen:
-        f = fig_nyquist(parsed, font_defaults=font_defaults)
+        f = fig_nyquist(
+            parsed,
+            plot_title=base_name,
+            line_color=entry.nyquist_color,
+            font_defaults=font_defaults,
+        )
         if f is not None:
             figs.append((f"{base_name} — Nyquist", f))
 
     if "Bode plot" in chosen:
-        f = fig_bode(parsed, font_defaults=font_defaults)
+        f = fig_bode(parsed, plot_title=f"{base_name} - Bode", font_defaults=font_defaults)
         if f is not None:
             figs.append((f"{base_name} — Bode", f))
 
     if "Series by Pt" in chosen:
-        f = fig_series_vs_pt(parsed, font_defaults=font_defaults)
+        f = fig_series_vs_pt(parsed, plot_title=f"{base_name} - Series vs Pt", font_defaults=font_defaults)
         if f is not None:
             figs.append((f"{base_name} — Series vs Pt", f))
 
@@ -3304,6 +3472,9 @@ def run_pipeline(
     if not chosen:
         return exported_xlsx
 
+    dta_files = find_eis_files(input_dir)
+    plot_entries = _collect_eis_plot_entries(dta_files)
+
     option_order = [
         "Nyquist plot",
         "Bode plot",
@@ -3319,13 +3490,12 @@ def run_pipeline(
         if option == "MultiFit":
             from pipelines.multi_eis_fit_pip import open_multifit_window
 
-            open_multifit_window(eis_files=find_eis_files(input_dir))
+            open_multifit_window(eis_files=dta_files)
             continue
 
         option_figs: list[tuple[str, Figure]] = []
-        for dta_file in find_eis_files(input_dir):
-            parsed = parse_gamry_dta(dta_file)
-            option_figs.extend(build_figures(parsed, dta_file.stem, [option], font_defaults=font_defaults))
+        for entry in plot_entries:
+            option_figs.extend(build_figures(entry, [option], font_defaults=font_defaults))
 
         if option_figs:
             show_figures_tk(option_figs, window_title=f"EIS - {option}", font_defaults=font_defaults)
