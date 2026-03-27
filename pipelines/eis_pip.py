@@ -756,7 +756,7 @@ def show_figures_tk(
     plot_frame = ttk.Frame(win)
     plot_frame.pack(side="right", fill="both", expand=True)
 
-    ttk.Label(topbar, text="Select plot:").pack(side="top", anchor="w")
+    ttk.Label(topbar, text="Seleccionar:").pack(side="top", anchor="w")
 
     nyquist_sources: dict[str, dict] = {}
     bode_sources = {"zmod": {}, "zphz": {}}
@@ -998,7 +998,7 @@ def show_figures_tk(
 
             style_vars = {}
 
-            ttk.Checkbutton(pt_box, text="Color y-axes", variable=color_axes_var,
+            ttk.Checkbutton(pt_box, text="y-axes a color", variable=color_axes_var,
                 command=lambda: (_refresh_axis_colors(), canvas.draw_idle())).pack(anchor="w", pady=(6,0))
 
             show_V = tk.BooleanVar(value=("V" in lines and lines["V"].get_visible()))
@@ -1798,7 +1798,7 @@ def show_figures_tk(
                 apply_style()
 
         # --- Controls UI ---
-        axes_box = ttk.LabelFrame(ctrl_frame, text="Axes limits", padding=8)
+        axes_box = ttk.LabelFrame(ctrl_frame, text="Límites de ejes", padding=8)
         axes_box.pack(fill="x", pady=(0, 10))
 
         def _row(parent, r, label, var):
@@ -1852,8 +1852,8 @@ def show_figures_tk(
 
         btns_axes = ttk.Frame(axes_box)
         btns_axes.grid(row=next_row + 1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        ttk.Button(btns_axes, text="Autoscale", command=autoscale_axes).pack(side="left", expand=True, fill="x", padx=(0, 6))
-        ttk.Button(btns_axes, text="Reset", command=reset_axes).pack(side="left", expand=True, fill="x")
+        ttk.Button(btns_axes, text="Autoescala", command=autoscale_axes).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(btns_axes, text="Restablecer", command=reset_axes).pack(side="left", expand=True, fill="x")
         tick_count_spin.configure(command=autoscale_axes)
         tick_count_spin.bind("<Return>", lambda ev: autoscale_axes())
         tick_count_spin.bind("<FocusOut>", lambda ev: autoscale_axes())
@@ -1867,12 +1867,12 @@ def show_figures_tk(
                 ttk.Checkbutton(bode_box, text="Zphz", variable=bode_show_vars["phz"], command=lambda: (_apply_bode_visibility(), autoscale_axes())).pack(anchor="w")
             ttk.Checkbutton(
                 bode_box,
-                text="Color y-axes",
+                text="y-axes a color",
                 variable=bode_color_axes_var,
                 command=_apply_bode_visibility,
             ).pack(anchor="w", pady=(6, 0))
 
-            bode_style_box = ttk.LabelFrame(ctrl_frame, text="Style", padding=8)
+            bode_style_box = ttk.LabelFrame(ctrl_frame, text="Estilo", padding=8)
             bode_style_box.pack(fill="x", pady=(0, 10))
             bode_style_nb = ttk.Notebook(bode_style_box)
             bode_style_nb.pack(fill="x")
@@ -1934,12 +1934,12 @@ def show_figures_tk(
                 sp_ms.configure(command=lambda kk=key: _apply_bode_style(kk))
                 sp_ms.bind("<KeyRelease>", lambda e, kk=key: _apply_bode_style(kk))
 
-        style_box = ttk.LabelFrame(ctrl_frame, text="Style", padding=8)
+        style_box = ttk.LabelFrame(ctrl_frame, text="Estilo", padding=8)
         if not is_pt_series and not is_bode_plot:
             style_box.pack(fill="x", pady=(0, 10))
         # else: don’t pack it (it won’t appear, but code stays safe)
 
-        fonts_box = ttk.LabelFrame(ctrl_frame, text="Fonts", padding=8)
+        fonts_box = ttk.LabelFrame(ctrl_frame, text="Fuentes", padding=8)
         fonts_box.pack(fill="x", pady=(0, 10))
         fonts_box.columnconfigure(1, weight=1)
 
@@ -1953,12 +1953,12 @@ def show_figures_tk(
                                 textvariable=label_fs_var, width=10)
         label_spin.grid(row=1, column=1, sticky="w", pady=2)
 
-        ttk.Label(fonts_box, text="Legend").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(fonts_box, text="Leyenda").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
         legend_spin = ttk.Spinbox(fonts_box, from_=6.0, to=40.0, increment=0.5,
                                 textvariable=legend_fs_var, width=10)
         legend_spin.grid(row=2, column=1, sticky="w", pady=2)
 
-        ttk.Label(fonts_box, text="Title").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(fonts_box, text="Título").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
         title_spin = ttk.Spinbox(fonts_box, from_=6.0, to=50.0, increment=0.5,
                                 textvariable=title_fs_var, width=10)
         title_spin.grid(row=3, column=1, sticky="w", pady=2)
@@ -1970,7 +1970,7 @@ def show_figures_tk(
 
         btns_fonts = ttk.Frame(fonts_box)
         btns_fonts.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        ttk.Button(btns_fonts, text="Reset", command=reset_fonts).pack(side="left", expand=True, fill="x")
+        ttk.Button(btns_fonts, text="Restablecer", command=reset_fonts).pack(side="left", expand=True, fill="x")
 
         ttk.Label(style_box, text="Color").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
 
@@ -2022,7 +2022,7 @@ def show_figures_tk(
 
         btns_style = ttk.Frame(style_box)
         btns_style.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(8, 0))
-        ttk.Button(btns_style, text="Reset", command=reset_style).pack(side="left", expand=True, fill="x")
+        ttk.Button(btns_style, text="Restablecer", command=reset_style).pack(side="left", expand=True, fill="x")
 
         pending_title = {"id": None}
 
@@ -2236,7 +2236,7 @@ def show_figures_tk(
 
             btns_f = ttk.Frame(freq_box)
             btns_f.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-            ttk.Button(btns_f, text="Clear", command=lambda: (nlabels_var.set(0), _apply_static_labels()))\
+            ttk.Button(btns_f, text="Limpiar", command=lambda: (nlabels_var.set(0), _apply_static_labels()))\
                 .pack(side="left", expand=True, fill="x")
 
             # Debounced auto-apply for static labels
@@ -2625,34 +2625,34 @@ def show_figures_tk(
 
         btns = ttk.Frame(src_box)
         btns.pack(fill="x", pady=(8, 0))
-        ttk.Button(btns, text="Add", command=add_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
-        ttk.Button(btns, text="Remove", command=remove_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
-        ttk.Button(btns, text="Clear", command=clear_all).pack(side="left", expand=True, fill="x")
+        ttk.Button(btns, text="Añadir", command=add_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(btns, text="Remover", command=remove_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(btns, text="Limpiar", command=clear_all).pack(side="left", expand=True, fill="x")
 
-        ttk.Button(src_box, text="Refresh formatting", command=refresh_formatting).pack(fill="x", pady=(8, 0))
-        ttk.Checkbutton(ctrl, text="Legend", variable=legend_var, command=_apply_legend).pack(anchor="w", pady=(0, 10))
+        ttk.Button(src_box, text="Actualizar formato", command=refresh_formatting).pack(fill="x", pady=(8, 0))
+        ttk.Checkbutton(ctrl, text="Leyenda", variable=legend_var, command=_apply_legend).pack(anchor="w", pady=(0, 10))
 
-        plot_box = ttk.LabelFrame(ctrl, text="Plot", padding=8)
+        plot_box = ttk.LabelFrame(ctrl, text="Gráfico", padding=8)
         plot_box.pack(fill="x", pady=(0, 10))
         plot_box.columnconfigure(1, weight=1)
 
-        ttk.Label(plot_box, text="Title").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(plot_box, text="Título").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
         title_entry = ttk.Entry(plot_box, textvariable=title_text_var, width=20)
         title_entry.grid(row=0, column=1, sticky="ew", pady=2)
 
-        ttk.Label(plot_box, text="Title size").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(plot_box, text="Tamaño del título").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
         title_spin = ttk.Spinbox(plot_box, from_=6.0, to=50.0, increment=0.5, textvariable=title_fs_var, width=10)
         title_spin.grid(row=1, column=1, sticky="w", pady=2)
 
-        ttk.Label(plot_box, text="Label size").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(plot_box, text="Tamaño de etiquetas").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
         label_spin = ttk.Spinbox(plot_box, from_=6.0, to=40.0, increment=0.5, textvariable=label_fs_var, width=10)
         label_spin.grid(row=2, column=1, sticky="w", pady=2)
 
-        ttk.Label(plot_box, text="Legend size").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(plot_box, text="Tamaño de leyenda").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
         legend_spin = ttk.Spinbox(plot_box, from_=6.0, to=40.0, increment=0.5, textvariable=legend_fs_var, width=10)
         legend_spin.grid(row=3, column=1, sticky="w", pady=2)
 
-        ttk.Label(plot_box, text="Tick size").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(plot_box, text="Tamaño de ticks").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
         tick_spin = ttk.Spinbox(plot_box, from_=6.0, to=40.0, increment=0.5, textvariable=tick_fs_var, width=10)
         tick_spin.grid(row=4, column=1, sticky="w", pady=2)
 
@@ -2665,7 +2665,7 @@ def show_figures_tk(
         y_tick_spin.grid(row=6, column=1, sticky="w", pady=2)
 
         # ---- Axis limits (independent in composite) ----
-        lim_box = ttk.LabelFrame(ctrl, text="Axes limits", padding=8)
+        lim_box = ttk.LabelFrame(ctrl, text="Límites de ejes", padding=8)
         lim_box.pack(fill="x", pady=(0, 10))
 
         def _fmt(v: float) -> str:
@@ -2750,7 +2750,7 @@ def show_figures_tk(
 
         b2 = ttk.Frame(lim_box)
         b2.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        ttk.Button(b2, text="Fit all", command=_fit_all).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(b2, text="Ajustar todo", command=_fit_all).pack(side="left", expand=True, fill="x", padx=(0, 6))
         ttk.Button(b2, text="Refresh fields", command=_sync_limit_entries).pack(side="left", expand=True, fill="x")
 
         _apply_plot_settings(redraw=False)
@@ -3093,36 +3093,36 @@ def show_figures_tk(
 
         btns = ttk.Frame(src_box)
         btns.pack(fill="x", pady=(8, 0))
-        ttk.Button(btns, text="Add", command=add_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
-        ttk.Button(btns, text="Remove", command=remove_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
-        ttk.Button(btns, text="Clear", command=clear_all).pack(side="left", expand=True, fill="x")
+        ttk.Button(btns, text="Añadir", command=add_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(btns, text="Remover", command=remove_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(btns, text="Limpiar", command=clear_all).pack(side="left", expand=True, fill="x")
 
-        ttk.Button(src_box, text="Refresh formatting", command=refresh_formatting).pack(fill="x", pady=(8, 0))
-        ttk.Checkbutton(ctrl, text="Legend", variable=legend_var, command=_apply_legend).pack(anchor="w", pady=(0, 4))
+        ttk.Button(src_box, text="Actualizar formato", command=refresh_formatting).pack(fill="x", pady=(8, 0))
+        ttk.Checkbutton(ctrl, text="Leyenda", variable=legend_var, command=_apply_legend).pack(anchor="w", pady=(0, 4))
         ttk.Checkbutton(ctrl, text="Zmod", variable=show_mod_var, command=_sync_axis_visibility).pack(anchor="w")
         ttk.Checkbutton(ctrl, text="Zphz", variable=show_phz_var, command=_sync_axis_visibility).pack(anchor="w", pady=(0, 10))
 
-        plot_box = ttk.LabelFrame(ctrl, text="Plot", padding=8)
+        plot_box = ttk.LabelFrame(ctrl, text="Gráfico", padding=8)
         plot_box.pack(fill="x", pady=(0, 10))
         plot_box.columnconfigure(1, weight=1)
 
-        ttk.Label(plot_box, text="Title").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(plot_box, text="Título").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
         title_entry = ttk.Entry(plot_box, textvariable=title_text_var, width=20)
         title_entry.grid(row=0, column=1, sticky="ew", pady=2)
 
-        ttk.Label(plot_box, text="Title size").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(plot_box, text="Tamaño del título").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
         title_spin = ttk.Spinbox(plot_box, from_=6.0, to=50.0, increment=0.5, textvariable=title_fs_var, width=10)
         title_spin.grid(row=1, column=1, sticky="w", pady=2)
 
-        ttk.Label(plot_box, text="Label size").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(plot_box, text="Tamaño de etiquetas").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
         label_spin = ttk.Spinbox(plot_box, from_=6.0, to=40.0, increment=0.5, textvariable=label_fs_var, width=10)
         label_spin.grid(row=2, column=1, sticky="w", pady=2)
 
-        ttk.Label(plot_box, text="Legend size").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(plot_box, text="Tamaño de leyenda").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
         legend_spin = ttk.Spinbox(plot_box, from_=6.0, to=40.0, increment=0.5, textvariable=legend_fs_var, width=10)
         legend_spin.grid(row=3, column=1, sticky="w", pady=2)
 
-        ttk.Label(plot_box, text="Tick size").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Label(plot_box, text="Tamaño de ticks").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
         tick_spin = ttk.Spinbox(plot_box, from_=6.0, to=40.0, increment=0.5, textvariable=tick_fs_var, width=10)
         tick_spin.grid(row=4, column=1, sticky="w", pady=2)
 
@@ -3134,7 +3134,7 @@ def show_figures_tk(
         y_tick_spin = ttk.Spinbox(plot_box, from_=2, to=20, increment=1, textvariable=y_tick_count_var, width=10)
         y_tick_spin.grid(row=6, column=1, sticky="w", pady=2)
 
-        lim_box = ttk.LabelFrame(ctrl, text="Axes limits", padding=8)
+        lim_box = ttk.LabelFrame(ctrl, text="Límites de ejes", padding=8)
         lim_box.pack(fill="x", pady=(0, 10))
 
         xmin_var = tk.StringVar()
@@ -3217,7 +3217,7 @@ def show_figures_tk(
 
         b2 = ttk.Frame(lim_box)
         b2.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        ttk.Button(b2, text="Fit all", command=_fit_all).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ttk.Button(b2, text="Ajustar todo", command=_fit_all).pack(side="left", expand=True, fill="x", padx=(0, 6))
         ttk.Button(b2, text="Refresh fields", command=_sync_limit_entries).pack(side="left", expand=True, fill="x")
 
         _apply_plot_settings(redraw=False)
@@ -3245,7 +3245,7 @@ def show_figures_tk(
             open_composer_bode()
             return
 
-        mb.showinfo("Componer", "Composer is available for Nyquist and Bode plots.")
+        mb.showinfo("Componer", "Componer está disponible para gráficos Nyquist y Bode.")
 
     compose_btn.configure(command=open_composer_for_current)
 

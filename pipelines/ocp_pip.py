@@ -871,11 +871,11 @@ def _build_v_vs_t_tab(
                 temperature_linestyle=temperature_line_var.get(),
                 tick_count=tick_count_var.get(),
                 plot_title=plot_title_var.get(),
-                title_fontsize=_positive_float(title_fontsize_var.get(), "Title size"),
-                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tick size"),
-                label_fontsize=_positive_float(label_fontsize_var.get(), "Label size"),
-                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Legend size"),
-                line_width=_positive_float(line_width_var.get(), "Line width"),
+                title_fontsize=_positive_float(title_fontsize_var.get(), "Tamaño del título"),
+                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
+                label_fontsize=_positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
+                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
+                line_width=_positive_float(line_width_var.get(), "Grosor de línea"),
                 **_collect_limits(),
             )
         except ValueError as exc:
@@ -919,7 +919,7 @@ def _build_v_vs_t_tab(
             suspend_events["value"] = False
 
         _plot()
-        status_var.set("Autoscale aplicado.")
+        status_var.set("Autoescala aplicada.")
 
     def _reset():
         suspend_events["value"] = True
@@ -971,7 +971,7 @@ def _build_v_vs_t_tab(
         command=_schedule_plot,
     ).pack(anchor="w", padx=8, pady=4)
 
-    ttk.Label(style_box, text="Voltaje line").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Línea de voltaje").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     voltage_line_combo = ttk.Combobox(
         style_box,
         textvariable=voltage_line_var,
@@ -981,7 +981,7 @@ def _build_v_vs_t_tab(
     )
     voltage_line_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Temperatura line").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Línea de temperatura").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     temperature_line_combo = ttk.Combobox(
         style_box,
         textvariable=temperature_line_var,
@@ -999,7 +999,7 @@ def _build_v_vs_t_tab(
     title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
     title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Title size").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño del título").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     title_size_spin = tk.Spinbox(
         text_box,
         from_=6,
@@ -1010,7 +1010,7 @@ def _build_v_vs_t_tab(
     )
     title_size_spin.grid(row=1, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Tick size").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de ticks").grid(row=2, column=0, sticky="w", padx=8, pady=3)
     tick_size_spin = tk.Spinbox(
         text_box,
         from_=6,
@@ -1021,7 +1021,7 @@ def _build_v_vs_t_tab(
     )
     tick_size_spin.grid(row=2, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Label size").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de etiquetas").grid(row=3, column=0, sticky="w", padx=8, pady=3)
     label_size_spin = tk.Spinbox(
         text_box,
         from_=6,
@@ -1032,7 +1032,7 @@ def _build_v_vs_t_tab(
     )
     label_size_spin.grid(row=3, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Legend size").grid(row=4, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de leyenda").grid(row=4, column=0, sticky="w", padx=8, pady=3)
     legend_size_spin = tk.Spinbox(
         text_box,
         from_=6,
@@ -1043,7 +1043,7 @@ def _build_v_vs_t_tab(
     )
     legend_size_spin.grid(row=4, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Line width").grid(row=5, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Grosor de línea").grid(row=5, column=0, sticky="w", padx=8, pady=3)
     line_width_spin = tk.Spinbox(
         text_box,
         from_=0.5,
@@ -1109,8 +1109,8 @@ def _build_v_vs_t_tab(
     buttons_frame = ttk.Frame(controls_frame)
     buttons_frame.pack(fill="x", pady=(5, 0))
 
-    ttk.Button(buttons_frame, text="Reset", command=_reset).pack(side="left", padx=(0, 6))
-    ttk.Button(buttons_frame, text="Autoscale", command=_autofit).pack(side="left")
+    ttk.Button(buttons_frame, text="Restablecer", command=_reset).pack(side="left", padx=(0, 6))
+    ttk.Button(buttons_frame, text="Autoescala", command=_autofit).pack(side="left")
 
     _plot()
 
@@ -1454,11 +1454,11 @@ def _build_delta_v_tab(
                 dvdt_unit=unit,
                 tick_count=tick_count_var.get(),
                 plot_title=plot_title_var.get(),
-                title_fontsize=_positive_float(title_fontsize_var.get(), "Title size"),
-                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tick size"),
-                label_fontsize=_positive_float(label_fontsize_var.get(), "Label size"),
-                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Legend size"),
-                line_width=_positive_float(line_width_var.get(), "Line width"),
+                title_fontsize=_positive_float(title_fontsize_var.get(), "Tamaño del título"),
+                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
+                label_fontsize=_positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
+                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
+                line_width=_positive_float(line_width_var.get(), "Grosor de línea"),
                 **_collect_limits(),
             )
             _update_indicators()
@@ -1530,7 +1530,7 @@ def _build_delta_v_tab(
             suspend_events["value"] = False
 
         _plot()
-        status_var.set("Autoscale aplicado.")
+        status_var.set("Autoescala aplicada.")
 
     def _reset():
         suspend_events["value"] = True
@@ -1594,7 +1594,7 @@ def _build_delta_v_tab(
         variable=show_temperature_var,
         command=_schedule_plot,
     ).pack(anchor="w", padx=8, pady=4)
-    ttk.Label(series_box, text="dV/dt units").pack(anchor="w", padx=8, pady=(6, 2))
+    ttk.Label(series_box, text="Unidades dV/dt").pack(anchor="w", padx=8, pady=(6, 2))
     dvdt_unit_combo = ttk.Combobox(
         series_box,
         textvariable=dvdt_unit_var,
@@ -1612,7 +1612,7 @@ def _build_delta_v_tab(
 
     ttk.Label(indicators_box, text="Delta V total").grid(row=2, column=0, sticky="w", padx=8, pady=3)
     ttk.Label(indicators_box, textvariable=total_delta_v_var).grid(row=2, column=1, sticky="w", padx=8, pady=3)
-    ttk.Label(indicators_box, text="Delta V units").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, text="Unidades Delta V").grid(row=3, column=0, sticky="w", padx=8, pady=3)
     delta_v_unit_combo = ttk.Combobox(
         indicators_box,
         textvariable=delta_v_unit_var,
@@ -1622,7 +1622,7 @@ def _build_delta_v_tab(
     )
     delta_v_unit_combo.grid(row=3, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="dV/dt line").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Línea de dV/dt").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     dvdt_line_combo = ttk.Combobox(
         style_box,
         textvariable=dvdt_line_var,
@@ -1632,7 +1632,7 @@ def _build_delta_v_tab(
     )
     dvdt_line_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Voltaje line").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Línea de voltaje").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     voltage_line_combo = ttk.Combobox(
         style_box,
         textvariable=voltage_line_var,
@@ -1642,7 +1642,7 @@ def _build_delta_v_tab(
     )
     voltage_line_combo.grid(row=1, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Temp line").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Línea de temperatura").grid(row=2, column=0, sticky="w", padx=8, pady=3)
     temperature_line_combo = ttk.Combobox(
         style_box,
         textvariable=temperature_line_var,
@@ -1660,23 +1660,23 @@ def _build_delta_v_tab(
     title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
     title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Title size").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño del título").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     title_size_spin = tk.Spinbox(text_box, from_=6, to=30, increment=0.5, textvariable=title_fontsize_var, width=8)
     title_size_spin.grid(row=1, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Tick size").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de ticks").grid(row=2, column=0, sticky="w", padx=8, pady=3)
     tick_size_spin = tk.Spinbox(text_box, from_=6, to=24, increment=0.5, textvariable=tick_fontsize_var, width=8)
     tick_size_spin.grid(row=2, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Label size").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de etiquetas").grid(row=3, column=0, sticky="w", padx=8, pady=3)
     label_size_spin = tk.Spinbox(text_box, from_=6, to=24, increment=0.5, textvariable=label_fontsize_var, width=8)
     label_size_spin.grid(row=3, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Legend size").grid(row=4, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de leyenda").grid(row=4, column=0, sticky="w", padx=8, pady=3)
     legend_size_spin = tk.Spinbox(text_box, from_=6, to=24, increment=0.5, textvariable=legend_fontsize_var, width=8)
     legend_size_spin.grid(row=4, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Line width").grid(row=5, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Grosor de línea").grid(row=5, column=0, sticky="w", padx=8, pady=3)
     line_width_spin = tk.Spinbox(text_box, from_=0.5, to=5.0, increment=0.1, textvariable=line_width_var, width=8)
     line_width_spin.grid(row=5, column=1, sticky="w", padx=8, pady=3)
 
@@ -1741,8 +1741,8 @@ def _build_delta_v_tab(
     buttons_frame = ttk.Frame(controls_frame)
     buttons_frame.pack(fill="x", pady=(5, 0))
 
-    ttk.Button(buttons_frame, text="Reset", command=_reset).pack(side="left", padx=(0, 6))
-    ttk.Button(buttons_frame, text="Autoscale", command=_autofit).pack(side="left")
+    ttk.Button(buttons_frame, text="Restablecer", command=_reset).pack(side="left", padx=(0, 6))
+    ttk.Button(buttons_frame, text="Autoescala", command=_autofit).pack(side="left")
 
     _plot()
 

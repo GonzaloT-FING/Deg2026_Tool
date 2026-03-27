@@ -396,10 +396,10 @@ def compute_autofit_v_vs_i_limits(
     decimals: int = 1,
 ) -> dict[str, str]:
     if not (show_asc or show_dsc):
-        raise ValueError("Debe seleccionar Asc y/o Dsc para usar Autoscale.")
+        raise ValueError("Debe seleccionar Ascendente y/o Descendente para usar Autoescala.")
 
     if not (show_voltage or show_temperature):
-        raise ValueError("Debe seleccionar al menos una magnitud para usar Autoscale.")
+        raise ValueError("Debe seleccionar al menos una magnitud para usar Autoescala.")
 
     curve_data = build_curve_bundle_data(bundle)
     area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
@@ -977,7 +977,7 @@ def compute_autofit_dv_di_limits(
     decimals: int = 1,
 ) -> dict[str, str]:
     if not (show_asc or show_dsc):
-        raise ValueError("Debe seleccionar Asc y/o Dsc para usar Autoscale.")
+        raise ValueError("Debe seleccionar Ascendente y/o Descendente para usar Autoescala.")
 
     curve_data = build_curve_bundle_data(bundle)
 
@@ -1143,7 +1143,7 @@ def draw_dv_di_on_figure(
         ax_main.plot(
             [r["Corriente"] for r in asc_rows],
             [r["dVdI"] for r in asc_rows],
-            label="Asc dV/dI",
+            label="dV/dI ascendente",
             **_line_kwargs(
                 PC_PLOT_COLORS["asc_voltage"],
                 asc_marker_mpl,
@@ -1155,7 +1155,7 @@ def draw_dv_di_on_figure(
         ax_main.plot(
             [r["Corriente"] for r in dsc_rows],
             [r["dVdI"] for r in dsc_rows],
-            label="Dsc dV/dI",
+            label="dV/dI descendente",
             **_line_kwargs(
                 PC_PLOT_COLORS["dsc_voltage"],
                 dsc_marker_mpl,
@@ -1519,10 +1519,10 @@ def compute_autofit_series_by_time_limits(
     decimals: int = 1,
 ) -> dict[str, str]:
     if not (show_asc or show_dsc):
-        raise ValueError("Debe seleccionar Asc y/o Dsc para usar Autoscale.")
+        raise ValueError("Debe seleccionar Ascendente y/o Descendente para usar Autoescala.")
 
     if not (show_voltage or show_current or show_temperature):
-        raise ValueError("Debe seleccionar al menos una magnitud para usar Autoscale.")
+        raise ValueError("Debe seleccionar al menos una magnitud para usar Autoescala.")
 
     plot_data = build_series_by_time_plot_data(bundle)
 
@@ -1892,10 +1892,10 @@ def compute_autofit_series_by_time_limits(
     time_unit: str = "s",
 ) -> dict[str, str]:
     if not (show_asc or show_dsc):
-        raise ValueError("Debe seleccionar Asc y/o Dsc para usar Autoscale.")
+        raise ValueError("Debe seleccionar Ascendente y/o Descendente para usar Autoescala.")
 
     if not (show_voltage or show_current or show_temperature):
-        raise ValueError("Debe seleccionar al menos una magnitud para usar Autoscale.")
+        raise ValueError("Debe seleccionar al menos una magnitud para usar Autoescala.")
 
     plot_data = build_series_by_time_plot_data(bundle, time_unit=time_unit)
 
@@ -2250,7 +2250,7 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
     style_box = ttk.LabelFrame(controls_frame, text="Estilo")
     style_box.pack(fill="x", pady=5)
 
-    ttk.Label(style_box, text="Asc marker").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Marcador ascendente").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     asc_marker_combo = ttk.Combobox(
         style_box,
         textvariable=asc_marker_var,
@@ -2260,7 +2260,7 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
     )
     asc_marker_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Dsc marker").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Marcador descendente").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     dsc_marker_combo = ttk.Combobox(
         style_box,
         textvariable=dsc_marker_var,
@@ -2270,7 +2270,7 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
     )
     dsc_marker_combo.grid(row=1, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Voltaje line").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Línea de voltaje").grid(row=2, column=0, sticky="w", padx=8, pady=3)
     voltage_line_combo = ttk.Combobox(
         style_box,
         textvariable=voltage_line_var,
@@ -2280,7 +2280,7 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
     )
     voltage_line_combo.grid(row=2, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Temperatura line").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Línea de temperatura").grid(row=3, column=0, sticky="w", padx=8, pady=3)
     temperature_line_combo = ttk.Combobox(
         style_box,
         textvariable=temperature_line_var,
@@ -2291,7 +2291,7 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
 
     temperature_line_combo.grid(row=3, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Marker size").grid(row=4, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Tamaño de marcador").grid(row=4, column=0, sticky="w", padx=8, pady=3)
     marker_size_entry = ttk.Spinbox(
         style_box,
         from_=0.0,
@@ -2304,12 +2304,12 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
 
     ttk.Checkbutton(
         style_box,
-        text="Hollow markers",
+        text="Marcadores vacíos",
         variable=hollow_markers_var,
         command=_schedule_plot,
     ).grid(row=5, column=0, columnspan=2, sticky="w", padx=8, pady=4)
 
-    ttk.Label(style_box, text="Line width").grid(row=6, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Grosor de línea").grid(row=6, column=0, sticky="w", padx=8, pady=3)
     line_width_entry = ttk.Spinbox(
         style_box,
         from_=0.0,
@@ -2320,7 +2320,7 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
     )
     line_width_entry.grid(row=6, column=1, sticky="w", padx=8, pady=3)
 
-    point_box = ttk.LabelFrame(controls_frame, text="Punto dentro de cada step")
+    point_box = ttk.LabelFrame(controls_frame, text="Punto dentro de cada paso")
     point_box.pack(fill="x", pady=5)
 
     limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
@@ -2336,19 +2336,19 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
     title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
     title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Title size").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño del título").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     title_size_entry = ttk.Spinbox(text_box, from_=6.0, to=50.0, increment=0.5, textvariable=title_fontsize_var, width=10)
     title_size_entry.grid(row=1, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Tick size").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de ticks").grid(row=2, column=0, sticky="w", padx=8, pady=3)
     tick_size_entry = ttk.Spinbox(text_box, from_=6.0, to=40.0, increment=0.5, textvariable=tick_fontsize_var, width=10)
     tick_size_entry.grid(row=2, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Label size").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de etiquetas").grid(row=3, column=0, sticky="w", padx=8, pady=3)
     label_size_entry = ttk.Spinbox(text_box, from_=6.0, to=40.0, increment=0.5, textvariable=label_fontsize_var, width=10)
     label_size_entry.grid(row=3, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Legend size").grid(row=4, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de leyenda").grid(row=4, column=0, sticky="w", padx=8, pady=3)
     legend_size_entry = ttk.Spinbox(text_box, from_=6.0, to=40.0, increment=0.5, textvariable=legend_fontsize_var, width=10)
     legend_size_entry.grid(row=4, column=1, sticky="w", padx=8, pady=3)
 
@@ -2492,13 +2492,13 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
                 x_tick_count=x_tick_count_var.get(),
                 y_tick_count=y_tick_count_var.get(),
                 plot_title=plot_title_var.get(),
-                title_fontsize=_positive_float(title_fontsize_var.get(), "Title size"),
-                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tick size"),
-                label_fontsize=_positive_float(label_fontsize_var.get(), "Label size"),
-                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Legend size"),
-                marker_size=_positive_float(marker_size_var.get(), "Marker size"),
+                title_fontsize=_positive_float(title_fontsize_var.get(), "Tamaño del título"),
+                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
+                label_fontsize=_positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
+                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
+                marker_size=_positive_float(marker_size_var.get(), "Tamaño de marcador"),
                 hollow_markers=hollow_markers_var.get(),
-                line_width=_positive_float(line_width_var.get(), "Line width"),
+                line_width=_positive_float(line_width_var.get(), "Grosor de línea"),
                 show_slope_guides=show_slope_guides_var.get(),
                 indicator_current=indicator_current_var.get(),
                 **_collect_limits(),
@@ -2560,7 +2560,7 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
             suspend_events["value"] = False
 
         _plot()
-        status_var.set("Autoscale aplicado.")
+        status_var.set("Autoescala aplicada.")
 
     def _reset():
         suspend_events["value"] = True
@@ -2627,10 +2627,10 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
     ):
         spin.configure(command=_schedule_plot)
 
-    ttk.Checkbutton(series_box, text="Asc", variable=asc_var, command=_schedule_plot).pack(
+    ttk.Checkbutton(series_box, text="Ascendente", variable=asc_var, command=_schedule_plot).pack(
         anchor="w", padx=8, pady=2
     )
-    ttk.Checkbutton(series_box, text="Dsc", variable=dsc_var, command=_schedule_plot).pack(
+    ttk.Checkbutton(series_box, text="Descendente", variable=dsc_var, command=_schedule_plot).pack(
         anchor="w", padx=8, pady=2
     )
     ttk.Checkbutton(series_box, text="Voltaje", variable=voltage_var, command=_schedule_plot).pack(
@@ -2641,13 +2641,13 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
     )
     ttk.Checkbutton(
         series_box,
-        text="x-axis in A/cm^2",
+        text="x-axis A/cm^2",
         variable=current_density_var,
         command=_on_current_density_toggle,
     ).pack(anchor="w", padx=8, pady=2)
 
     indicators_box.columnconfigure(1, weight=1)
-    ttk.Label(indicators_box, text="Corriente").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, text="Pendiente dV/dI a corriente:").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     ttk.Label(indicators_box, textvariable=indicator_current_value_var).grid(row=0, column=1, sticky="w", padx=8, pady=3)
 
     indicator_scale = ttk.Scale(
@@ -2660,15 +2660,15 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
     )
     indicator_scale.grid(row=1, column=0, columnspan=2, sticky="we", padx=8, pady=4)
 
-    ttk.Label(indicators_box, text="Asc dV/dI").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, text="dV/dI ascendente").grid(row=2, column=0, sticky="w", padx=8, pady=3)
     ttk.Label(indicators_box, textvariable=indicator_asc_slope_var).grid(row=2, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(indicators_box, text="Dsc dV/dI").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, text="dV/dI descendente").grid(row=3, column=0, sticky="w", padx=8, pady=3)
     ttk.Label(indicators_box, textvariable=indicator_dsc_slope_var).grid(row=3, column=1, sticky="w", padx=8, pady=3)
 
     ttk.Checkbutton(
         indicators_box,
-        text="Show dV/dI guide line",
+        text="Mostrar guía",
         variable=show_slope_guides_var,
         command=_schedule_plot,
     ).grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=4)
@@ -2733,8 +2733,8 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
     buttons_frame = ttk.Frame(controls_frame)
     buttons_frame.pack(fill="x", pady=(5, 0))
 
-    ttk.Button(buttons_frame, text="Reset", command=_reset).pack(side="left", padx=(0, 6))
-    ttk.Button(buttons_frame, text="Autoscale", command=_autofit).pack(side="left")
+    ttk.Button(buttons_frame, text="Restablecer", command=_reset).pack(side="left", padx=(0, 6))
+    ttk.Button(buttons_frame, text="Autoescala", command=_autofit).pack(side="left")
 
     _update_point_label()
     _plot()
@@ -2769,7 +2769,7 @@ def _build_v_vs_i_tab(
     bundle: CurveBundle,
     font_default_values: dict[str, str],
 ) -> dict[str, object]:
-    tab_title = f"Stage {bundle.curve_id} - {bundle.description}"
+    tab_title = f"Etapa {bundle.curve_id} - {bundle.description}"
     default_limits = compute_default_v_vs_i_limits(bundle)
 
     tab = ttk.Frame(notebook)
@@ -2970,13 +2970,13 @@ def _build_v_vs_i_tab(
                 x_tick_count=x_tick_count_var.get(),
                 y_tick_count=y_tick_count_var.get(),
                 plot_title=plot_title_var.get(),
-                title_fontsize=_positive_float(title_fontsize_var.get(), "Title size"),
-                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tick size"),
-                label_fontsize=_positive_float(label_fontsize_var.get(), "Label size"),
-                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Legend size"),
-                marker_size=_positive_float(marker_size_var.get(), "Marker size"),
+                title_fontsize=_positive_float(title_fontsize_var.get(), "Tamaño del título"),
+                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
+                label_fontsize=_positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
+                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
+                marker_size=_positive_float(marker_size_var.get(), "Tamaño de marcador"),
                 hollow_markers=hollow_markers_var.get(),
-                line_width=_positive_float(line_width_var.get(), "Line width"),
+                line_width=_positive_float(line_width_var.get(), "Grosor de línea"),
                 show_slope_guides=show_slope_guides_var.get(),
                 indicator_current=indicator_current_var.get(),
                 **_collect_limits(),
@@ -3053,7 +3053,7 @@ def _build_v_vs_i_tab(
             suspend_events["value"] = False
 
         _plot()
-        status_var.set("Autoscale aplicado.")
+        status_var.set("Autoescala aplicada.")
 
     def _reset() -> None:
         suspend_events["value"] = True
@@ -3106,25 +3106,25 @@ def _build_v_vs_i_tab(
 
     ttk.Label(
         controls_frame,
-        text=f"Curva detectada:\nStage {bundle.curve_id} - {bundle.description}",
+        text=f"Curva detectada:\nEtapa {bundle.curve_id} - {bundle.description}",
         justify="left",
     ).pack(anchor="w", pady=(0, 10))
 
     series_box = ttk.LabelFrame(controls_frame, text="Series")
     series_box.pack(fill="x", pady=5)
     for text, variable, command in (
-        ("Asc", asc_var, _schedule_plot),
-        ("Dsc", dsc_var, _schedule_plot),
+        ("Ascendente", asc_var, _schedule_plot),
+        ("Descendente", dsc_var, _schedule_plot),
         ("Voltaje", voltage_var, _schedule_plot),
         ("Temperatura", temperature_var, _schedule_plot),
-        ("x-axis in A/cm^2", current_density_var, _on_current_density_toggle),
+        ("x-axis A/cm^2", current_density_var, _on_current_density_toggle),
     ):
         ttk.Checkbutton(series_box, text=text, variable=variable, command=command).pack(anchor="w", padx=8, pady=2)
 
     indicators_box = ttk.LabelFrame(controls_frame, text="Indicadores")
     indicators_box.pack(fill="x", pady=5)
     indicators_box.columnconfigure(1, weight=1)
-    ttk.Label(indicators_box, text="Corriente").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, text="Pendiente dV/dI a corriente:").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     ttk.Label(indicators_box, textvariable=indicator_current_value_var).grid(row=0, column=1, sticky="w", padx=8, pady=3)
     indicator_scale = ttk.Scale(
         indicators_box,
@@ -3135,13 +3135,13 @@ def _build_v_vs_i_tab(
         command=lambda _value=None: _update_slope_indicator(redraw_guides=True),
     )
     indicator_scale.grid(row=1, column=0, columnspan=2, sticky="we", padx=8, pady=4)
-    ttk.Label(indicators_box, text="Asc dV/dI").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, text="dV/dI ascendente").grid(row=2, column=0, sticky="w", padx=8, pady=3)
     ttk.Label(indicators_box, textvariable=indicator_asc_slope_var).grid(row=2, column=1, sticky="w", padx=8, pady=3)
-    ttk.Label(indicators_box, text="Dsc dV/dI").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, text="dV/dI descendente").grid(row=3, column=0, sticky="w", padx=8, pady=3)
     ttk.Label(indicators_box, textvariable=indicator_dsc_slope_var).grid(row=3, column=1, sticky="w", padx=8, pady=3)
     ttk.Checkbutton(
         indicators_box,
-        text="Show dV/dI guide line",
+        text="Mostrar guía",
         variable=show_slope_guides_var,
         command=_schedule_plot,
     ).grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=4)
@@ -3149,10 +3149,10 @@ def _build_v_vs_i_tab(
     style_box = ttk.LabelFrame(controls_frame, text="Estilo")
     style_box.pack(fill="x", pady=5)
     style_specs = [
-        ("Asc marker", asc_marker_var, MARKER_OPTIONS),
-        ("Dsc marker", dsc_marker_var, MARKER_OPTIONS),
-        ("Voltaje line", voltage_line_var, LINESTYLE_OPTIONS),
-        ("Temperatura line", temperature_line_var, LINESTYLE_OPTIONS),
+        ("Marcador ascendente", asc_marker_var, MARKER_OPTIONS),
+        ("Marcador descendente", dsc_marker_var, MARKER_OPTIONS),
+        ("Línea de voltaje", voltage_line_var, LINESTYLE_OPTIONS),
+        ("Línea de temperatura", temperature_line_var, LINESTYLE_OPTIONS),
     ]
     for row_idx, (label, variable, values) in enumerate(style_specs):
         ttk.Label(style_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
@@ -3161,8 +3161,8 @@ def _build_v_vs_i_tab(
         combo.bind("<<ComboboxSelected>>", _schedule_plot)
     for row_idx, (label, variable, start, stop, step) in enumerate(
         (
-            ("Marker size", marker_size_var, 0.0, 20.0, 0.5),
-            ("Line width", line_width_var, 0.0, 10.0, 0.1),
+            ("Tamaño de marcador", marker_size_var, 0.0, 20.0, 0.5),
+            ("Grosor de línea", line_width_var, 0.0, 10.0, 0.1),
         ),
         start=len(style_specs),
     ):
@@ -3172,12 +3172,12 @@ def _build_v_vs_i_tab(
         _bind_plot_widget(spin)
     ttk.Checkbutton(
         style_box,
-        text="Hollow markers",
+        text="Marcadores vacíos",
         variable=hollow_markers_var,
         command=_schedule_plot,
     ).grid(row=len(style_specs) + 2, column=0, columnspan=2, sticky="w", padx=8, pady=4)
 
-    point_box = ttk.LabelFrame(controls_frame, text="Punto dentro de cada step")
+    point_box = ttk.LabelFrame(controls_frame, text="Punto dentro de cada paso")
     point_box.pack(fill="x", pady=5)
     point_value_label = ttk.Label(point_box, text="1.00")
     point_value_label.pack(anchor="e", padx=8, pady=(4, 0))
@@ -3191,16 +3191,16 @@ def _build_v_vs_i_tab(
     )
     point_scale.pack(fill="x", padx=8, pady=6)
     point_scale.bind("<ButtonRelease-1>", lambda _event: _schedule_plot())
-    ttk.Label(point_box, text="0 = primer punto, 1 = ultimo punto").pack(anchor="w", padx=8, pady=(0, 6))
+    ttk.Label(point_box, text="0 = primer punto, 1 = último punto").pack(anchor="w", padx=8, pady=(0, 6))
 
-    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamanos")
+    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamaños")
     text_box.pack(fill="x", pady=5)
     text_specs = [
-        ("Titulo", plot_title_var, None),
-        ("Title size", title_fontsize_var, (6.0, 50.0, 0.5)),
-        ("Tick size", tick_fontsize_var, (6.0, 40.0, 0.5)),
-        ("Label size", label_fontsize_var, (6.0, 40.0, 0.5)),
-        ("Legend size", legend_fontsize_var, (6.0, 40.0, 0.5)),
+        ("Título", plot_title_var, None),
+        ("Tamaño del título", title_fontsize_var, (6.0, 50.0, 0.5)),
+        ("Tamaño de ticks", tick_fontsize_var, (6.0, 40.0, 0.5)),
+        ("Tamaño de etiquetas", label_fontsize_var, (6.0, 40.0, 0.5)),
+        ("Tamaño de leyenda", legend_fontsize_var, (6.0, 40.0, 0.5)),
     ]
     for row_idx, (label, variable, spin_cfg) in enumerate(text_specs):
         ttk.Label(text_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
@@ -3218,7 +3218,7 @@ def _build_v_vs_i_tab(
         widget.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
         _bind_plot_widget(widget)
 
-    limits_box = ttk.LabelFrame(controls_frame, text="Limites de ejes")
+    limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
     limits_box.pack(fill="x", pady=5)
     for row_idx, (label, variable) in enumerate(
         (
@@ -3250,8 +3250,8 @@ def _build_v_vs_i_tab(
 
     buttons = ttk.Frame(controls_frame)
     buttons.pack(fill="x", pady=(5, 0))
-    ttk.Button(buttons, text="Reset", command=_reset).pack(side="left", padx=(0, 6))
-    ttk.Button(buttons, text="Autoscale", command=_autofit).pack(side="left")
+    ttk.Button(buttons, text="Restablecer", command=_reset).pack(side="left", padx=(0, 6))
+    ttk.Button(buttons, text="Autoescala", command=_autofit).pack(side="left")
 
     _update_point_label()
     _plot()
@@ -3307,7 +3307,7 @@ def _open_v_vs_i_composer(
     toolbar.update()
     toolbar.pack(side="top", fill="x")
 
-    title_var = tk.StringVar(value="Composite - V vs I")
+    title_var = tk.StringVar(value="Composición - V vs I")
     legend_var = tk.BooleanVar(value=True)
     status_var = tk.StringVar(value="Listo.")
     comp_lines: dict[str, list[object]] = {}
@@ -3463,7 +3463,7 @@ def _open_v_vs_i_composer(
         ax_main.cla()
         ax_temp.cla()
         _apply_axes()
-        status_var.set("Composite limpiado.")
+        status_var.set("Composición limpiada.")
 
     def _refresh_formatting() -> None:
         active = list(comp_lines.keys())
@@ -3472,7 +3472,7 @@ def _open_v_vs_i_composer(
             lb.selection_set(idx_to_key.index(key))
         _add_selected()
 
-    src_box = ttk.LabelFrame(ctrl, text="Curve sources", padding=8)
+    src_box = ttk.LabelFrame(ctrl, text="Fuentes de curvas", padding=8)
     src_box.pack(fill="x", pady=(0, 10))
     lb = tk.Listbox(src_box, selectmode="extended", height=12, exportselection=False)
     lb.pack(fill="x")
@@ -3480,28 +3480,28 @@ def _open_v_vs_i_composer(
 
     btns = ttk.Frame(src_box)
     btns.pack(fill="x", pady=(8, 0))
-    ttk.Button(btns, text="Add", command=_add_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
-    ttk.Button(btns, text="Remove", command=_remove_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
-    ttk.Button(btns, text="Clear", command=_clear_all).pack(side="left", expand=True, fill="x")
-    ttk.Button(src_box, text="Refresh formatting", command=_refresh_formatting).pack(fill="x", pady=(8, 0))
+    ttk.Button(btns, text="Añadir", command=_add_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
+    ttk.Button(btns, text="Remover", command=_remove_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
+    ttk.Button(btns, text="Limpiar", command=_clear_all).pack(side="left", expand=True, fill="x")
+    ttk.Button(src_box, text="Actualizar formato", command=_refresh_formatting).pack(fill="x", pady=(8, 0))
 
-    plot_box = ttk.LabelFrame(ctrl, text="Plot", padding=8)
+    plot_box = ttk.LabelFrame(ctrl, text="Gráfico", padding=8)
     plot_box.pack(fill="x", pady=(0, 10))
     plot_box.columnconfigure(1, weight=1)
-    ttk.Label(plot_box, text="Title").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
+    ttk.Label(plot_box, text="Título").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
     title_entry = ttk.Entry(plot_box, textvariable=title_var, width=22)
     title_entry.grid(row=0, column=1, sticky="ew", pady=2)
     title_entry.bind("<Return>", lambda _event: _apply_axes())
     title_entry.bind("<FocusOut>", lambda _event: _apply_axes())
     title_entry.bind("<KeyRelease>", lambda _event: _apply_axes())
-    ttk.Checkbutton(plot_box, text="Legend", variable=legend_var, command=_apply_axes).grid(
+    ttk.Checkbutton(plot_box, text="Leyenda", variable=legend_var, command=_apply_axes).grid(
         row=1,
         column=0,
         columnspan=2,
         sticky="w",
         pady=(4, 4),
     )
-    ttk.Button(plot_box, text="Fit all", command=_fit_all).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+    ttk.Button(plot_box, text="Ajustar todo", command=_fit_all).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
 
     ttk.Label(ctrl, textvariable=status_var, wraplength=260, justify="left").pack(anchor="w", fill="x")
 
@@ -3542,7 +3542,7 @@ def open_v_vs_i_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
 
     header = ttk.Frame(win, padding=(10, 10, 10, 0))
     header.pack(fill="x")
-    ttk.Label(header, text="Curvas detectadas por Stage").pack(side="left")
+    ttk.Label(header, text="Curvas detectadas por etapa").pack(side="left")
     ttk.Button(
         header,
         text="Componer curvas",
@@ -3695,10 +3695,10 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     style_box = ttk.LabelFrame(controls_frame, text="Estilo")
     style_box.pack(fill="x", pady=5)
 
-    smoothing_box = ttk.LabelFrame(controls_frame, text="Smoothing")
+    smoothing_box = ttk.LabelFrame(controls_frame, text="Suavizado")
     smoothing_box.pack(fill="x", pady=5)
 
-    ttk.Label(style_box, text="Asc marker").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Marcador ascendente").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     asc_marker_combo = ttk.Combobox(
         style_box,
         textvariable=asc_marker_var,
@@ -3708,7 +3708,7 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     )
     asc_marker_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Dsc marker").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Marcador descendente").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     dsc_marker_combo = ttk.Combobox(
         style_box,
         textvariable=dsc_marker_var,
@@ -3718,7 +3718,7 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     )
     dsc_marker_combo.grid(row=1, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="dV/dI line").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Línea de dV/dI").grid(row=2, column=0, sticky="w", padx=8, pady=3)
     dvdi_line_combo = ttk.Combobox(
         style_box,
         textvariable=dvdi_line_var,
@@ -3728,7 +3728,7 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     )
     dvdi_line_combo.grid(row=2, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(smoothing_box, text="Algorithm").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(smoothing_box, text="Algoritmo").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     smoothing_algo_combo = ttk.Combobox(
         smoothing_box,
         textvariable=smoothing_algorithm_var,
@@ -3738,7 +3738,7 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     )
     smoothing_algo_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
 
-    smoothing_window_label = ttk.Label(smoothing_box, text="Median window")
+    smoothing_window_label = ttk.Label(smoothing_box, text="Ventana de mediana")
     smoothing_window_label.grid(row=1, column=0, sticky="w", padx=8, pady=3)
     smoothing_window_spin = tk.Spinbox(
         smoothing_box,
@@ -3753,12 +3753,12 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     def _update_smoothing_ui(*_args):
         algorithm = smoothing_algorithm_var.get()
         if algorithm == "Rolling average":
-            smoothing_window_label.config(text="Average window")
+            smoothing_window_label.config(text="Ventana de promedio")
         else:
-            smoothing_window_label.config(text="Median window")
+            smoothing_window_label.config(text="Ventana de mediana")
         _schedule_plot()
 
-    point_box = ttk.LabelFrame(controls_frame, text="Punto dentro de cada step")
+    point_box = ttk.LabelFrame(controls_frame, text="Punto dentro de cada paso")
     point_box.pack(fill="x", pady=5)
 
     limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
@@ -3771,34 +3771,34 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
     title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Title size").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño del título").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     title_size_entry = ttk.Spinbox(text_box, from_=6.0, to=50.0, increment=0.5, textvariable=title_fontsize_var, width=10)
     title_size_entry.grid(row=1, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Tick size").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de ticks").grid(row=2, column=0, sticky="w", padx=8, pady=3)
     tick_size_entry = ttk.Spinbox(text_box, from_=6.0, to=40.0, increment=0.5, textvariable=tick_fontsize_var, width=10)
     tick_size_entry.grid(row=2, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Label size").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de etiquetas").grid(row=3, column=0, sticky="w", padx=8, pady=3)
     label_size_entry = ttk.Spinbox(text_box, from_=6.0, to=40.0, increment=0.5, textvariable=label_fontsize_var, width=10)
     label_size_entry.grid(row=3, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Legend size").grid(row=4, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de leyenda").grid(row=4, column=0, sticky="w", padx=8, pady=3)
     legend_size_entry = ttk.Spinbox(text_box, from_=6.0, to=40.0, increment=0.5, textvariable=legend_fontsize_var, width=10)
     legend_size_entry.grid(row=4, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Marker size").grid(row=5, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de marcador").grid(row=5, column=0, sticky="w", padx=8, pady=3)
     marker_size_entry = ttk.Spinbox(text_box, from_=0.0, to=20.0, increment=0.5, textvariable=marker_size_var, width=10)
     marker_size_entry.grid(row=5, column=1, sticky="w", padx=8, pady=3)
 
     ttk.Checkbutton(
         text_box,
-        text="Hollow markers",
+        text="Marcadores vacíos",
         variable=hollow_markers_var,
         command=_schedule_plot,
     ).grid(row=6, column=0, columnspan=2, sticky="w", padx=8, pady=4)
 
-    ttk.Label(text_box, text="Line width").grid(row=7, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Grosor de línea").grid(row=7, column=0, sticky="w", padx=8, pady=3)
     line_width_entry = ttk.Spinbox(text_box, from_=0.0, to=10.0, increment=0.1, textvariable=line_width_var, width=10)
     line_width_entry.grid(row=7, column=1, sticky="w", padx=8, pady=3)
 
@@ -3858,13 +3858,13 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
                 x_tick_count=x_tick_count_var.get(),
                 y_tick_count=y_tick_count_var.get(),
                 plot_title=plot_title_var.get(),
-                title_fontsize=_positive_float(title_fontsize_var.get(), "Title size"),
-                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tick size"),
-                label_fontsize=_positive_float(label_fontsize_var.get(), "Label size"),
-                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Legend size"),
-                marker_size=_positive_float(marker_size_var.get(), "Marker size"),
+                title_fontsize=_positive_float(title_fontsize_var.get(), "Tamaño del título"),
+                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
+                label_fontsize=_positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
+                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
+                marker_size=_positive_float(marker_size_var.get(), "Tamaño de marcador"),
                 hollow_markers=hollow_markers_var.get(),
-                line_width=_positive_float(line_width_var.get(), "Line width"),
+                line_width=_positive_float(line_width_var.get(), "Grosor de línea"),
                 **_collect_limits(),
             )
         except ValueError as exc:
@@ -3922,7 +3922,7 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
             suspend_events["value"] = False
 
         _plot()
-        status_var.set("Autoscale aplicado.")
+        status_var.set("Autoescala aplicada.")
 
     def _reset():
         suspend_events["value"] = True
@@ -3988,13 +3988,13 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     ):
         spin.configure(command=_schedule_plot)
 
-    ttk.Checkbutton(series_box, text="Asc", variable=asc_var, command=_schedule_plot).pack(
+    ttk.Checkbutton(series_box, text="Ascendente", variable=asc_var, command=_schedule_plot).pack(
         anchor="w", padx=8, pady=2
     )
-    ttk.Checkbutton(series_box, text="Dsc", variable=dsc_var, command=_schedule_plot).pack(
+    ttk.Checkbutton(series_box, text="Descendente", variable=dsc_var, command=_schedule_plot).pack(
         anchor="w", padx=8, pady=2
     )
-    ttk.Checkbutton(series_box, text="Logarithmic y-axis", variable=logarithmic_y_var, command=_schedule_plot).pack(
+    ttk.Checkbutton(series_box, text="Eje y logarítmico", variable=logarithmic_y_var, command=_schedule_plot).pack(
         anchor="w", padx=8, pady=2
     )
 
@@ -4060,8 +4060,8 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     buttons_frame = ttk.Frame(controls_frame)
     buttons_frame.pack(fill="x", pady=(5, 0))
 
-    ttk.Button(buttons_frame, text="Reset", command=_reset).pack(side="left", padx=(0, 6))
-    ttk.Button(buttons_frame, text="Autoscale", command=_autofit).pack(side="left")
+    ttk.Button(buttons_frame, text="Restablecer", command=_reset).pack(side="left", padx=(0, 6))
+    ttk.Button(buttons_frame, text="Autoescala", command=_autofit).pack(side="left")
 
     point_scale.bind("<ButtonRelease-1>", _on_scale_release)
     point_scale.bind("<B1-Motion>", _on_scale_move)
@@ -4410,12 +4410,12 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
                 x_tick_count=x_tick_count_var.get(),
                 y_tick_count=y_tick_count_var.get(),
                 plot_title=plot_title_var.get(),
-                title_fontsize=_positive_float(title_fontsize_var.get(), "Title size"),
-                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tick size"),
-                label_fontsize=_positive_float(label_fontsize_var.get(), "Label size"),
-                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Legend size"),
-                marker_size=_positive_float(marker_size_var.get(), "Marker size"),
-                line_width=_positive_float(line_width_var.get(), "Line width"),
+                title_fontsize=_positive_float(title_fontsize_var.get(), "Tamaño del título"),
+                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
+                label_fontsize=_positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
+                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
+                marker_size=_positive_float(marker_size_var.get(), "Tamaño de marcador"),
+                line_width=_positive_float(line_width_var.get(), "Grosor de línea"),
                 hollow_markers=hollow_markers_var.get(),
                 **_collect_limits(),
             )
@@ -4468,7 +4468,7 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
             suspend_events["value"] = False
 
         _plot()
-        status_var.set("Autoscale aplicado.")
+        status_var.set("Autoescala aplicada.")
 
     def _on_time_unit_changed(*_args):
         if suspend_events["value"]:
@@ -4553,12 +4553,12 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
     limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
     limits_box.pack(fill="x", pady=5)
 
-    ttk.Checkbutton(series_box, text="Asc", variable=asc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
-    ttk.Checkbutton(series_box, text="Dsc", variable=dsc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
+    ttk.Checkbutton(series_box, text="Ascendente", variable=asc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
+    ttk.Checkbutton(series_box, text="Descendente", variable=dsc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Voltaje", variable=voltage_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Corriente", variable=current_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Temperatura", variable=temperature_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
-    ttk.Label(series_box, text="Unidad tiempo").pack(anchor="w", padx=8, pady=(8, 2))
+    ttk.Label(series_box, text="Unidad de tiempo").pack(anchor="w", padx=8, pady=(8, 2))
     time_unit_combo = ttk.Combobox(
         series_box,
         textvariable=time_unit_var,
@@ -4568,15 +4568,15 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
     )
     time_unit_combo.pack(anchor="w", padx=8, pady=(0, 4))
 
-    ttk.Label(style_box, text="Voltaje line").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Línea de voltaje").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     voltage_line_combo = ttk.Combobox(style_box, textvariable=voltage_line_var, values=LINESTYLE_OPTIONS, state="readonly", width=10)
     voltage_line_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Corriente line").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Línea de corriente").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     current_line_combo = ttk.Combobox(style_box, textvariable=current_line_var, values=LINESTYLE_OPTIONS, state="readonly", width=10)
     current_line_combo.grid(row=1, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Temperatura line").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Línea de temperatura").grid(row=2, column=0, sticky="w", padx=8, pady=3)
     temperature_line_combo = ttk.Combobox(style_box, textvariable=temperature_line_var, values=LINESTYLE_OPTIONS, state="readonly", width=10)
     temperature_line_combo.grid(row=2, column=1, sticky="w", padx=8, pady=3)
 
@@ -4584,33 +4584,33 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
     title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
     title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Title size").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño del título").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     title_size_entry = ttk.Spinbox(text_box, from_=6.0, to=50.0, increment=0.5, textvariable=title_fontsize_var, width=10)
     title_size_entry.grid(row=1, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Tick size").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de ticks").grid(row=2, column=0, sticky="w", padx=8, pady=3)
     tick_size_entry = ttk.Spinbox(text_box, from_=6.0, to=40.0, increment=0.5, textvariable=tick_fontsize_var, width=10)
     tick_size_entry.grid(row=2, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Label size").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de etiquetas").grid(row=3, column=0, sticky="w", padx=8, pady=3)
     label_size_entry = ttk.Spinbox(text_box, from_=6.0, to=40.0, increment=0.5, textvariable=label_fontsize_var, width=10)
     label_size_entry.grid(row=3, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Legend size").grid(row=4, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de leyenda").grid(row=4, column=0, sticky="w", padx=8, pady=3)
     legend_size_entry = ttk.Spinbox(text_box, from_=6.0, to=40.0, increment=0.5, textvariable=legend_fontsize_var, width=10)
     legend_size_entry.grid(row=4, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Marker size").grid(row=5, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Tamaño de marcador").grid(row=5, column=0, sticky="w", padx=8, pady=3)
     marker_size_entry = ttk.Spinbox(text_box, from_=0.0, to=20.0, increment=0.5, textvariable=marker_size_var, width=10)
     marker_size_entry.grid(row=5, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Line width").grid(row=6, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Grosor de línea").grid(row=6, column=0, sticky="w", padx=8, pady=3)
     line_width_entry = ttk.Spinbox(text_box, from_=0.0, to=10.0, increment=0.1, textvariable=line_width_var, width=10)
     line_width_entry.grid(row=6, column=1, sticky="w", padx=8, pady=3)
 
     ttk.Checkbutton(
         text_box,
-        text="Hollow markers",
+        text="Marcadores vacíos",
         variable=hollow_markers_var,
         command=_schedule_plot,
     ).grid(row=7, column=0, columnspan=2, sticky="w", padx=8, pady=4)
@@ -4682,8 +4682,8 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
     buttons_frame = ttk.Frame(controls_frame)
     buttons_frame.pack(fill="x", pady=(5, 0))
 
-    ttk.Button(buttons_frame, text="Reset", command=_reset).pack(side="left", padx=(0, 6))
-    ttk.Button(buttons_frame, text="Autoscale", command=_autofit).pack(side="left")
+    ttk.Button(buttons_frame, text="Restablecer", command=_reset).pack(side="left", padx=(0, 6))
+    ttk.Button(buttons_frame, text="Autoescala", command=_autofit).pack(side="left")
 
     _plot()
 
