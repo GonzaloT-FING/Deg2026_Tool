@@ -1466,7 +1466,17 @@ def _build_scrollable_controls(parent) -> ttk.Frame:
     outer = ttk.Frame(parent, padding=10)
     outer.pack(side="left", fill="y")
 
-    canvas = tk.Canvas(outer, highlightthickness=0, width=320)
+    style = ttk.Style(parent)
+    canvas_bg = style.lookup("App.TFrame", "background") or style.lookup("TFrame", "background") or "#10161d"
+
+    canvas = tk.Canvas(
+        outer,
+        highlightthickness=0,
+        width=320,
+        bg=canvas_bg,
+        bd=0,
+        relief="flat",
+    )
     scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
     controls_frame = ttk.Frame(canvas, padding=(0, 0, 6, 0))
 
@@ -2112,7 +2122,7 @@ def _voltage_state_at_current_from_points(
     }
 
 
-def open_v_vs_i_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
+def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
     bundles = discover_curve_bundles(Path(input_dir))
     if not bundles:
         raise ValueError("No se encontraron curvas de polarización válidas.")
@@ -2728,6 +2738,834 @@ def open_v_vs_i_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
 
     _update_point_label()
     _plot()
+
+
+def _copy_v_vs_i_line_style(src_line, dst_line) -> None:
+    dst_line.set_color(src_line.get_color())
+    dst_line.set_linestyle(src_line.get_linestyle())
+    dst_line.set_marker(src_line.get_marker())
+    dst_line.set_linewidth(src_line.get_linewidth())
+    dst_line.set_markersize(src_line.get_markersize())
+    try:
+        dst_line.set_markerfacecolor(src_line.get_markerfacecolor())
+    except Exception:
+        pass
+    try:
+        dst_line.set_markeredgecolor(src_line.get_markeredgecolor())
+    except Exception:
+        pass
+    try:
+        dst_line.set_markeredgewidth(src_line.get_markeredgewidth())
+    except Exception:
+        pass
+    try:
+        dst_line.set_alpha(src_line.get_alpha())
+    except Exception:
+        pass
+
+
+def _build_v_vs_i_tab(
+    notebook: ttk.Notebook,
+    bundle: CurveBundle,
+    font_default_values: dict[str, str],
+) -> dict[str, object]:
+    tab_title = f"Stage {bundle.curve_id} - {bundle.description}"
+    default_limits = compute_default_v_vs_i_limits(bundle)
+
+    tab = ttk.Frame(notebook)
+    notebook.add(tab, text=tab_title[:28] + ("..." if len(tab_title) > 28 else ""))
+
+    controls_frame = _build_scrollable_controls(tab)
+
+    plot_outer = ttk.Frame(tab, padding=10)
+    plot_outer.pack(side="right", fill="both", expand=True)
+
+    toolbar_frame = ttk.Frame(plot_outer)
+    toolbar_frame.pack(side="top", fill="x")
+
+    canvas_frame = ttk.Frame(plot_outer)
+    canvas_frame.pack(side="top", fill="both", expand=True)
+
+    fig = Figure(figsize=(9, 5.5), dpi=100)
+    canvas = FigureCanvasTkAgg(fig, master=canvas_frame)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    toolbar = NavigationToolbar2Tk(canvas, toolbar_frame, pack_toolbar=False)
+    toolbar.update()
+    toolbar.pack(side="left", fill="x")
+
+    status_var = tk.StringVar(value="Listo.")
+
+    asc_var = tk.BooleanVar(value=True)
+    dsc_var = tk.BooleanVar(value=True)
+    voltage_var = tk.BooleanVar(value=True)
+    temperature_var = tk.BooleanVar(value=False)
+    current_density_var = tk.BooleanVar(value=False)
+    show_slope_guides_var = tk.BooleanVar(value=False)
+
+    asc_marker_var = tk.StringVar(value="^")
+    dsc_marker_var = tk.StringVar(value="v")
+    voltage_line_var = tk.StringVar(value="-")
+    temperature_line_var = tk.StringVar(value="--")
+    marker_size_var = tk.StringVar(value="6")
+    line_width_var = tk.StringVar(value="1.5")
+    hollow_markers_var = tk.BooleanVar(value=False)
+
+    point_fraction_var = tk.DoubleVar(value=1.0)
+    indicator_current_var = tk.DoubleVar(value=0.0)
+    indicator_current_value_var = tk.StringVar(value="-")
+    indicator_asc_slope_var = tk.StringVar(value="-")
+    indicator_dsc_slope_var = tk.StringVar(value="-")
+
+    x_min_var = tk.StringVar(value=default_limits["x_min"])
+    x_max_var = tk.StringVar(value=default_limits["x_max"])
+    v_min_var = tk.StringVar(value=default_limits["v_min"])
+    v_max_var = tk.StringVar(value=default_limits["v_max"])
+    temp_min_var = tk.StringVar(value="")
+    temp_max_var = tk.StringVar(value="")
+    x_tick_count_var = tk.IntVar(value=6)
+    y_tick_count_var = tk.IntVar(value=6)
+
+    plot_title_var = tk.StringVar(value="")
+    title_fontsize_var = tk.StringVar(value=font_default_values["title"])
+    tick_fontsize_var = tk.StringVar(value=font_default_values["tick"])
+    label_fontsize_var = tk.StringVar(value=font_default_values["label"])
+    legend_fontsize_var = tk.StringVar(value=font_default_values["legend"])
+
+    initial_state = {
+        "asc": True,
+        "dsc": True,
+        "voltage": True,
+        "temperature": False,
+        "current_density": False,
+        "show_slope_guides": False,
+        "asc_marker": "^",
+        "dsc_marker": "v",
+        "voltage_line": "-",
+        "temperature_line": "--",
+        "marker_size": "6",
+        "line_width": "1.5",
+        "hollow_markers": False,
+        "point_fraction": 1.0,
+        "x_min": default_limits["x_min"],
+        "x_max": default_limits["x_max"],
+        "v_min": default_limits["v_min"],
+        "v_max": default_limits["v_max"],
+        "temp_min": "",
+        "temp_max": "",
+        "x_ticks": 6,
+        "y_ticks": 6,
+        "plot_title": "",
+        "title_size": font_default_values["title"],
+        "tick_size": font_default_values["tick"],
+        "label_size": font_default_values["label"],
+        "legend_size": font_default_values["legend"],
+    }
+
+    plot_job = {"id": None}
+    suspend_events = {"value": False}
+    current_density_state = {"value": False}
+    indicator_scale_state = {"min": 0.0, "max": 1.0}
+
+    def _positive_float(text: str, name: str) -> float:
+        value = text.strip().replace(",", ".")
+        if not value:
+            raise ValueError(f"{name} no puede estar vacÃ­o.")
+        number = float(value)
+        if number <= 0:
+            raise ValueError(f"{name} debe ser mayor que 0.")
+        return number
+
+    def _collect_limits() -> dict[str, float | None]:
+        return {
+            "x_min": _optional_float(x_min_var.get()),
+            "x_max": _optional_float(x_max_var.get()),
+            "v_min": _optional_float(v_min_var.get()),
+            "v_max": _optional_float(v_max_var.get()),
+            "temp_min": _optional_float(temp_min_var.get()),
+            "temp_max": _optional_float(temp_max_var.get()),
+        }
+
+    def _current_axis_unit_text() -> str:
+        return "A/cm^2" if current_density_var.get() else "A"
+
+    def _slope_unit_text() -> str:
+        return "V/(A/cm^2)" if current_density_var.get() else "V/A"
+
+    def _set_indicator_state(current_text: str, asc_text: str = "-", dsc_text: str = "-") -> None:
+        indicator_current_value_var.set(current_text)
+        indicator_asc_slope_var.set(asc_text)
+        indicator_dsc_slope_var.set(dsc_text)
+
+    def _schedule_plot(*_args) -> None:
+        if suspend_events["value"]:
+            return
+        if plot_job["id"] is not None:
+            tab.after_cancel(plot_job["id"])
+        plot_job["id"] = tab.after(20, _plot)
+
+    def _update_slope_indicator(_event=None, redraw_guides: bool = False) -> None:
+        if not voltage_var.get():
+            _set_indicator_state("Voltaje oculto")
+            return
+
+        try:
+            area_cm2 = _bundle_area_cm2(bundle) if current_density_var.get() else None
+            visible = _selected_v_vs_i_rows(
+                bundle=bundle,
+                show_asc=asc_var.get(),
+                show_dsc=dsc_var.get(),
+                point_fraction=point_fraction_var.get(),
+            )
+            asc_points = _v_vs_i_voltage_points(visible["asc_rows"], current_density_var.get(), area_cm2)
+            dsc_points = _v_vs_i_voltage_points(visible["dsc_rows"], current_density_var.get(), area_cm2)
+        except ValueError as exc:
+            _set_indicator_state(f"Error: {exc}")
+            return
+
+        all_currents = [point[0] for point in asc_points] + [point[0] for point in dsc_points]
+        if len(all_currents) < 2:
+            _set_indicator_state("Sin puntos suficientes")
+            return
+
+        current_min = min(all_currents)
+        current_max = max(all_currents)
+        indicator_scale_state["min"] = current_min
+        indicator_scale_state["max"] = current_max
+        selected_current = current_min if current_max <= current_min else min(
+            max(indicator_current_var.get(), current_min),
+            current_max,
+        )
+
+        indicator_scale.configure(from_=current_min, to=current_max)
+        indicator_current_var.set(selected_current)
+        indicator_current_value_var.set(f"{selected_current:.6g} {_current_axis_unit_text()}")
+
+        slope_unit = _slope_unit_text()
+        asc_slope = _slope_at_current_from_points(asc_points, selected_current) if asc_points else None
+        dsc_slope = _slope_at_current_from_points(dsc_points, selected_current) if dsc_points else None
+        indicator_asc_slope_var.set(f"{asc_slope:.6g} {slope_unit}" if asc_slope is not None else "-")
+        indicator_dsc_slope_var.set(f"{dsc_slope:.6g} {slope_unit}" if dsc_slope is not None else "-")
+
+        if redraw_guides and show_slope_guides_var.get():
+            _schedule_plot()
+
+    def _plot() -> None:
+        plot_job["id"] = None
+        try:
+            has_plot = draw_v_vs_i_on_figure(
+                fig=fig,
+                bundle=bundle,
+                show_asc=asc_var.get(),
+                show_dsc=dsc_var.get(),
+                show_voltage=voltage_var.get(),
+                show_temperature=temperature_var.get(),
+                use_current_density=current_density_var.get(),
+                point_fraction=point_fraction_var.get(),
+                asc_marker=asc_marker_var.get(),
+                dsc_marker=dsc_marker_var.get(),
+                voltage_linestyle=voltage_line_var.get(),
+                temperature_linestyle=temperature_line_var.get(),
+                x_tick_count=x_tick_count_var.get(),
+                y_tick_count=y_tick_count_var.get(),
+                plot_title=plot_title_var.get(),
+                title_fontsize=_positive_float(title_fontsize_var.get(), "Title size"),
+                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tick size"),
+                label_fontsize=_positive_float(label_fontsize_var.get(), "Label size"),
+                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Legend size"),
+                marker_size=_positive_float(marker_size_var.get(), "Marker size"),
+                hollow_markers=hollow_markers_var.get(),
+                line_width=_positive_float(line_width_var.get(), "Line width"),
+                show_slope_guides=show_slope_guides_var.get(),
+                indicator_current=indicator_current_var.get(),
+                **_collect_limits(),
+            )
+        except ValueError as exc:
+            status_var.set(f"Error: {exc}")
+            return
+
+        if not has_plot:
+            fig.clear()
+            canvas.draw_idle()
+            status_var.set("No se muestra grÃ¡fico: seleccione al menos una direcciÃ³n y una magnitud.")
+            _update_slope_indicator()
+            return
+
+        canvas.draw_idle()
+        _update_slope_indicator()
+        status_var.set("GrÃ¡fico actualizado.")
+
+    def _on_current_density_toggle() -> None:
+        new_state = current_density_var.get()
+        old_state = current_density_state["value"]
+        if new_state == old_state:
+            return
+
+        area_cm2 = _bundle_area_cm2(bundle)
+        if area_cm2 is None or area_cm2 <= 0:
+            current_density_var.set(old_state)
+            status_var.set("Error: no se pudo leer un AREA valida para convertir la corriente.")
+            return
+
+        factor = 1.0 / area_cm2 if new_state else area_cm2
+        suspend_events["value"] = True
+        try:
+            for variable in (x_min_var, x_max_var):
+                value = _optional_float(variable.get())
+                if value is not None:
+                    variable.set(f"{value * factor:.6g}")
+            indicator_current_var.set(indicator_current_var.get() * factor)
+        finally:
+            suspend_events["value"] = False
+
+        current_density_state["value"] = new_state
+        _plot()
+        status_var.set("Unidad del eje x actualizada.")
+
+    def _autofit() -> None:
+        try:
+            fitted = compute_autofit_v_vs_i_limits(
+                bundle=bundle,
+                show_asc=asc_var.get(),
+                show_dsc=dsc_var.get(),
+                show_voltage=voltage_var.get(),
+                show_temperature=temperature_var.get(),
+                point_fraction=point_fraction_var.get(),
+                use_current_density=current_density_var.get(),
+            )
+        except ValueError as exc:
+            status_var.set(f"Error: {exc}")
+            _update_slope_indicator()
+            return
+
+        suspend_events["value"] = True
+        try:
+            x_min_var.set(fitted["x_min"])
+            x_max_var.set(fitted["x_max"])
+            if fitted["v_min"] != "" or fitted["v_max"] != "":
+                v_min_var.set(fitted["v_min"])
+                v_max_var.set(fitted["v_max"])
+            if fitted["t_min"] != "" or fitted["t_max"] != "":
+                temp_min_var.set(fitted["t_min"])
+                temp_max_var.set(fitted["t_max"])
+        finally:
+            suspend_events["value"] = False
+
+        _plot()
+        status_var.set("Autoscale aplicado.")
+
+    def _reset() -> None:
+        suspend_events["value"] = True
+        try:
+            asc_var.set(initial_state["asc"])
+            dsc_var.set(initial_state["dsc"])
+            voltage_var.set(initial_state["voltage"])
+            temperature_var.set(initial_state["temperature"])
+            current_density_var.set(initial_state["current_density"])
+            show_slope_guides_var.set(initial_state["show_slope_guides"])
+            asc_marker_var.set(initial_state["asc_marker"])
+            dsc_marker_var.set(initial_state["dsc_marker"])
+            voltage_line_var.set(initial_state["voltage_line"])
+            temperature_line_var.set(initial_state["temperature_line"])
+            marker_size_var.set(initial_state["marker_size"])
+            line_width_var.set(initial_state["line_width"])
+            hollow_markers_var.set(initial_state["hollow_markers"])
+            point_fraction_var.set(initial_state["point_fraction"])
+            x_min_var.set(initial_state["x_min"])
+            x_max_var.set(initial_state["x_max"])
+            v_min_var.set(initial_state["v_min"])
+            v_max_var.set(initial_state["v_max"])
+            temp_min_var.set(initial_state["temp_min"])
+            temp_max_var.set(initial_state["temp_max"])
+            x_tick_count_var.set(initial_state["x_ticks"])
+            y_tick_count_var.set(initial_state["y_ticks"])
+            plot_title_var.set(initial_state["plot_title"])
+            title_fontsize_var.set(initial_state["title_size"])
+            tick_fontsize_var.set(initial_state["tick_size"])
+            label_fontsize_var.set(initial_state["label_size"])
+            legend_fontsize_var.set(initial_state["legend_size"])
+            current_density_state["value"] = initial_state["current_density"]
+            _update_point_label()
+        finally:
+            suspend_events["value"] = False
+        _plot()
+        status_var.set("Valores restaurados.")
+
+    def _update_point_label(_event=None) -> None:
+        point_value_label.config(text=f"{point_fraction_var.get():.2f}")
+
+    def _bind_plot_widget(widget) -> None:
+        widget.bind("<Return>", _schedule_plot)
+        widget.bind("<KP_Enter>", _schedule_plot)
+        widget.bind("<FocusOut>", _schedule_plot)
+        try:
+            widget.configure(command=_schedule_plot)
+        except Exception:
+            pass
+
+    ttk.Label(
+        controls_frame,
+        text=f"Curva detectada:\nStage {bundle.curve_id} - {bundle.description}",
+        justify="left",
+    ).pack(anchor="w", pady=(0, 10))
+
+    series_box = ttk.LabelFrame(controls_frame, text="Series")
+    series_box.pack(fill="x", pady=5)
+    for text, variable, command in (
+        ("Asc", asc_var, _schedule_plot),
+        ("Dsc", dsc_var, _schedule_plot),
+        ("Voltaje", voltage_var, _schedule_plot),
+        ("Temperatura", temperature_var, _schedule_plot),
+        ("x-axis in A/cm^2", current_density_var, _on_current_density_toggle),
+    ):
+        ttk.Checkbutton(series_box, text=text, variable=variable, command=command).pack(anchor="w", padx=8, pady=2)
+
+    indicators_box = ttk.LabelFrame(controls_frame, text="Indicadores")
+    indicators_box.pack(fill="x", pady=5)
+    indicators_box.columnconfigure(1, weight=1)
+    ttk.Label(indicators_box, text="Corriente").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, textvariable=indicator_current_value_var).grid(row=0, column=1, sticky="w", padx=8, pady=3)
+    indicator_scale = ttk.Scale(
+        indicators_box,
+        from_=0.0,
+        to=1.0,
+        orient="horizontal",
+        variable=indicator_current_var,
+        command=lambda _value=None: _update_slope_indicator(redraw_guides=True),
+    )
+    indicator_scale.grid(row=1, column=0, columnspan=2, sticky="we", padx=8, pady=4)
+    ttk.Label(indicators_box, text="Asc dV/dI").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, textvariable=indicator_asc_slope_var).grid(row=2, column=1, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, text="Dsc dV/dI").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(indicators_box, textvariable=indicator_dsc_slope_var).grid(row=3, column=1, sticky="w", padx=8, pady=3)
+    ttk.Checkbutton(
+        indicators_box,
+        text="Show dV/dI guide line",
+        variable=show_slope_guides_var,
+        command=_schedule_plot,
+    ).grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+
+    style_box = ttk.LabelFrame(controls_frame, text="Estilo")
+    style_box.pack(fill="x", pady=5)
+    style_specs = [
+        ("Asc marker", asc_marker_var, MARKER_OPTIONS),
+        ("Dsc marker", dsc_marker_var, MARKER_OPTIONS),
+        ("Voltaje line", voltage_line_var, LINESTYLE_OPTIONS),
+        ("Temperatura line", temperature_line_var, LINESTYLE_OPTIONS),
+    ]
+    for row_idx, (label, variable, values) in enumerate(style_specs):
+        ttk.Label(style_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        combo = ttk.Combobox(style_box, textvariable=variable, values=values, state="readonly", width=10)
+        combo.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    for row_idx, (label, variable, start, stop, step) in enumerate(
+        (
+            ("Marker size", marker_size_var, 0.0, 20.0, 0.5),
+            ("Line width", line_width_var, 0.0, 10.0, 0.1),
+        ),
+        start=len(style_specs),
+    ):
+        ttk.Label(style_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        spin = ttk.Spinbox(style_box, from_=start, to=stop, increment=step, textvariable=variable, width=10)
+        spin.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        _bind_plot_widget(spin)
+    ttk.Checkbutton(
+        style_box,
+        text="Hollow markers",
+        variable=hollow_markers_var,
+        command=_schedule_plot,
+    ).grid(row=len(style_specs) + 2, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+
+    point_box = ttk.LabelFrame(controls_frame, text="Punto dentro de cada step")
+    point_box.pack(fill="x", pady=5)
+    point_value_label = ttk.Label(point_box, text="1.00")
+    point_value_label.pack(anchor="e", padx=8, pady=(4, 0))
+    point_scale = ttk.Scale(
+        point_box,
+        from_=0.0,
+        to=1.0,
+        orient="horizontal",
+        variable=point_fraction_var,
+        command=lambda _value=None: (_update_point_label(), _plot()),
+    )
+    point_scale.pack(fill="x", padx=8, pady=6)
+    point_scale.bind("<ButtonRelease-1>", lambda _event: _schedule_plot())
+    ttk.Label(point_box, text="0 = primer punto, 1 = ultimo punto").pack(anchor="w", padx=8, pady=(0, 6))
+
+    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamanos")
+    text_box.pack(fill="x", pady=5)
+    text_specs = [
+        ("Titulo", plot_title_var, None),
+        ("Title size", title_fontsize_var, (6.0, 50.0, 0.5)),
+        ("Tick size", tick_fontsize_var, (6.0, 40.0, 0.5)),
+        ("Label size", label_fontsize_var, (6.0, 40.0, 0.5)),
+        ("Legend size", legend_fontsize_var, (6.0, 40.0, 0.5)),
+    ]
+    for row_idx, (label, variable, spin_cfg) in enumerate(text_specs):
+        ttk.Label(text_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        if spin_cfg is None:
+            widget = ttk.Entry(text_box, textvariable=variable, width=28)
+        else:
+            widget = ttk.Spinbox(
+                text_box,
+                from_=spin_cfg[0],
+                to=spin_cfg[1],
+                increment=spin_cfg[2],
+                textvariable=variable,
+                width=10,
+            )
+        widget.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        _bind_plot_widget(widget)
+
+    limits_box = ttk.LabelFrame(controls_frame, text="Limites de ejes")
+    limits_box.pack(fill="x", pady=5)
+    for row_idx, (label, variable) in enumerate(
+        (
+            ("I min", x_min_var),
+            ("I max", x_max_var),
+            ("V min", v_min_var),
+            ("V max", v_max_var),
+            ("T min", temp_min_var),
+            ("T max", temp_max_var),
+        )
+    ):
+        ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        entry = ttk.Entry(limits_box, textvariable=variable, width=12)
+        entry.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        _bind_plot_widget(entry)
+    for row_idx, (label, variable) in enumerate((("x-Ticks", x_tick_count_var), ("y-Ticks", y_tick_count_var)), start=6):
+        ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        spin = tk.Spinbox(limits_box, from_=2, to=10, textvariable=variable, width=8)
+        spin.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        spin.bind("<Return>", _schedule_plot)
+        spin.bind("<FocusOut>", _schedule_plot)
+        spin.config(command=_schedule_plot)
+
+    ttk.Label(controls_frame, textvariable=status_var, wraplength=280, justify="left").pack(
+        anchor="w",
+        fill="x",
+        pady=(10, 10),
+    )
+
+    buttons = ttk.Frame(controls_frame)
+    buttons.pack(fill="x", pady=(5, 0))
+    ttk.Button(buttons, text="Reset", command=_reset).pack(side="left", padx=(0, 6))
+    ttk.Button(buttons, text="Autoscale", command=_autofit).pack(side="left")
+
+    _update_point_label()
+    _plot()
+
+    return {
+        "tab_title": tab_title,
+        "figure": fig,
+        "current_density_getter": lambda: bool(current_density_var.get()),
+    }
+
+
+def _open_v_vs_i_composer(
+    parent,
+    source_contexts: dict[str, dict[str, object]],
+    font_defaults: PlotFontDefaults,
+) -> None:
+    if not source_contexts:
+        return
+
+    existing = getattr(parent, "_composer_win_v_vs_i", None)
+    if existing is not None and existing.winfo_exists():
+        existing.lift()
+        existing.focus_force()
+        return
+
+    comp = tk.Toplevel(parent)
+    parent._composer_win_v_vs_i = comp  # type: ignore[attr-defined]
+    comp.title("Composite (PC V vs I)")
+    comp.geometry("1240x760")
+    comp.configure(
+        bg=ttk.Style(comp).lookup("App.TFrame", "background")
+        or ttk.Style(comp).lookup("TFrame", "background")
+    )
+
+    outer = ttk.Frame(comp)
+    outer.pack(fill="both", expand=True)
+
+    plot_side = ttk.Frame(outer)
+    plot_side.pack(side="left", fill="both", expand=True)
+
+    ctrl = ttk.Frame(outer, padding=10)
+    ctrl.pack(side="right", fill="y")
+
+    figc = Figure(figsize=(8.5, 6.0), dpi=100)
+    ax_main = figc.add_subplot(111)
+    ax_temp = ax_main.twinx()
+
+    canvas = FigureCanvasTkAgg(figc, master=plot_side)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    toolbar = NavigationToolbar2Tk(canvas, plot_side, pack_toolbar=False)
+    toolbar.update()
+    toolbar.pack(side="top", fill="x")
+
+    title_var = tk.StringVar(value="Composite - V vs I")
+    legend_var = tk.BooleanVar(value=True)
+    status_var = tk.StringVar(value="Listo.")
+    comp_lines: dict[str, list[object]] = {}
+    density_mode = {"value": None}
+    idx_to_key: list[str] = []
+
+    def _source_title(key: str) -> str:
+        fig = source_contexts[key]["figure"]
+        if isinstance(fig, Figure) and fig.axes:
+            title = (fig.axes[0].get_title() or "").strip()
+            if title:
+                return title
+        return str(source_contexts[key]["tab_title"])
+
+    def _source_density(key: str) -> bool:
+        getter = source_contexts[key]["current_density_getter"]
+        return bool(getter())
+
+    def _source_lines(key: str) -> list[tuple[str, object]]:
+        fig = source_contexts[key]["figure"]
+        out: list[tuple[str, object]] = []
+        if not isinstance(fig, Figure):
+            return out
+        for ax in fig.axes:
+            for line in ax.get_lines():
+                label = (line.get_label() or "").strip()
+                if label and not label.startswith("_"):
+                    out.append((label, line))
+        return out
+
+    def _refresh_listbox() -> None:
+        lb.delete(0, "end")
+        idx_to_key.clear()
+        for key in sorted(source_contexts.keys(), key=lambda item: _source_title(item).lower()):
+            lb.insert("end", f"{_source_title(key)}   [{key}]")
+            idx_to_key.append(key)
+
+    def _selected_keys() -> list[str]:
+        return [idx_to_key[index] for index in lb.curselection()]
+
+    def _apply_axes() -> None:
+        ax_main.set_title(title_var.get())
+        ax_main.set_xlabel("Densidad de corriente (A/cm^2)" if density_mode["value"] else "Corriente (A)")
+        ax_main.set_ylabel("Voltaje (V)")
+        ax_temp.set_ylabel("Temperatura (C)")
+        ax_main.grid(True)
+        ax_temp.grid(False)
+
+        ax_main.yaxis.tick_left()
+        ax_main.yaxis.set_label_position("left")
+        ax_main.spines["left"].set_visible(True)
+        ax_main.spines["right"].set_visible(False)
+
+        ax_temp.yaxis.tick_right()
+        ax_temp.yaxis.set_label_position("right")
+        ax_temp.spines["left"].set_visible(False)
+        ax_temp.spines["right"].set_position(("axes", 1.0))
+        figc.subplots_adjust(right=0.88)
+
+        handles, labels = ax_main.get_legend_handles_labels()
+        h2, l2 = ax_temp.get_legend_handles_labels()
+        leg = ax_main.get_legend()
+        if leg is not None:
+            leg.remove()
+        if legend_var.get() and (handles or h2):
+            ax_main.legend(handles + h2, labels + l2, fontsize=float(font_defaults.legend))
+
+        has_temp = any(" T" in label for lines in comp_lines.values() for label in [line.get_label() for line in lines])
+        ax_temp.yaxis.set_visible(has_temp)
+        ax_temp.spines["right"].set_visible(has_temp)
+        ax_temp.yaxis.label.set_visible(has_temp)
+        canvas.draw_idle()
+
+    def _fit_all() -> None:
+        xs: list[float] = []
+        ys_main: list[float] = []
+        ys_temp: list[float] = []
+        for lines in comp_lines.values():
+            for line in lines:
+                label = line.get_label()
+                xs.extend(float(value) for value in line.get_xdata(orig=False))
+                if " T" in label:
+                    ys_temp.extend(float(value) for value in line.get_ydata(orig=False))
+                else:
+                    ys_main.extend(float(value) for value in line.get_ydata(orig=False))
+        if xs:
+            x0 = min(xs)
+            x1 = max(xs)
+            dx = (x1 - x0) if x1 != x0 else (abs(x0) * 0.1 + 1.0)
+            ax_main.set_xlim(x0 - 0.05 * dx, x1 + 0.05 * dx)
+        if ys_main:
+            y0 = min(ys_main)
+            y1 = max(ys_main)
+            dy = (y1 - y0) if y1 != y0 else (abs(y0) * 0.1 + 1.0)
+            ax_main.set_ylim(y0 - 0.05 * dy, y1 + 0.05 * dy)
+        if ys_temp:
+            t0 = min(ys_temp)
+            t1 = max(ys_temp)
+            dt = (t1 - t0) if t1 != t0 else (abs(t0) * 0.1 + 1.0)
+            ax_temp.set_ylim(t0 - 0.05 * dt, t1 + 0.05 * dt)
+        _apply_axes()
+
+    def _remove_key(key: str) -> None:
+        for line in comp_lines.pop(key, []):
+            try:
+                line.remove()
+            except Exception:
+                pass
+        if not comp_lines:
+            density_mode["value"] = None
+
+    def _add_selected() -> None:
+        errors: list[str] = []
+        for key in _selected_keys():
+            source_lines = _source_lines(key)
+            if not source_lines:
+                errors.append(f"{_source_title(key)} no tiene series visibles.")
+                continue
+            source_density = _source_density(key)
+            if density_mode["value"] is None:
+                density_mode["value"] = source_density
+            elif density_mode["value"] != source_density:
+                errors.append(f"{_source_title(key)} usa una unidad distinta en el eje x.")
+                continue
+
+            _remove_key(key)
+            new_lines: list[object] = []
+            for label, src_line in source_lines:
+                target_ax = ax_temp if label.endswith(" T") else ax_main
+                x = list(src_line.get_xdata(orig=False))
+                y = list(src_line.get_ydata(orig=False))
+                (new_line,) = target_ax.plot(x, y, label=f"{_source_title(key)} - {label}")
+                _copy_v_vs_i_line_style(src_line, new_line)
+                new_lines.append(new_line)
+            comp_lines[key] = new_lines
+
+        _fit_all()
+        status_var.set(" / ".join(errors) if errors else "Curvas agregadas al composite.")
+
+    def _remove_selected() -> None:
+        changed = False
+        for key in _selected_keys():
+            if key in comp_lines:
+                _remove_key(key)
+                changed = True
+        if changed:
+            _fit_all()
+            status_var.set("Curvas removidas del composite.")
+
+    def _clear_all() -> None:
+        for key in list(comp_lines):
+            _remove_key(key)
+        ax_main.cla()
+        ax_temp.cla()
+        _apply_axes()
+        status_var.set("Composite limpiado.")
+
+    def _refresh_formatting() -> None:
+        active = list(comp_lines.keys())
+        _clear_all()
+        for key in active:
+            lb.selection_set(idx_to_key.index(key))
+        _add_selected()
+
+    src_box = ttk.LabelFrame(ctrl, text="Curve sources", padding=8)
+    src_box.pack(fill="x", pady=(0, 10))
+    lb = tk.Listbox(src_box, selectmode="extended", height=12, exportselection=False)
+    lb.pack(fill="x")
+    _refresh_listbox()
+
+    btns = ttk.Frame(src_box)
+    btns.pack(fill="x", pady=(8, 0))
+    ttk.Button(btns, text="Add", command=_add_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
+    ttk.Button(btns, text="Remove", command=_remove_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
+    ttk.Button(btns, text="Clear", command=_clear_all).pack(side="left", expand=True, fill="x")
+    ttk.Button(src_box, text="Refresh formatting", command=_refresh_formatting).pack(fill="x", pady=(8, 0))
+
+    plot_box = ttk.LabelFrame(ctrl, text="Plot", padding=8)
+    plot_box.pack(fill="x", pady=(0, 10))
+    plot_box.columnconfigure(1, weight=1)
+    ttk.Label(plot_box, text="Title").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
+    title_entry = ttk.Entry(plot_box, textvariable=title_var, width=22)
+    title_entry.grid(row=0, column=1, sticky="ew", pady=2)
+    title_entry.bind("<Return>", lambda _event: _apply_axes())
+    title_entry.bind("<FocusOut>", lambda _event: _apply_axes())
+    title_entry.bind("<KeyRelease>", lambda _event: _apply_axes())
+    ttk.Checkbutton(plot_box, text="Legend", variable=legend_var, command=_apply_axes).grid(
+        row=1,
+        column=0,
+        columnspan=2,
+        sticky="w",
+        pady=(4, 4),
+    )
+    ttk.Button(plot_box, text="Fit all", command=_fit_all).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+
+    ttk.Label(ctrl, textvariable=status_var, wraplength=260, justify="left").pack(anchor="w", fill="x")
+
+    _apply_axes()
+
+    def _on_close() -> None:
+        comp.destroy()
+        try:
+            delattr(parent, "_composer_win_v_vs_i")
+        except Exception:
+            pass
+
+    comp.protocol("WM_DELETE_WINDOW", _on_close)
+
+
+def open_v_vs_i_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
+    bundles = discover_curve_bundles(Path(input_dir))
+    if not bundles:
+        raise ValueError("No se encontraron curvas de polarizaciÃ³n vÃ¡lidas.")
+
+    font_defaults = resolve_plot_font_defaults(font_defaults)
+    font_default_values = font_defaults.as_strings()
+
+    root = tk._default_root
+    created_root = False
+    if root is None:
+        root = tk.Tk()
+        root.withdraw()
+        created_root = True
+
+    win = tk.Toplevel(root)
+    win.title("PC - V vs I")
+    win.geometry("1320x820")
+    win.configure(
+        bg=ttk.Style(win).lookup("App.TFrame", "background")
+        or ttk.Style(win).lookup("TFrame", "background")
+    )
+
+    header = ttk.Frame(win, padding=(10, 10, 10, 0))
+    header.pack(fill="x")
+    ttk.Label(header, text="Curvas detectadas por Stage").pack(side="left")
+    ttk.Button(
+        header,
+        text="Componer curvas",
+        command=lambda: _open_v_vs_i_composer(win, source_contexts, font_defaults),
+    ).pack(side="right")
+
+    notebook = ttk.Notebook(win)
+    notebook.pack(fill="both", expand=True, padx=8, pady=8)
+
+    source_contexts: dict[str, dict[str, object]] = {}
+    for bundle in bundles:
+        context = _build_v_vs_i_tab(notebook, bundle, font_default_values)
+        source_contexts[str(context["tab_title"])] = context
+
+    def _on_close() -> None:
+        existing = getattr(win, "_composer_win_v_vs_i", None)
+        if existing is not None and existing.winfo_exists():
+            existing.destroy()
+        win.destroy()
+        if created_root:
+            root.destroy()
+
+    win.protocol("WM_DELETE_WINDOW", _on_close)
 
 
 def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:

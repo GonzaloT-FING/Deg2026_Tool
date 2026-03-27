@@ -289,5 +289,100 @@ def apply_theme(window: tk.Misc, style: ttk.Style, theme_name: str) -> AppTheme:
         foreground=[("disabled", theme.muted_text)],
     )
 
+    style.configure("TCheckbutton", background=theme.window_bg, foreground=theme.text, font=base_font)
+    style.map(
+        "TCheckbutton",
+        background=[("active", theme.window_bg)],
+        foreground=[("disabled", theme.muted_text)],
+    )
+
+    style.configure(
+        "TLabelframe",
+        background=theme.window_bg,
+        bordercolor=theme.border,
+        lightcolor=theme.border,
+        darkcolor=theme.border,
+        relief="solid",
+        borderwidth=1,
+    )
+    style.configure(
+        "TLabelframe.Label",
+        background=theme.window_bg,
+        foreground=theme.text,
+        font=section_font,
+    )
+
+    tab_bg = theme.surface if theme.name == "light" else theme.surface
+    tab_selected_bg = theme.surface_alt if theme.name == "light" else theme.status_bg
+    tab_active_bg = theme.surface_alt
+    style.configure(
+        "TNotebook",
+        background=theme.window_bg,
+        bordercolor=theme.border,
+        lightcolor=theme.border,
+        darkcolor=theme.border,
+        tabmargins=(8, 6, 8, 0),
+    )
+    style.configure(
+        "TNotebook.Tab",
+        background=tab_bg,
+        foreground=theme.muted_text,
+        bordercolor=theme.border,
+        lightcolor=theme.border,
+        darkcolor=theme.border,
+        padding=(12, 7),
+        font=section_font,
+    )
+    style.map(
+        "TNotebook.Tab",
+        background=[("selected", tab_selected_bg), ("active", tab_active_bg)],
+        foreground=[("selected", theme.text), ("active", theme.text)],
+        bordercolor=[("selected", theme.border), ("active", theme.border)],
+        lightcolor=[("selected", theme.border), ("active", theme.border)],
+        darkcolor=[("selected", theme.border), ("active", theme.border)],
+    )
+
+    scale_trough = theme.surface_alt if theme.name == "light" else theme.status_bg
+    scale_slider = theme.surface_alt if theme.name == "light" else theme.surface_alt
+    style.configure(
+        "TScale",
+        background=theme.window_bg,
+        troughcolor=scale_trough,
+        bordercolor=theme.border,
+        lightcolor=scale_slider,
+        darkcolor=scale_slider,
+    )
+    style.map(
+        "TScale",
+        background=[("active", theme.accent_active), ("!disabled", scale_slider)],
+    )
+    style.configure(
+        "Horizontal.TScale",
+        background=theme.window_bg,
+        troughcolor=scale_trough,
+        bordercolor=theme.border,
+        lightcolor=scale_slider,
+        darkcolor=scale_slider,
+    )
+    style.map(
+        "Horizontal.TScale",
+        background=[("active", theme.accent_active), ("!disabled", scale_slider)],
+    )
+
+    style.configure(
+        "TScrollbar",
+        background=theme.surface_alt,
+        troughcolor=theme.window_bg,
+        bordercolor=theme.border,
+        darkcolor=theme.surface_alt,
+        lightcolor=theme.surface_alt,
+        arrowcolor=theme.text,
+    )
+    style.map(
+        "TScrollbar",
+        background=[("active", tab_active_bg), ("pressed", theme.accent_active)],
+        arrowcolor=[("disabled", theme.muted_text)],
+    )
+
     style.configure("TSeparator", background=theme.border)
     return theme
