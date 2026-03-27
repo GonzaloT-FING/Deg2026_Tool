@@ -441,14 +441,16 @@ def _assign_nyquist_stage_colors(entries: list[EISPlotEntry]) -> None:
         if len(stage_entries) == 1:
             lightness_values = [0.46]
         else:
+            # Use a wider lightness span so neighboring Nyquist curves
+            # within the same stage are easier to tell apart at a glance.
             lightness_values = [
-                0.36 + (0.24 * idx / (len(stage_entries) - 1))
+                0.28 + (0.34 * idx / (len(stage_entries) - 1))
                 for idx in range(len(stage_entries))
             ]
 
         for idx, entry in enumerate(stage_entries):
-            hue_offset = 0.015 * (idx - (len(stage_entries) - 1) / 2)
-            entry.nyquist_color = _hls_to_hex(base_hue + hue_offset, lightness_values[idx], 0.72)
+            hue_offset = 0.035 * (idx - (len(stage_entries) - 1) / 2)
+            entry.nyquist_color = _hls_to_hex(base_hue + hue_offset, lightness_values[idx], 0.74)
 
 
 def _collect_eis_plot_entries(dta_files: list[Path]) -> list[EISPlotEntry]:

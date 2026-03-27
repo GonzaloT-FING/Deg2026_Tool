@@ -91,6 +91,16 @@ class GamryProtocolApp:
 
         self.build_main_window()
         self._update_pipeline_preview()
+        self.root.after_idle(self._maximize_root_window)
+
+    def _maximize_root_window(self) -> None:
+        try:
+            self.root.state("zoomed")
+        except tk.TclError:
+            try:
+                self.root.attributes("-zoomed", True)
+            except tk.TclError:
+                pass
 
     def build_main_window(self) -> None:
         self.root.columnconfigure(0, weight=1)
