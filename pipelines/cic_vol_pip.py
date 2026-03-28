@@ -64,6 +64,7 @@ DATA_EXPORT = [
 ]
 
 CV_FILE_RE = re.compile(r"^Voltametria_ciclica(?:_.+)?\.DTA$", re.IGNORECASE)
+CV_STAGE_RE = re.compile(r"#(\d+)(?!.*#\d+)", re.IGNORECASE)
 
 
 @dataclass
@@ -90,10 +91,33 @@ class CVDataset:
     parsed: ParsedDTA
     cycle_rows: list[list[dict[str, float]]]
     segments: list[CVCycleSegment]
+    stage_number: int | None = None
 
     @property
     def display_name(self) -> str:
         return self.path.stem
+
+
+def _extract_stage_number(stem: str) -> int | None:
+    match = CV_STAGE_RE.search(stem)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _dataset_stage_label(dataset: CVDataset) -> str:
+    if dataset.stage_number is None:
+        return dataset.display_name
+    return f"Etapa {dataset.stage_number}"
+
+
+def _dataset_summary_label(dataset: CVDataset) -> str:
+    if dataset.stage_number is None:
+        return dataset.display_name
+    return f"{_dataset_stage_label(dataset)} - {dataset.display_name}"
 
 
 def to_float(val: str) -> float | None:
@@ -496,11 +520,20 @@ def load_cv_dataset(path: Path) -> CVDataset:
         parsed=parsed,
         cycle_rows=cycle_rows,
         segments=build_cycle_segments(parsed, cycle_rows),
+        stage_number=_extract_stage_number(path.stem),
     )
 
 
 def discover_cv_datasets(input_dir: Path) -> list[CVDataset]:
-    return [load_cv_dataset(path) for path in find_cv_files(input_dir)]
+    datasets = [load_cv_dataset(path) for path in find_cv_files(input_dir)]
+    datasets.sort(
+        key=lambda dataset: (
+            dataset.stage_number is None,
+            dataset.stage_number if dataset.stage_number is not None else float("inf"),
+            dataset.path.stem.lower(),
+        )
+    )
+    return datasets
 
 
 def build_visible_cycle_i_vs_v_data(
@@ -739,7 +772,7 @@ def draw_i_vs_v_on_figure(
         fig.clear()
         return False
 
-    default_title = f"I vs V - CV {dataset.display_name}"
+    default_title = f"I vs V - CV {_dataset_stage_label(dataset)}"
     final_title = plot_title.strip() if plot_title.strip() else default_title
 
     ax_main.set_xlabel("Voltaje (V)", fontsize=label_fontsize)
@@ -811,24 +844,21 @@ def draw_i_vs_v_on_figure(
     return True
 
 
-def open_i_vs_v_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
-    datasets = discover_cv_datasets(Path(input_dir))
-    if not datasets:
-        raise ValueError("No se encontraron archivos de voltametria ciclica validos.")
-
-    font_defaults = resolve_plot_font_defaults(font_defaults)
-    font_default_values = font_defaults.as_strings()
-    dataset = datasets[0]
+def _build_i_vs_v_tab(
+    notebook: ttk.Notebook,
+    dataset: CVDataset,
+    font_default_values: dict[str, str],
+) -> None:
     default_limits = compute_default_i_vs_v_limits(dataset)
     cycle_ids = [cycle_number for cycle_number in range(1, len(dataset.cycle_rows) + 1)]
 
-    win = tk.Toplevel()
-    win.title(f"CV - I vs V - {dataset.display_name}")
-    win.geometry("1200x720")
+    tab = ttk.Frame(notebook)
+    tab_title = _dataset_stage_label(dataset)
+    notebook.add(tab, text=tab_title[:28] + ("..." if len(tab_title) > 28 else ""))
 
-    controls_frame = _build_scrollable_controls(win)
+    controls_frame = _build_scrollable_controls(tab)
 
-    plot_outer = ttk.Frame(win, padding=10)
+    plot_outer = ttk.Frame(tab, padding=10)
     plot_outer.pack(side="right", fill="both", expand=True)
 
     toolbar_frame = ttk.Frame(plot_outer)
@@ -933,8 +963,8 @@ def open_i_vs_v_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
         if suspend_events["value"]:
             return
         if plot_job["id"] is not None:
-            win.after_cancel(plot_job["id"])
-        plot_job["id"] = win.after(20, _plot)
+            tab.after_cancel(plot_job["id"])
+        plot_job["id"] = tab.after(20, _plot)
 
     def _plot():
         plot_job["id"] = None
@@ -1037,7 +1067,7 @@ def open_i_vs_v_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
 
     ttk.Label(
         controls_frame,
-        text=f"Serie detectada: CV {dataset.display_name}",
+        text=f"Serie detectada:\nCV {_dataset_summary_label(dataset)}",
         justify="left",
         wraplength=260,
     ).pack(anchor="w", pady=(0, 10))
@@ -1182,6 +1212,43 @@ def open_i_vs_v_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     ttk.Button(buttons_frame, text="Autoescala", command=_autofit).pack(side="left")
 
     _plot()
+
+
+def open_i_vs_v_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
+    datasets = discover_cv_datasets(Path(input_dir))
+    if not datasets:
+        raise ValueError("No se encontraron archivos de voltametria ciclica validos.")
+
+    font_defaults = resolve_plot_font_defaults(font_defaults)
+    font_default_values = font_defaults.as_strings()
+
+    root = tk._default_root
+    created_root = False
+    if root is None:
+        root = tk.Tk()
+        root.withdraw()
+        created_root = True
+
+    win = tk.Toplevel(root)
+    win.title("CV - I vs V")
+    win.geometry("1320x820")
+    win.configure(
+        bg=ttk.Style(win).lookup("App.TFrame", "background")
+        or ttk.Style(win).lookup("TFrame", "background")
+    )
+
+    notebook = ttk.Notebook(win)
+    notebook.pack(fill="both", expand=True, padx=8, pady=8)
+
+    for dataset in datasets:
+        _build_i_vs_v_tab(notebook, dataset, font_default_values)
+
+    def _on_close() -> None:
+        win.destroy()
+        if created_root:
+            root.destroy()
+
+    win.protocol("WM_DELETE_WINDOW", _on_close)
 
 
 def export_cv_file(source_path: Path, output_path: Path) -> None:
