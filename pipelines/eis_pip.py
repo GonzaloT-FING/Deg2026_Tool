@@ -1966,6 +1966,7 @@ def show_figures_tk(
         label_fs_var = tk.DoubleVar(value=init_label_fs)
         title_fs_var = tk.DoubleVar(value=init_title_fs)
         legend_fs_var = tk.DoubleVar(value=init_legend_fs)
+        refresh_frequency_labels = None
 
         def apply_fonts():
 
@@ -1996,6 +1997,8 @@ def show_figures_tk(
                 _update_legend()
             if is_bode_plot:
                 _apply_bode_visibility()
+            if callable(refresh_frequency_labels):
+                refresh_frequency_labels()
 
             # Layout may need refresh when fonts change
             try:
@@ -2294,15 +2297,16 @@ def show_figures_tk(
             ttk.Checkbutton(freq_box, text="Hover shows frequency", variable=hover_var, command=_toggle_hover)\
                 .grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
-            def _on_move(event):
-                if not hover_var.get():
-                    return
-                if event.inaxes != ax or event.x is None or event.y is None:
-                    if hover_annot.get_visible():
-                        hover_annot.set_visible(False)
-                        canvas.draw_idle()
-                    return
+            ttk.Label(
+                freq_box,
+                text="Click a point to add or remove its frequency label.",
+                wraplength=220,
+                justify="left",
+            ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
+            def _nearest_freq_point_index(event) -> int | None:
+                if event.inaxes != ax or event.x is None or event.y is None:
+                    return None
                 xdata = list(line.get_xdata(orig=False))
                 ydata = list(line.get_ydata(orig=False))
 
@@ -2319,11 +2323,22 @@ def show_figures_tk(
                         best_i = i
 
                 if best_i is None or best_d2 > thresh2:
+                    return None
+                return best_i
+
+            def _on_move(event):
+                if not hover_var.get():
+                    return
+
+                best_i = _nearest_freq_point_index(event)
+                if best_i is None:
                     if hover_annot.get_visible():
                         hover_annot.set_visible(False)
                         canvas.draw_idle()
                     return
 
+                xdata = list(line.get_xdata(orig=False))
+                ydata = list(line.get_ydata(orig=False))
                 fval = freqs[best_i]
                 hover_annot.xy = (xdata[best_i], ydata[best_i])
                 hover_annot.set_text(f"f = {_fmt_freq_hz(float(fval))}")
@@ -2333,8 +2348,8 @@ def show_figures_tk(
 
             canvas.mpl_connect("motion_notify_event", _on_move)
 
-            # --- Static labels for export ---
-            ttk.Separator(freq_box).grid(row=1, column=0, columnspan=2, sticky="ew", pady=6)
+            # --- Static labels / click-to-pin labels ---
+            ttk.Separator(freq_box).grid(row=2, column=0, columnspan=2, sticky="ew", pady=6)
 
             # Defaults: full range, labels OFF (N=0)
             fmin_default = min(freqs)
@@ -2345,8 +2360,18 @@ def show_figures_tk(
             nlabels_var = tk.IntVar(value=0)
 
             static_artists: list[object] = []
+            auto_label_idxs: list[int] = []
+            manual_label_idxs: list[int] = []
+            auto_label_spec: dict[str, float | int] | None = None
 
-            def _clear_static():
+            def _sync_freq_label_metadata(idxs: list[int], spec: dict[str, float | int] | None = None):
+                try:
+                    line._freq_label_idxs = list(idxs)  # type: ignore[attr-defined]
+                    line._freq_label_spec = spec        # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
+            def _clear_label_artists():
                 nonlocal static_artists
                 for a in static_artists:
                     try:
@@ -2355,14 +2380,43 @@ def show_figures_tk(
                         pass
                 static_artists = []
 
-                # NEW: clear metadata so composite knows there are no labels
-                try:
-                    line._freq_label_idxs = []        # type: ignore[attr-defined]
-                    line._freq_label_spec = None      # type: ignore[attr-defined]
-                except Exception:
-                    pass
+            def _redraw_frequency_labels():
+                _clear_label_artists()
 
+                idxs = sorted(set(auto_label_idxs + manual_label_idxs))
+                if not idxs:
+                    _sync_freq_label_metadata([], None)
+                    canvas.draw_idle()
+                    return
+
+                xdata = list(line.get_xdata(orig=False))
+                ydata = list(line.get_ydata(orig=False))
+                label_fs = max(7.0, float(label_fs_var.get()))
+
+                for i in idxs:
+                    txt = _fmt_freq_hz(float(freqs[i]))
+                    a = ax.annotate(
+                        txt,
+                        xy=(xdata[i], ydata[i]),
+                        xytext=(6, 6),
+                        textcoords="offset points",
+                        fontsize=label_fs,
+                        bbox=dict(boxstyle="round,pad=0.15", fc="white", alpha=0.7),
+                    )
+                    static_artists.append(a)
+
+                spec = auto_label_spec if auto_label_idxs and not manual_label_idxs and idxs == sorted(auto_label_idxs) else None
+                _sync_freq_label_metadata(idxs, spec)
                 canvas.draw_idle()
+
+            refresh_frequency_labels = _redraw_frequency_labels
+
+            def _clear_all_frequency_labels():
+                nonlocal auto_label_idxs, manual_label_idxs, auto_label_spec
+                auto_label_idxs = []
+                manual_label_idxs = []
+                auto_label_spec = None
+                _redraw_frequency_labels()
 
             def _parse_float_or_none(s: str) -> float | None:
                 s = s.strip()
@@ -2374,14 +2428,16 @@ def show_figures_tk(
                     return None
 
             def _apply_static_labels():
+                nonlocal auto_label_idxs, auto_label_spec
                 raws = [freqmin_var.get(), freqmax_var.get()]
                 if any(_is_incomplete_number(r) for r in raws):
                     return
 
-                _clear_static()
-
                 n = int(nlabels_var.get())
                 if n <= 0:
+                    auto_label_idxs = []
+                    auto_label_spec = None
+                    _redraw_frequency_labels()
                     return
 
                 fmin_in = _parse_float_or_none(freqmin_var.get())
@@ -2406,16 +2462,6 @@ def show_figures_tk(
                     target = fmin_use  # spec: nearest to Freqmin
                     idx = min(candidates, key=lambda i: abs(float(freqs[i]) - target))
                     idxs = [idx]
-                    # NEW: store label selection on the line (for composite import)
-                    try:
-                        line._freq_label_idxs = list(idxs)  # type: ignore[attr-defined]
-                        line._freq_label_spec = {           # type: ignore[attr-defined]
-                            "freqmin": fmin_use,
-                            "freqmax": fmax_use,
-                            "n": int(n),
-                        }
-                    except Exception:
-                        pass
                 else:
                     # evenly spaced in point number *within* candidates
                     m = len(candidates)
@@ -2427,41 +2473,52 @@ def show_figures_tk(
                         pos = [round(k * (m - 1) / (n - 1)) for k in range(n)]
                         idxs = sorted({candidates[p] for p in pos})
 
-                xdata = list(line.get_xdata(orig=False))
-                ydata = list(line.get_ydata(orig=False))
-                fs = float(tick_fs_var.get()) if "tick_fs_var" in locals() else 10.0
-                label_fs = max(7.0, fs * 0.9)
+                auto_label_idxs = list(idxs)
+                auto_label_spec = {
+                    "freqmin": fmin_use,
+                    "freqmax": fmax_use,
+                    "n": len(auto_label_idxs),
+                }
+                _redraw_frequency_labels()
 
-                for i in idxs:
-                    txt = _fmt_freq_hz(float(freqs[i]))
-                    a = ax.annotate(
-                        txt,
-                        xy=(xdata[i], ydata[i]),
-                        xytext=(6, 6),
-                        textcoords="offset points",
-                        fontsize=label_fs,
-                        bbox=dict(boxstyle="round,pad=0.15", fc="white", alpha=0.7),
-                    )
-                    static_artists.append(a)
+            def _on_click_freq_label(event):
+                nonlocal manual_label_idxs
+                if event.button != 1:
+                    return
+                if str(getattr(toolbar, "mode", "") or "").strip():
+                    return
 
-                canvas.draw_idle()
+                best_i = _nearest_freq_point_index(event)
+                if best_i is None:
+                    return
+
+                if hover_annot.get_visible():
+                    hover_annot.set_visible(False)
+
+                if best_i in manual_label_idxs:
+                    manual_label_idxs = [idx for idx in manual_label_idxs if idx != best_i]
+                else:
+                    manual_label_idxs = sorted(manual_label_idxs + [best_i])
+                _redraw_frequency_labels()
+
+            canvas.mpl_connect("button_press_event", _on_click_freq_label)
 
             # UI widgets
-            ttk.Label(freq_box, text="Freqmin").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
+            ttk.Label(freq_box, text="Freqmin").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
             fmin_entry = ttk.Entry(freq_box, textvariable=freqmin_var, width=12)
-            fmin_entry.grid(row=2, column=1, sticky="w", pady=2)
+            fmin_entry.grid(row=3, column=1, sticky="w", pady=2)
 
-            ttk.Label(freq_box, text="Freqmax").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
+            ttk.Label(freq_box, text="Freqmax").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
             fmax_entry = ttk.Entry(freq_box, textvariable=freqmax_var, width=12)
-            fmax_entry.grid(row=3, column=1, sticky="w", pady=2)
+            fmax_entry.grid(row=4, column=1, sticky="w", pady=2)
 
-            ttk.Label(freq_box, text="N labels").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
+            ttk.Label(freq_box, text="N labels").grid(row=5, column=0, sticky="w", padx=(0, 6), pady=2)
             n_spin = ttk.Spinbox(freq_box, from_=0, to=50, increment=1, textvariable=nlabels_var, width=10)
-            n_spin.grid(row=4, column=1, sticky="w", pady=2)
+            n_spin.grid(row=5, column=1, sticky="w", pady=2)
 
             btns_f = ttk.Frame(freq_box)
-            btns_f.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-            ttk.Button(btns_f, text="Limpiar", command=lambda: (nlabels_var.set(0), _apply_static_labels()))\
+            btns_f.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+            ttk.Button(btns_f, text="Limpiar", command=lambda: (nlabels_var.set(0), _clear_all_frequency_labels()))\
                 .pack(side="left", expand=True, fill="x")
 
             # Debounced auto-apply for static labels
