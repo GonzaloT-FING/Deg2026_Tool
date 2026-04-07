@@ -19,6 +19,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
+from pipelines.activ_pip import ACTIV_CYCLE_GRADIENTS, _build_scrollable_cycle_selector, _cycle_gradient_color
 from plot_defaults import PlotFontDefaults, resolve_plot_font_defaults
 from ui_layout import create_resizable_plot_layout
 
@@ -48,20 +49,18 @@ DEG_FILE_RE = re.compile(
 
 LINESTYLE_OPTIONS = ["none", "-", "--", ":", "-."]
 SMOOTHING_ALGORITHMS = ["Median filter", "Rolling average"]
-
-DEG_STAGE_COLORS = [
-    "#06a8c2",
-    "#2b3d8c",
-    "#cf9a32",
-    "#ab3030",
-    "#2f9e44",
-    "#7c4dff",
-    "#8d6e63",
-    "#00897b",
-]
+DEG_STAGE_SELECTOR_HEIGHT = 140
 
 DEG_PLOT_COLORS = {
+    "voltage": "#1f5f99",
     "temperature": "#cf9a32",
+    "dvdt": "#1f5f99",
+}
+
+DEG_STAGE_GRADIENTS = {
+    "voltage": ACTIV_CYCLE_GRADIENTS["voltage"],
+    "temperature": ACTIV_CYCLE_GRADIENTS["temperature"],
+    "dvdt": ACTIV_CYCLE_GRADIENTS["voltage"],
 }
 
 SECONDS_PER_MINUTE = 60.0
@@ -486,17 +485,27 @@ def _mpl_linestyle(value: str) -> str:
 
 
 def _build_scrollable_controls(parent) -> ttk.Frame:
-    outer = ttk.Frame(parent)
+    outer = ttk.Frame(parent, padding=10)
     outer.pack(fill="both", expand=True)
 
-    canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0)
+    style = ttk.Style(parent)
+    canvas_bg = style.lookup("App.TFrame", "background") or style.lookup("TFrame", "background") or "#10161d"
+
+    canvas = tk.Canvas(
+        outer,
+        highlightthickness=0,
+        borderwidth=0,
+        bg=canvas_bg,
+        bd=0,
+        relief="flat",
+    )
     scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
     canvas.configure(yscrollcommand=scrollbar.set)
 
     scrollbar.pack(side="right", fill="y")
     canvas.pack(side="left", fill="both", expand=True)
 
-    inner = ttk.Frame(canvas, padding=(10, 0, 10, 0))
+    inner = ttk.Frame(canvas, padding=(0, 0, 6, 0))
     window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
 
     def _update_scrollregion(_event=None):
@@ -527,8 +536,21 @@ def _build_scrollable_controls(parent) -> ttk.Frame:
 
     outer.bind("<Enter>", _bind_mousewheel)
     outer.bind("<Leave>", _unbind_mousewheel)
+    outer.after_idle(lambda: canvas.yview_moveto(0))
+    outer.bind("<Configure>", lambda _event: canvas.yview_moveto(0), add="+")
 
     return inner
+
+
+def _selected_stage_items(
+    parsed_items: list[tuple[DegFile, ParsedDTA]],
+    stage_vars: dict[int, tk.BooleanVar],
+) -> list[tuple[DegFile, ParsedDTA]]:
+    return [
+        (deg_file, parsed)
+        for deg_file, parsed in parsed_items
+        if stage_vars.get(deg_file.stage) is not None and stage_vars[deg_file.stage].get()
+    ]
 
 
 def _format_limit_value(value: float | None, decimals: int = 1) -> str:
@@ -1009,7 +1031,7 @@ def draw_dv_dt_on_figure(
         )
         if not delta_rows:
             continue
-        color = DEG_STAGE_COLORS[idx % len(DEG_STAGE_COLORS)]
+        color = _cycle_gradient_color(DEG_STAGE_GRADIENTS["dvdt"], idx, len(parsed_items))
         ax.plot(
             [row["time"] for row in delta_rows],
             [row["dVdt"] for row in delta_rows],
@@ -1105,12 +1127,13 @@ def draw_v_vs_t_on_figure(
     for idx, (deg_file, parsed) in enumerate(parsed_items):
         t_vals, v_vals = _required_numeric_series(parsed, "T", "Vf")
         plot_t_vals = _plot_time_values(parsed, t_vals, time_unit, deg_file.path.name)
-        stage_color = DEG_STAGE_COLORS[idx % len(DEG_STAGE_COLORS)]
+        voltage_color = _cycle_gradient_color(DEG_STAGE_GRADIENTS["voltage"], idx, len(parsed_items))
+        temperature_color = _cycle_gradient_color(DEG_STAGE_GRADIENTS["temperature"], idx, len(parsed_items))
         if has_voltage:
             ax.plot(
                 plot_t_vals,
                 v_vals,
-                color=stage_color,
+                color=voltage_color,
                 linewidth=line_width,
                 linestyle=_mpl_linestyle(voltage_linestyle),
                 label=f"Stage #{deg_file.stage} V",
@@ -1121,7 +1144,7 @@ def draw_v_vs_t_on_figure(
             ax_temp.plot(
                 plot_temp_time,
                 temp_vals,
-                color=DEG_PLOT_COLORS["temperature"] if len(parsed_items) == 1 else stage_color,
+                color=temperature_color,
                 linewidth=line_width,
                 linestyle=_mpl_linestyle(temperature_linestyle),
                 label=f"Stage #{deg_file.stage} T",
@@ -1181,6 +1204,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     font_defaults = resolve_plot_font_defaults(font_defaults)
     font_default_values = font_defaults.as_strings()
     parsed_items = [(deg_file, parse_gamry_dta(deg_file.path)) for deg_file in deg_files]
+    stage_vars = {deg_file.stage: tk.BooleanVar(value=True) for deg_file in deg_files}
     default_limits = compute_default_v_vs_t_limits(parsed_items, time_unit="s")
 
     win = tk.Toplevel()
@@ -1269,10 +1293,16 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
 
     def _plot():
         plot_job["id"] = None
+        visible_items = _selected_stage_items(parsed_items, stage_vars)
+        if not visible_items:
+            fig.clear()
+            canvas.draw_idle()
+            status_var.set("No se muestra grafico: seleccione al menos una etapa.")
+            return
         try:
             has_plot = draw_v_vs_t_on_figure(
                 fig=fig,
-                parsed_items=parsed_items,
+                parsed_items=visible_items,
                 show_temperature=temperature_var.get(),
                 voltage_linestyle=voltage_line_var.get(),
                 temperature_linestyle=temperature_line_var.get(),
@@ -1310,9 +1340,13 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
         plot_job["id"] = win.after(20, _plot)
 
     def _autofit():
+        visible_items = _selected_stage_items(parsed_items, stage_vars)
+        if not visible_items:
+            status_var.set("Autoescala no disponible: seleccione al menos una etapa.")
+            return
         try:
             fitted = compute_autofit_v_vs_t_limits(
-                parsed_items,
+                visible_items,
                 temperature_var.get(),
                 time_unit=time_unit_var.get(),
             )
@@ -1384,6 +1418,8 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
             v_max_var.set(initial_state["v_max"])
             temp_min_var.set(initial_state["temp_min"])
             temp_max_var.set(initial_state["temp_max"])
+            for var in stage_vars.values():
+                var.set(True)
         finally:
             suspend_events["value"] = False
 
@@ -1449,6 +1485,9 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
         wraplength=260,
     ).pack(anchor="w", pady=(0, 10))
 
+    stages_box = ttk.LabelFrame(controls_frame, text="Etapas")
+    stages_box.pack(fill="x", pady=5)
+
     series_box = ttk.LabelFrame(controls_frame, text="Series")
     series_box.pack(fill="x", pady=5)
 
@@ -1460,6 +1499,21 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
 
     limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
     limits_box.pack(fill="x", pady=5)
+
+    stages_inner, bind_stage_scroll = _build_scrollable_cycle_selector(
+        stages_box,
+        height=DEG_STAGE_SELECTOR_HEIGHT,
+    )
+    for index, deg_file in enumerate(deg_files):
+        stage_toggle = ttk.Checkbutton(
+            stages_inner,
+            text=f"Etapa #{deg_file.stage}",
+            variable=stage_vars[deg_file.stage],
+            command=_schedule_plot,
+        )
+        pady = (0, 2) if index < len(deg_files) - 1 else 0
+        stage_toggle.pack(anchor="w", padx=4, pady=pady)
+        bind_stage_scroll(stage_toggle)
 
     ttk.Checkbutton(
         series_box,
@@ -1600,6 +1654,7 @@ def open_dv_dt_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     font_defaults = resolve_plot_font_defaults(font_defaults)
     font_default_values = font_defaults.as_strings()
     parsed_items = [(deg_file, parse_gamry_dta(deg_file.path)) for deg_file in deg_files]
+    stage_vars = {deg_file.stage: tk.BooleanVar(value=True) for deg_file in deg_files}
     default_limits = compute_default_dv_dt_limits(
         parsed_items,
         time_unit="s",
@@ -1730,10 +1785,16 @@ def open_dv_dt_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
 
     def _plot():
         plot_job["id"] = None
+        visible_items = _selected_stage_items(parsed_items, stage_vars)
+        if not visible_items:
+            fig.clear()
+            canvas.draw_idle()
+            status_var.set("No se muestra grafico: seleccione al menos una etapa.")
+            return
         try:
             has_plot = draw_dv_dt_on_figure(
                 fig=fig,
-                parsed_items=parsed_items,
+                parsed_items=visible_items,
                 dvdt_linestyle=dvdt_line_var.get(),
                 time_unit=time_unit_var.get(),
                 x_tick_count=x_tick_count_var.get(),
@@ -1771,9 +1832,13 @@ def open_dv_dt_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
         plot_job["id"] = win.after(20, _plot)
 
     def _autofit():
+        visible_items = _selected_stage_items(parsed_items, stage_vars)
+        if not visible_items:
+            status_var.set("Autoescala no disponible: seleccione al menos una etapa.")
+            return
         try:
             fitted = compute_autofit_dv_dt_limits(
-                parsed_items,
+                visible_items,
                 time_unit=time_unit_var.get(),
                 **_smoothing_config(),
                 **_axis_mode_config(),
@@ -1863,6 +1928,8 @@ def open_dv_dt_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
             t_max_lock_var.set(initial_state["t_max_lock"])
             dvdt_min_lock_var.set(initial_state["dvdt_min_lock"])
             dvdt_max_lock_var.set(initial_state["dvdt_max_lock"])
+            for var in stage_vars.values():
+                var.set(True)
             _apply_lock_states()
         finally:
             suspend_events["value"] = False
@@ -1876,6 +1943,9 @@ def open_dv_dt_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
         justify="left",
         wraplength=260,
     ).pack(anchor="w", pady=(0, 10))
+
+    stages_box = ttk.LabelFrame(controls_frame, text="Etapas")
+    stages_box.pack(fill="x", pady=5)
 
     series_box = ttk.LabelFrame(controls_frame, text="Series")
     series_box.pack(fill="x", pady=5)
@@ -1891,6 +1961,21 @@ def open_dv_dt_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
 
     limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
     limits_box.pack(fill="x", pady=5)
+
+    stages_inner, bind_stage_scroll = _build_scrollable_cycle_selector(
+        stages_box,
+        height=DEG_STAGE_SELECTOR_HEIGHT,
+    )
+    for index, deg_file in enumerate(deg_files):
+        stage_toggle = ttk.Checkbutton(
+            stages_inner,
+            text=f"Etapa #{deg_file.stage}",
+            variable=stage_vars[deg_file.stage],
+            command=_schedule_plot,
+        )
+        pady = (0, 2) if index < len(deg_files) - 1 else 0
+        stage_toggle.pack(anchor="w", padx=4, pady=pady)
+        bind_stage_scroll(stage_toggle)
 
     ttk.Label(series_box, text="Unidad de tiempo").pack(anchor="w", padx=8, pady=(4, 2))
     time_unit_combo = ttk.Combobox(
