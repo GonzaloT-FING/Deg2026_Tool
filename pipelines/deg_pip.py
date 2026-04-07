@@ -484,6 +484,87 @@ def _mpl_linestyle(value: str) -> str:
     return "None" if value == "none" else value
 
 
+def _linear_fit_slope(x_vals: list[float], y_vals: list[float]) -> float | None:
+    if len(x_vals) < 2:
+        return None
+    sum_x = sum(x_vals)
+    sum_y = sum(y_vals)
+    sum_x2 = sum(x * x for x in x_vals)
+    sum_xy = sum(x * y for x, y in zip(x_vals, y_vals))
+    n = float(len(x_vals))
+    denom = (n * sum_x2) - (sum_x * sum_x)
+    if denom == 0:
+        return None
+    return (n * sum_xy - sum_x * sum_y) / denom
+
+
+def _edge_slope(x_vals: list[float], y_vals: list[float]) -> float | None:
+    if len(x_vals) < 2:
+        return None
+    dt = x_vals[-1] - x_vals[0]
+    if dt == 0:
+        return None
+    return (y_vals[-1] - y_vals[0]) / dt
+
+
+def _filtered_time_voltage(
+    time_seconds: list[float],
+    voltages: list[float],
+    t_min_seconds: float | None,
+    t_max_seconds: float | None,
+) -> tuple[list[float], list[float]]:
+    pairs = [
+        (t, v)
+        for t, v in zip(time_seconds, voltages)
+        if (t_min_seconds is None or t >= t_min_seconds)
+        and (t_max_seconds is None or t <= t_max_seconds)
+    ]
+    if not pairs:
+        return [], []
+    pairs.sort(key=lambda item: item[0])
+    out_t = [item[0] for item in pairs]
+    out_v = [item[1] for item in pairs]
+    return out_t, out_v
+
+
+def compute_degradation_rate(
+    parsed: ParsedDTA,
+    source_name: str,
+    time_unit: str,
+    reference_start: datetime | None,
+    t_min: TimeAxisValue | None,
+    t_max: TimeAxisValue | None,
+    use_linear_fit: bool,
+) -> tuple[float | None, int]:
+    time_values, voltage_values = _required_numeric_series(parsed, "T", "Vf")
+
+    if _is_date_axis(time_unit):
+        if reference_start is None:
+            raise ValueError("Falta referencia de tiempo para el eje de fecha.")
+        stage_start = _start_datetime(parsed, source_name)
+        offset = (stage_start - reference_start).total_seconds()
+        time_seconds = [offset + value for value in time_values]
+        t_min_seconds = (
+            _time_limit_to_seconds(t_min, time_unit, reference_start) if t_min is not None else None
+        )
+        t_max_seconds = (
+            _time_limit_to_seconds(t_max, time_unit, reference_start) if t_max is not None else None
+        )
+    else:
+        time_seconds = list(time_values)
+        t_min_seconds = (
+            float(t_min) * _time_unit_scale(time_unit) if t_min is not None else None
+        )
+        t_max_seconds = (
+            float(t_max) * _time_unit_scale(time_unit) if t_max is not None else None
+        )
+
+    filt_t, filt_v = _filtered_time_voltage(time_seconds, voltage_values, t_min_seconds, t_max_seconds)
+    if len(filt_t) < 2:
+        return None, len(filt_t)
+
+    slope = _linear_fit_slope(filt_t, filt_v) if use_linear_fit else _edge_slope(filt_t, filt_v)
+    return slope, len(filt_t)
 def _build_scrollable_controls(parent) -> ttk.Frame:
     outer = ttk.Frame(parent, padding=10)
     outer.pack(fill="both", expand=True)
@@ -1249,6 +1330,10 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     v_max_var = tk.StringVar(value=default_limits["v_max"])
     temp_min_var = tk.StringVar(value=default_limits["temp_min"])
     temp_max_var = tk.StringVar(value=default_limits["temp_max"])
+    slope_t_min_var = tk.StringVar(value="")
+    slope_t_max_var = tk.StringVar(value="")
+    slope_fit_var = tk.BooleanVar(value=False)
+    slope_indicator_var = tk.StringVar(value="—")
 
     initial_state = {
         "temperature": False,
@@ -1269,6 +1354,9 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
         "v_max": default_limits["v_max"],
         "temp_min": default_limits["temp_min"],
         "temp_max": default_limits["temp_max"],
+        "slope_t_min": "",
+        "slope_t_max": "",
+        "slope_fit": False,
     }
 
     plot_job = {"id": None}
@@ -1291,6 +1379,56 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
             temp_max=_optional_float(temp_max_var.get()),
         )
 
+    def _collect_slope_limits() -> tuple[TimeAxisValue | None, TimeAxisValue | None]:
+        return (
+            _parse_time_limit_text(slope_t_min_var.get(), time_unit_var.get()),
+            _parse_time_limit_text(slope_t_max_var.get(), time_unit_var.get()),
+        )
+
+    def _update_degradation_indicator(visible_items: list[tuple[DegFile, ParsedDTA]]) -> None:
+        if not visible_items:
+            slope_indicator_var.set("Seleccione al menos una etapa.")
+            return
+
+        try:
+            t_min, t_max = _collect_slope_limits()
+        except ValueError as exc:
+            slope_indicator_var.set(f"Error: {exc}")
+            return
+        use_fit = slope_fit_var.get()
+        try:
+            ref_start = _reference_start() if _is_date_axis(time_unit_var.get()) else None
+        except ValueError as exc:
+            slope_indicator_var.set(f"Error: {exc}")
+            return
+        lines: list[str] = []
+
+        for deg_file, parsed in visible_items:
+            try:
+                slope, _count = compute_degradation_rate(
+                    parsed=parsed,
+                    source_name=deg_file.path.name,
+                    time_unit=time_unit_var.get(),
+                    reference_start=ref_start,
+                    t_min=t_min,
+                    t_max=t_max,
+                    use_linear_fit=use_fit,
+                )
+            except ValueError as exc:
+                lines.append(f"Etapa #{deg_file.stage}: Error ({exc})")
+                continue
+
+            if slope is None:
+                lines.append(f"Etapa #{deg_file.stage}: Sin datos")
+                continue
+
+            slope_uv_hour = slope * 1e6 * SECONDS_PER_HOUR
+            slope_text = _format_adaptive_limit_value(slope_uv_hour)
+            lines.append(f"Etapa #{deg_file.stage}: {slope_text} µV/h")
+
+
+        slope_indicator_var.set("\n".join(lines) if lines else "Sin datos.")
+
     def _plot():
         plot_job["id"] = None
         visible_items = _selected_stage_items(parsed_items, stage_vars)
@@ -1298,6 +1436,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
             fig.clear()
             canvas.draw_idle()
             status_var.set("No se muestra grafico: seleccione al menos una etapa.")
+            _update_degradation_indicator([])
             return
         try:
             has_plot = draw_v_vs_t_on_figure(
@@ -1321,16 +1460,19 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
             fig.clear()
             canvas.draw_idle()
             status_var.set(f"Error: {exc}")
+            _update_degradation_indicator(visible_items)
             return
 
         if not has_plot:
             fig.clear()
             canvas.draw_idle()
             status_var.set("No se muestra grafico: active al menos una serie.")
+            _update_degradation_indicator(visible_items)
             return
 
         canvas.draw_idle()
         status_var.set("Grafico actualizado.")
+        _update_degradation_indicator(visible_items)
 
     def _schedule_plot(*_args):
         if suspend_events["value"]:
@@ -1376,6 +1518,8 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
         new_unit = time_unit_var.get()
         old_t_min = t_min_var.get()
         old_t_max = t_max_var.get()
+        old_slope_t_min = slope_t_min_var.get()
+        old_slope_t_max = slope_t_max_var.get()
 
         suspend_events["value"] = True
         try:
@@ -1383,10 +1527,20 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
                 t_min_var.set(_convert_time_limit_text(t_min_var.get(), old_unit, new_unit, _reference_start()))
             if t_max_var.get().strip():
                 t_max_var.set(_convert_time_limit_text(t_max_var.get(), old_unit, new_unit, _reference_start()))
+            if slope_t_min_var.get().strip():
+                slope_t_min_var.set(
+                    _convert_time_limit_text(slope_t_min_var.get(), old_unit, new_unit, _reference_start())
+                )
+            if slope_t_max_var.get().strip():
+                slope_t_max_var.set(
+                    _convert_time_limit_text(slope_t_max_var.get(), old_unit, new_unit, _reference_start())
+                )
             current_time_unit["value"] = new_unit
         except ValueError as exc:
             t_min_var.set(old_t_min)
             t_max_var.set(old_t_max)
+            slope_t_min_var.set(old_slope_t_min)
+            slope_t_max_var.set(old_slope_t_max)
             current_time_unit["value"] = old_unit
             time_unit_var.set(old_unit)
             status_var.set(f"Error: {exc}")
@@ -1418,6 +1572,9 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
             v_max_var.set(initial_state["v_max"])
             temp_min_var.set(initial_state["temp_min"])
             temp_max_var.set(initial_state["temp_max"])
+            slope_t_min_var.set(initial_state["slope_t_min"])
+            slope_t_max_var.set(initial_state["slope_t_max"])
+            slope_fit_var.set(initial_state["slope_fit"])
             for var in stage_vars.values():
                 var.set(True)
         finally:
@@ -1497,6 +1654,9 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     text_box = ttk.LabelFrame(controls_frame, text="Texto / tamaños")
     text_box.pack(fill="x", pady=5)
 
+    degradation_box = ttk.LabelFrame(controls_frame, text="Degradación")
+    degradation_box.pack(fill="x", pady=5)
+
     limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
     limits_box.pack(fill="x", pady=5)
 
@@ -1575,6 +1735,38 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     line_width_spin = tk.Spinbox(text_box, from_=0.5, to=5.0, increment=0.1, textvariable=line_width_var, width=8)
     line_width_spin.grid(row=5, column=1, sticky="w", padx=8, pady=3)
 
+    ttk.Label(degradation_box, text="t min").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    slope_t_min_entry = ttk.Entry(degradation_box, textvariable=slope_t_min_var, width=16)
+    slope_t_min_entry.grid(row=0, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(degradation_box, text="t max").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    slope_t_max_entry = ttk.Entry(degradation_box, textvariable=slope_t_max_var, width=16)
+    slope_t_max_entry.grid(row=1, column=1, sticky="w", padx=8, pady=3)
+
+    slope_fit_check = ttk.Checkbutton(
+        degradation_box,
+        text="Ajuste lineal",
+        variable=slope_fit_var,
+        command=_schedule_plot,
+    )
+    slope_fit_check.grid(row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(3, 3))
+
+    ttk.Label(degradation_box, text="dV/dt promedio [µV/h]").grid(
+        row=3,
+        column=0,
+        columnspan=2,
+        sticky="w",
+        padx=8,
+        pady=(6, 2),
+    )
+    slope_indicator_label = ttk.Label(
+        degradation_box,
+        textvariable=slope_indicator_var,
+        justify="left",
+        wraplength=240,
+    )
+    slope_indicator_label.grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))
+
     limit_specs = [
         ("t min", t_min_var),
         ("t max", t_max_var),
@@ -1588,6 +1780,11 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
         ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
         entry = ttk.Entry(limits_box, textvariable=var, width=22)
         entry.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        entry.bind("<Return>", _schedule_plot)
+        entry.bind("<KP_Enter>", _schedule_plot)
+        entry.bind("<FocusOut>", _schedule_plot)
+
+    for entry in (slope_t_min_entry, slope_t_max_entry):
         entry.bind("<Return>", _schedule_plot)
         entry.bind("<KP_Enter>", _schedule_plot)
         entry.bind("<FocusOut>", _schedule_plot)
