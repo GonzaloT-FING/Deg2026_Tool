@@ -18,6 +18,7 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 from plot_defaults import PlotFontDefaults, resolve_plot_font_defaults
+from ui_layout import create_resizable_plot_layout
 
 
 META_ROWS_ORDER = [
@@ -958,18 +959,17 @@ def _draw_cycle_scale_bars(
 
 
 def _build_scrollable_controls(parent) -> ttk.Frame:
-    outer = ttk.Frame(parent, width=320)
-    outer.pack(side="left", fill="y")
-    outer.pack_propagate(False)
+    outer = ttk.Frame(parent)
+    outer.pack(fill="both", expand=True)
 
-    canvas = tk.Canvas(outer, highlightthickness=0, width=320)
+    canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0)
     scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
     canvas.configure(yscrollcommand=scrollbar.set)
 
     scrollbar.pack(side="right", fill="y")
     canvas.pack(side="left", fill="both", expand=True)
 
-    inner = ttk.Frame(canvas, padding=10)
+    inner = ttk.Frame(canvas, padding=(10, 0, 10, 0))
     window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
 
     def _update_scrollregion(_event=None):
@@ -1006,16 +1006,36 @@ def _build_scrollable_controls(parent) -> ttk.Frame:
 
 def _build_scrollable_cycle_selector(parent, *, height: int = ACTIV_CYCLE_SELECTOR_HEIGHT):
     outer = ttk.Frame(parent)
-    outer.pack(fill="x", expand=True, padx=8, pady=6)
+    outer.pack(fill="x")
+    outer.columnconfigure(0, weight=1)
 
-    canvas = tk.Canvas(outer, height=height, highlightthickness=0, borderwidth=0)
+    style = ttk.Style(parent)
+    canvas_bg = style.lookup("App.TFrame", "background") or style.lookup("TFrame", "background") or "#10161d"
+
+    canvas = tk.Canvas(
+        outer,
+        height=1,
+        width=1,
+        highlightthickness=0,
+        borderwidth=0,
+        bg=canvas_bg,
+        bd=0,
+        relief="flat",
+    )
     scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
     inner = ttk.Frame(canvas)
     canvas.configure(yscrollcommand=scrollbar.set)
     window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
 
     def _update_scrollregion(_event=None):
-        canvas.configure(scrollregion=canvas.bbox("all"))
+        bbox = canvas.bbox("all")
+        if bbox is None:
+            return
+        canvas.configure(scrollregion=bbox)
+        content_height = max(1, bbox[3] - bbox[1])
+        target_height = min(height, content_height)
+        if int(float(canvas.cget("height"))) != target_height:
+            canvas.configure(height=target_height)
 
     def _sync_width(event):
         canvas.itemconfigure(window_id, width=event.width)
@@ -1036,11 +1056,12 @@ def _build_scrollable_cycle_selector(parent, *, height: int = ACTIV_CYCLE_SELECT
     inner.bind("<Configure>", _update_scrollregion)
     canvas.bind("<Configure>", _sync_width)
 
-    canvas.pack(side="left", fill="both", expand=True)
-    scrollbar.pack(side="right", fill="y")
+    canvas.grid(row=0, column=0, sticky="nsew")
+    scrollbar.grid(row=0, column=1, sticky="ns")
 
     _bind_mousewheel(canvas)
     _bind_mousewheel(inner)
+    outer.after_idle(lambda: canvas.yview_moveto(0))
 
     return inner, _bind_mousewheel
 
@@ -1531,10 +1552,12 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     win.title(f"Activacion - V vs t - {bundle.label}")
     win.geometry("1200x720")
 
-    controls_frame = _build_scrollable_controls(win)
-
-    plot_outer = ttk.Frame(win, padding=10)
-    plot_outer.pack(side="right", fill="both", expand=True)
+    controls_host, plot_outer = create_resizable_plot_layout(
+        win,
+        sidebar_width=420,
+        min_sidebar_width=390,
+    )
+    controls_frame = _build_scrollable_controls(controls_host)
 
     toolbar_frame = ttk.Frame(plot_outer)
     toolbar_frame.pack(side="top", fill="x")
@@ -1828,14 +1851,15 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
 
     cycles_inner, bind_cycle_scroll = _build_scrollable_cycle_selector(cycles_box)
 
-    for cycle in cycle_ids:
+    for index, cycle in enumerate(cycle_ids):
         cycle_toggle = ttk.Checkbutton(
             cycles_inner,
             text=f"Ciclo #{cycle}",
             variable=cycle_vars[cycle],
             command=_schedule_plot,
         )
-        cycle_toggle.pack(anchor="w", padx=4, pady=2)
+        pady = (0, 2) if index < len(cycle_ids) - 1 else 0
+        cycle_toggle.pack(anchor="w", padx=4, pady=pady)
         bind_cycle_scroll(cycle_toggle)
 
     ttk.Checkbutton(series_box, text="Ascendente", variable=asc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
@@ -1968,10 +1992,12 @@ def open_v_vs_i_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     win.title(f"Activacion - V vs I - {bundle.label}")
     win.geometry("1200x720")
 
-    controls_frame = _build_scrollable_controls(win)
-
-    plot_outer = ttk.Frame(win, padding=10)
-    plot_outer.pack(side="right", fill="both", expand=True)
+    controls_host, plot_outer = create_resizable_plot_layout(
+        win,
+        sidebar_width=420,
+        min_sidebar_width=390,
+    )
+    controls_frame = _build_scrollable_controls(controls_host)
 
     toolbar_frame = ttk.Frame(plot_outer)
     toolbar_frame.pack(side="top", fill="x")
@@ -2201,14 +2227,15 @@ def open_v_vs_i_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
 
     cycles_inner, bind_cycle_scroll = _build_scrollable_cycle_selector(cycles_box)
 
-    for cycle in cycle_ids:
+    for index, cycle in enumerate(cycle_ids):
         cycle_toggle = ttk.Checkbutton(
             cycles_inner,
             text=f"Ciclo #{cycle}",
             variable=cycle_vars[cycle],
             command=_schedule_plot,
         )
-        cycle_toggle.pack(anchor="w", padx=4, pady=2)
+        pady = (0, 2) if index < len(cycle_ids) - 1 else 0
+        cycle_toggle.pack(anchor="w", padx=4, pady=pady)
         bind_cycle_scroll(cycle_toggle)
 
     ttk.Checkbutton(series_box, text="Ascendente", variable=asc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)

@@ -20,6 +20,7 @@ This version is written to match the real structure of the uploaded Gamry files.
 from __future__ import annotations
 
 import colorsys
+from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -38,6 +39,7 @@ from tkinter import ttk, colorchooser
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 from plot_defaults import PlotFontDefaults, apply_plot_font_defaults, resolve_plot_font_defaults
+from ui_layout import create_resizable_plot_layout
 
 
 # ---------------------------------------------------------------------------
@@ -129,9 +131,9 @@ def _is_incomplete_number(s: str) -> bool:
 
 def _build_scrollable_controls(parent) -> tuple[ttk.Frame, ttk.Frame]:
     outer = ttk.Frame(parent, padding=(8, 6))
-    outer.pack(side="left", fill="y")
+    outer.pack(fill="both", expand=True)
 
-    canvas = tk.Canvas(outer, highlightthickness=0, width=340)
+    canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0)
     scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
     controls_frame = ttk.Frame(canvas, padding=(0, 0, 6, 0))
 
@@ -159,7 +161,7 @@ def _build_scrollable_controls(parent) -> tuple[ttk.Frame, ttk.Frame]:
     canvas.bind("<Enter>", _bind_mousewheel)
     canvas.bind("<Leave>", _unbind_mousewheel)
 
-    canvas.pack(side="left", fill="y", expand=False)
+    canvas.pack(side="left", fill="both", expand=True)
     scrollbar.pack(side="right", fill="y")
 
     top_frame = ttk.Frame(controls_frame)
@@ -378,15 +380,63 @@ def _extract_current_label(stem: str) -> tuple[str | None, float | None]:
     return None, None
 
 
+def _format_decimal_for_plot_label(raw_value: str) -> str | None:
+    raw_number = raw_value.strip()
+    if not raw_number:
+        return None
+
+    try:
+        value = Decimal(raw_number.replace(",", "."))
+    except InvalidOperation:
+        return None
+
+    normalized = value.normalize()
+    if normalized == 0:
+        return "0"
+
+    abs_value = normalized.copy_abs()
+    if Decimal("0.001") <= abs_value < Decimal("10000"):
+        text = format(value, "f").rstrip("0").rstrip(".")
+    else:
+        mantissa, exponent = format(normalized, "E").split("E", maxsplit=1)
+        mantissa = mantissa.rstrip("0").rstrip(".")
+        text = f"{mantissa}E{int(exponent):+d}"
+
+    return text.replace(".", ",")
+
+
 def _format_voltage_label(parsed: ParsedDTA) -> str | None:
     raw_value = parsed.meta_values.get("VDC", "").strip()
     if not raw_value:
         return None
 
-    compact = raw_value.replace(" ", "").replace(".", ",")
-    if compact.upper().endswith("V"):
-        return compact
-    return f"{compact}V"
+    if raw_value.upper().endswith("V"):
+        raw_value = raw_value[:-1].strip()
+
+    formatted = _format_decimal_for_plot_label(raw_value)
+    if formatted is None:
+        compact = raw_value.replace(" ", "").replace(".", ",")
+        return f"{compact}V" if compact else None
+    return f"{formatted}V"
+
+
+def _extract_characterization_label(
+    stem: str,
+    *,
+    current_label: str | None,
+    voltage_label: str | None,
+) -> str | None:
+    if current_label is not None or voltage_label != "0V":
+        return None
+
+    match = re.fullmatch(r"EISPOT_[^_]+_([23])_#\d+", stem, flags=re.IGNORECASE)
+    if match is None:
+        return None
+
+    return {
+        "2": "Pre-char",
+        "3": "Post-char",
+    }.get(match.group(1))
 
 
 def _build_eis_display_name(path: Path, parsed: ParsedDTA) -> tuple[str, int | None, str | None, str | None, float | None]:
@@ -394,6 +444,11 @@ def _build_eis_display_name(path: Path, parsed: ParsedDTA) -> tuple[str, int | N
     stage_number = _extract_stage_number(stem)
     current_label, current_value = _extract_current_label(stem)
     voltage_label = _format_voltage_label(parsed)
+    characterization_label = _extract_characterization_label(
+        stem,
+        current_label=current_label,
+        voltage_label=voltage_label,
+    )
 
     parts: list[str] = []
     if stage_number is not None:
@@ -402,6 +457,8 @@ def _build_eis_display_name(path: Path, parsed: ParsedDTA) -> tuple[str, int | N
         parts.append(current_label)
     if voltage_label:
         parts.append(voltage_label)
+    if characterization_label:
+        parts.append(characterization_label)
 
     display_name = " / ".join(parts) if parts else stem
     return display_name, stage_number, current_label, voltage_label, current_value
@@ -921,10 +978,8 @@ def show_figures_tk(
     win.title(window_title)
     win.geometry("1200x780")
 
-    topbar, ctrl_host = _build_scrollable_controls(win)
-
-    plot_frame = ttk.Frame(win)
-    plot_frame.pack(side="right", fill="both", expand=True)
+    controls_host, plot_frame = create_resizable_plot_layout(win, sidebar_width=340, plot_padding=0)
+    topbar, ctrl_host = _build_scrollable_controls(controls_host)
 
     ttk.Label(topbar, text="Seleccionar:").pack(side="top", anchor="w")
 
@@ -2470,12 +2525,12 @@ def show_figures_tk(
         comp.title("Composite (Nyquist)")
         comp.geometry("1250x780")
 
-        outer = ttk.Frame(comp)
-        outer.pack(fill="both", expand=True)
-
-        # Left: plot
-        plot_frame = ttk.Frame(outer)
-        plot_frame.pack(side="left", fill="both", expand=True)
+        ctrl_host, plot_frame = create_resizable_plot_layout(
+            comp,
+            sidebar_width=320,
+            sidebar_side="right",
+            plot_padding=0,
+        )
 
         figc = _new_figure()
         axc = figc.add_subplot(111)
@@ -2501,8 +2556,8 @@ def show_figures_tk(
         toolbar.update()
 
         # Right: controls
-        ctrl = ttk.Frame(outer, padding=10)
-        ctrl.pack(side="right", fill="y")
+        ctrl = ttk.Frame(ctrl_host, padding=10)
+        ctrl.pack(fill="both", expand=True)
 
         # ---- Sources list (show current title + key) ----
         src_box = ttk.LabelFrame(ctrl, text="Nyquist sources", padding=8)
@@ -2972,11 +3027,12 @@ def show_figures_tk(
         comp.title("Composite (Bode)")
         comp.geometry("1280x800")
 
-        outer = ttk.Frame(comp)
-        outer.pack(fill="both", expand=True)
-
-        plot_frame = ttk.Frame(outer)
-        plot_frame.pack(side="left", fill="both", expand=True)
+        ctrl_host, plot_frame = create_resizable_plot_layout(
+            comp,
+            sidebar_width=320,
+            sidebar_side="right",
+            plot_padding=0,
+        )
 
         figc = _new_figure()
         axc_mod = figc.add_subplot(111)
@@ -3007,8 +3063,8 @@ def show_figures_tk(
         toolbar = NavigationToolbar2Tk(canvas, plot_frame)
         toolbar.update()
 
-        ctrl = ttk.Frame(outer, padding=10)
-        ctrl.pack(side="right", fill="y")
+        ctrl = ttk.Frame(ctrl_host, padding=10)
+        ctrl.pack(fill="both", expand=True)
 
         src_box = ttk.LabelFrame(ctrl, text="Bode sources", padding=8)
         src_box.pack(fill="x", pady=(0, 10))

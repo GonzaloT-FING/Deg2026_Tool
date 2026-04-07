@@ -36,6 +36,7 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 from plot_defaults import PlotFontDefaults, resolve_plot_font_defaults
+from ui_layout import create_resizable_plot_layout
 
 
 # ---------------------------------------------------------------------------
@@ -1464,7 +1465,7 @@ def _mpl_linestyle(value: str) -> str:
 
 def _build_scrollable_controls(parent) -> ttk.Frame:
     outer = ttk.Frame(parent, padding=10)
-    outer.pack(side="left", fill="y")
+    outer.pack(fill="both", expand=True)
 
     style = ttk.Style(parent)
     canvas_bg = style.lookup("App.TFrame", "background") or style.lookup("TFrame", "background") or "#10161d"
@@ -1472,7 +1473,6 @@ def _build_scrollable_controls(parent) -> ttk.Frame:
     canvas = tk.Canvas(
         outer,
         highlightthickness=0,
-        width=320,
         bg=canvas_bg,
         bd=0,
         relief="flat",
@@ -1504,7 +1504,7 @@ def _build_scrollable_controls(parent) -> ttk.Frame:
     canvas.bind("<Enter>", _bind_mousewheel)
     canvas.bind("<Leave>", _unbind_mousewheel)
 
-    canvas.pack(side="left", fill="y", expand=False)
+    canvas.pack(side="left", fill="both", expand=True)
     scrollbar.pack(side="right", fill="y")
 
     return controls_frame
@@ -2137,10 +2137,8 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
     win.title(f"PC - V vs I - {bundle.description} #{bundle.curve_id}")
     win.geometry("1200x700")
 
-    controls_frame = _build_scrollable_controls(win)
-
-    plot_outer = ttk.Frame(win, padding=10)
-    plot_outer.pack(side="right", fill="both", expand=True)
+    controls_host, plot_outer = create_resizable_plot_layout(win, sidebar_width=320)
+    controls_frame = _build_scrollable_controls(controls_host)
 
     toolbar_frame = ttk.Frame(plot_outer)
     toolbar_frame.pack(side="top", fill="x")
@@ -2778,15 +2776,13 @@ def _build_v_vs_i_tab(
     tab = ttk.Frame(notebook)
     notebook.add(tab, text=tab_title[:28] + ("..." if len(tab_title) > 28 else ""))
 
-    controls_frame = _build_scrollable_controls(tab)
+    controls_host, plot_outer = create_resizable_plot_layout(tab, sidebar_width=320)
+    controls_frame = _build_scrollable_controls(controls_host)
     ttk.Button(
         controls_frame,
         text="Componer",
         command=lambda: _open_v_vs_i_composer(composer_parent, source_contexts, font_defaults),
     ).pack(fill="x", pady=(0, 8))
-
-    plot_outer = ttk.Frame(tab, padding=10)
-    plot_outer.pack(side="right", fill="both", expand=True)
 
     toolbar_frame = ttk.Frame(plot_outer)
     toolbar_frame.pack(side="top", fill="x")
@@ -3294,14 +3290,14 @@ def _open_v_vs_i_composer(
         or ttk.Style(comp).lookup("TFrame", "background")
     )
 
-    outer = ttk.Frame(comp)
-    outer.pack(fill="both", expand=True)
-
-    plot_side = ttk.Frame(outer)
-    plot_side.pack(side="left", fill="both", expand=True)
-
-    ctrl = ttk.Frame(outer, padding=10)
-    ctrl.pack(side="right", fill="y")
+    ctrl_host, plot_side = create_resizable_plot_layout(
+        comp,
+        sidebar_width=320,
+        sidebar_side="right",
+        plot_padding=0,
+    )
+    ctrl = ttk.Frame(ctrl_host, padding=10)
+    ctrl.pack(fill="both", expand=True)
 
     figc = Figure(figsize=(8.5, 6.0), dpi=100)
     ax_main = figc.add_subplot(111)
@@ -3593,10 +3589,8 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     win.title(f"PC - dV/dI - {bundle.description} #{bundle.curve_id}")
     win.geometry("1200x700")
 
-    controls_frame = _build_scrollable_controls(win)
-
-    plot_outer = ttk.Frame(win, padding=10)
-    plot_outer.pack(side="right", fill="both", expand=True)
+    controls_host, plot_outer = create_resizable_plot_layout(win, sidebar_width=320)
+    controls_frame = _build_scrollable_controls(controls_host)
 
     toolbar_frame = ttk.Frame(plot_outer)
     toolbar_frame.pack(side="top", fill="x")
@@ -4277,10 +4271,8 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
     win.title(f"PC - Series by time - {bundle.description} #{bundle.curve_id}")
     win.geometry("1200x720")
 
-    controls_frame = _build_scrollable_controls(win)
-
-    plot_outer = ttk.Frame(win, padding=10)
-    plot_outer.pack(side="right", fill="both", expand=True)
+    controls_host, plot_outer = create_resizable_plot_layout(win, sidebar_width=320)
+    controls_frame = _build_scrollable_controls(controls_host)
 
     toolbar_frame = ttk.Frame(plot_outer)
     toolbar_frame.pack(side="top", fill="x")

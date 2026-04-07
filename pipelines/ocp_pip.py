@@ -18,6 +18,7 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 from plot_defaults import PlotFontDefaults, resolve_plot_font_defaults
+from ui_layout import create_resizable_plot_layout
 
 
 META_FIELDS = [
@@ -462,9 +463,9 @@ def _pick_legend_corner(series_specs: list[tuple[list[float], list[float], tuple
 
 def _build_scrollable_controls(parent) -> ttk.Frame:
     outer = ttk.Frame(parent, padding=10)
-    outer.pack(side="left", fill="y")
+    outer.pack(fill="both", expand=True)
 
-    canvas = tk.Canvas(outer, highlightthickness=0, width=320)
+    canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0)
     scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
     controls_frame = ttk.Frame(canvas, padding=(0, 0, 6, 0))
 
@@ -492,7 +493,7 @@ def _build_scrollable_controls(parent) -> ttk.Frame:
     canvas.bind("<Enter>", _bind_mousewheel)
     canvas.bind("<Leave>", _unbind_mousewheel)
 
-    canvas.pack(side="left", fill="y", expand=False)
+    canvas.pack(side="left", fill="both", expand=True)
     scrollbar.pack(side="right", fill="y")
 
     return controls_frame
@@ -789,10 +790,8 @@ def _build_v_vs_t_tab(
     font_default_values = font_defaults.as_strings()
 
 
-    controls_frame = _build_scrollable_controls(parent)
-
-    plot_outer = ttk.Frame(parent, padding=10)
-    plot_outer.pack(side="right", fill="both", expand=True)
+    controls_host, plot_outer = create_resizable_plot_layout(parent, sidebar_width=320)
+    controls_frame = _build_scrollable_controls(controls_host)
 
     toolbar_frame = ttk.Frame(plot_outer)
     toolbar_frame.pack(side="top", fill="x")
@@ -1317,10 +1316,8 @@ def _build_delta_v_tab(
     font_default_values = font_defaults.as_strings()
 
 
-    controls_frame = _build_scrollable_controls(parent)
-
-    plot_outer = ttk.Frame(parent, padding=10)
-    plot_outer.pack(side="right", fill="both", expand=True)
+    controls_host, plot_outer = create_resizable_plot_layout(parent, sidebar_width=320)
+    controls_frame = _build_scrollable_controls(controls_host)
 
     toolbar_frame = ttk.Frame(plot_outer)
     toolbar_frame.pack(side="top", fill="x")

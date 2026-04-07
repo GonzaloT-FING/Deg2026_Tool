@@ -20,6 +20,7 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 from plot_defaults import PlotFontDefaults, resolve_plot_font_defaults
+from ui_layout import create_resizable_plot_layout
 
 
 META_FIELDS = [
@@ -485,18 +486,17 @@ def _mpl_linestyle(value: str) -> str:
 
 
 def _build_scrollable_controls(parent) -> ttk.Frame:
-    outer = ttk.Frame(parent, width=320)
-    outer.pack(side="left", fill="y")
-    outer.pack_propagate(False)
+    outer = ttk.Frame(parent)
+    outer.pack(fill="both", expand=True)
 
-    canvas = tk.Canvas(outer, highlightthickness=0, width=320)
+    canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0)
     scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
     canvas.configure(yscrollcommand=scrollbar.set)
 
     scrollbar.pack(side="right", fill="y")
     canvas.pack(side="left", fill="both", expand=True)
 
-    inner = ttk.Frame(canvas, padding=10)
+    inner = ttk.Frame(canvas, padding=(10, 0, 10, 0))
     window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
 
     def _update_scrollregion(_event=None):
@@ -1187,10 +1187,8 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     win.title("Deg - V vs t")
     win.geometry("1200x720")
 
-    controls_frame = _build_scrollable_controls(win)
-
-    plot_outer = ttk.Frame(win, padding=10)
-    plot_outer.pack(side="right", fill="both", expand=True)
+    controls_host, plot_outer = create_resizable_plot_layout(win, sidebar_width=320)
+    controls_frame = _build_scrollable_controls(controls_host)
 
     toolbar_frame = ttk.Frame(plot_outer)
     toolbar_frame.pack(side="top", fill="x")
@@ -1614,10 +1612,8 @@ def open_dv_dt_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     win.title("Deg - dV/dt")
     win.geometry("1200x720")
 
-    controls_frame = _build_scrollable_controls(win)
-
-    plot_outer = ttk.Frame(win, padding=10)
-    plot_outer.pack(side="right", fill="both", expand=True)
+    controls_host, plot_outer = create_resizable_plot_layout(win, sidebar_width=320)
+    controls_frame = _build_scrollable_controls(controls_host)
 
     toolbar_frame = ttk.Frame(plot_outer)
     toolbar_frame.pack(side="top", fill="x")

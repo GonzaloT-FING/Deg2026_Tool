@@ -19,6 +19,7 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 from plot_defaults import PlotFontDefaults, resolve_plot_font_defaults
+from ui_layout import create_resizable_plot_layout
 
 from pipelines.activ_pip import (
     ACTIV_CYCLE_GRADIENTS,
@@ -26,6 +27,7 @@ from pipelines.activ_pip import (
     LINESTYLE_OPTIONS,
     _axis_right_footprint_px,
     _build_scrollable_controls,
+    _build_scrollable_cycle_selector,
     _cycle_gradient_color,
     _draw_cycle_scale_bars,
     _format_limit_value,
@@ -856,10 +858,8 @@ def _build_i_vs_v_tab(
     tab_title = _dataset_stage_label(dataset)
     notebook.add(tab, text=tab_title[:28] + ("..." if len(tab_title) > 28 else ""))
 
-    controls_frame = _build_scrollable_controls(tab)
-
-    plot_outer = ttk.Frame(tab, padding=10)
-    plot_outer.pack(side="right", fill="both", expand=True)
+    controls_host, plot_outer = create_resizable_plot_layout(tab, sidebar_width=320)
+    controls_frame = _build_scrollable_controls(controls_host)
 
     toolbar_frame = ttk.Frame(plot_outer)
     toolbar_frame.pack(side="top", fill="x")
@@ -1087,30 +1087,17 @@ def _build_i_vs_v_tab(
     limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
     limits_box.pack(fill="x", pady=5)
 
-    cycles_canvas = tk.Canvas(cycles_box, height=120, highlightthickness=0)
-    cycles_scrollbar = ttk.Scrollbar(cycles_box, orient="vertical", command=cycles_canvas.yview)
-    cycles_inner = ttk.Frame(cycles_canvas)
-    cycles_canvas.configure(yscrollcommand=cycles_scrollbar.set)
-    cycles_window = cycles_canvas.create_window((0, 0), window=cycles_inner, anchor="nw")
-
-    def _update_cycles_scroll(_event=None):
-        cycles_canvas.configure(scrollregion=cycles_canvas.bbox("all"))
-
-    def _sync_cycles_width(event):
-        cycles_canvas.itemconfigure(cycles_window, width=event.width)
-
-    cycles_inner.bind("<Configure>", _update_cycles_scroll)
-    cycles_canvas.bind("<Configure>", _sync_cycles_width)
-    cycles_canvas.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=6)
-    cycles_scrollbar.pack(side="right", fill="y", pady=6)
+    cycles_inner, bind_cycle_scroll = _build_scrollable_cycle_selector(cycles_box, height=120)
 
     for cycle in cycle_ids:
-        ttk.Checkbutton(
+        cycle_toggle = ttk.Checkbutton(
             cycles_inner,
             text=f"Ciclo #{cycle}",
             variable=cycle_vars[cycle],
             command=_schedule_plot,
-        ).pack(anchor="w", padx=4, pady=2)
+        )
+        cycle_toggle.pack(anchor="w", padx=4, pady=2)
+        bind_cycle_scroll(cycle_toggle)
 
     ttk.Checkbutton(series_box, text="Ascendente", variable=asc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Descendente", variable=dsc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
