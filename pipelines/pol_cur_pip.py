@@ -3296,8 +3296,7 @@ def _open_v_vs_i_composer(
         sidebar_side="right",
         plot_padding=0,
     )
-    ctrl = ttk.Frame(ctrl_host, padding=10)
-    ctrl.pack(fill="both", expand=True)
+    ctrl = _build_scrollable_controls(ctrl_host)
 
     figc = Figure(figsize=(8.5, 6.0), dpi=100)
     ax_main = figc.add_subplot(111)
@@ -3317,6 +3316,18 @@ def _open_v_vs_i_composer(
     comp_lines: dict[str, list[object]] = {}
     density_mode = {"value": None}
     idx_to_key: list[str] = []
+    title_fs_var = tk.DoubleVar(value=float(font_defaults.title))
+    label_fs_var = tk.DoubleVar(value=float(font_defaults.label))
+    legend_fs_var = tk.DoubleVar(value=float(font_defaults.legend))
+    tick_fs_var = tk.DoubleVar(value=float(font_defaults.tick))
+    x_tick_count_var = tk.IntVar(value=6)
+    y_tick_count_var = tk.IntVar(value=6)
+    xmin_var = tk.StringVar()
+    xmax_var = tk.StringVar()
+    vmin_var = tk.StringVar()
+    vmax_var = tk.StringVar()
+    tmin_var = tk.StringVar()
+    tmax_var = tk.StringVar()
 
     def _source_title(key: str) -> str:
         fig = source_contexts[key]["figure"]
@@ -3385,7 +3396,165 @@ def _open_v_vs_i_composer(
         ax_temp.yaxis.label.set_visible(has_temp)
         canvas.draw_idle()
 
+    def _has_temp_lines() -> bool:
+        return any(
+            str(line.get_label()).endswith(" T")
+            for lines in comp_lines.values()
+            for line in lines
+        )
+
+    def _fmt(v: float) -> str:
+        return f"{v:.6g}"
+
+    def _parse_float(s: str) -> float | None:
+        s = s.strip()
+        if not s:
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    def _is_incomplete_number(s: str) -> bool:
+        s = s.strip()
+        if s in {"", "-", "+", ".", "-.", "+."}:
+            return True
+        if re.fullmatch(r"[+-]?\d+\.", s):
+            return True
+        if re.fullmatch(r"[+-]?(?:\d+\.?\d*|\.\d+)[eE][+-]?", s):
+            return True
+        return False
+
+    def _apply_tick_settings() -> None:
+        try:
+            x_tick_count = max(2, int(x_tick_count_var.get()))
+        except (tk.TclError, ValueError):
+            x_tick_count = 6
+        try:
+            y_tick_count = max(2, int(y_tick_count_var.get()))
+        except (tk.TclError, ValueError):
+            y_tick_count = 6
+
+        ax_main.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
+        ax_main.yaxis.set_major_locator(MaxNLocator(nbins=y_tick_count))
+        ax_temp.yaxis.set_major_locator(MaxNLocator(nbins=y_tick_count))
+
+        ax_main.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+        ax_main.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+        ax_temp.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+
+    def _sync_limit_entries() -> None:
+        x0, x1 = ax_main.get_xlim()
+        v0, v1 = ax_main.get_ylim()
+        xmin_var.set(_fmt(x0))
+        xmax_var.set(_fmt(x1))
+        vmin_var.set(_fmt(v0))
+        vmax_var.set(_fmt(v1))
+
+        if _has_temp_lines():
+            t0, t1 = ax_temp.get_ylim()
+            tmin_var.set(_fmt(t0))
+            tmax_var.set(_fmt(t1))
+        else:
+            tmin_var.set("")
+            tmax_var.set("")
+
+    def _apply_limits() -> None:
+        raw_values = [
+            xmin_var.get(),
+            xmax_var.get(),
+            vmin_var.get(),
+            vmax_var.get(),
+            tmin_var.get(),
+            tmax_var.get(),
+        ]
+        if any(value.strip() and _is_incomplete_number(value) for value in raw_values):
+            return
+
+        cur_x0, cur_x1 = ax_main.get_xlim()
+        cur_v0, cur_v1 = ax_main.get_ylim()
+        cur_t0, cur_t1 = ax_temp.get_ylim()
+
+        nx0 = _parse_float(xmin_var.get())
+        nx1 = _parse_float(xmax_var.get())
+        nv0 = _parse_float(vmin_var.get())
+        nv1 = _parse_float(vmax_var.get())
+        nt0 = _parse_float(tmin_var.get())
+        nt1 = _parse_float(tmax_var.get())
+
+        ax_main.set_xlim(cur_x0 if nx0 is None else nx0, cur_x1 if nx1 is None else nx1)
+        ax_main.set_ylim(cur_v0 if nv0 is None else nv0, cur_v1 if nv1 is None else nv1)
+        ax_temp.set_ylim(cur_t0 if nt0 is None else nt0, cur_t1 if nt1 is None else nt1)
+
+        _apply_axes(redraw=False)
+        canvas.draw_idle()
+        _sync_limit_entries()
+
+    def _apply_axes(redraw: bool = True) -> None:
+        try:
+            title_fs = float(title_fs_var.get())
+            label_fs = float(label_fs_var.get())
+            legend_fs = float(legend_fs_var.get())
+            tick_fs = float(tick_fs_var.get())
+        except (tk.TclError, ValueError):
+            return
+
+        ax_main.set_title(title_var.get(), fontsize=title_fs)
+        ax_main.set_xlabel(
+            "Densidad de corriente (A/cm^2)" if density_mode["value"] else "Corriente (A)",
+            fontsize=label_fs,
+        )
+        ax_main.set_ylabel("Voltaje (V)", fontsize=label_fs)
+        ax_temp.set_ylabel("Temperatura (C)", fontsize=label_fs)
+        ax_main.grid(True)
+        ax_temp.grid(False)
+
+        ax_main.tick_params(axis="both", labelsize=tick_fs)
+        ax_temp.tick_params(axis="y", labelsize=tick_fs)
+        _apply_tick_settings()
+
+        ax_main.yaxis.tick_left()
+        ax_main.yaxis.set_label_position("left")
+        ax_main.spines["left"].set_visible(True)
+        ax_main.spines["right"].set_visible(False)
+
+        ax_temp.yaxis.tick_right()
+        ax_temp.yaxis.set_label_position("right")
+        ax_temp.spines["left"].set_visible(False)
+        ax_temp.spines["right"].set_position(("axes", 1.0))
+        figc.subplots_adjust(right=0.88)
+
+        leg = ax_main.get_legend()
+        if leg is not None:
+            leg.remove()
+
+        if legend_var.get():
+            handles, labels = ax_main.get_legend_handles_labels()
+            h2, l2 = ax_temp.get_legend_handles_labels()
+            pairs = [
+                (handle, label)
+                for handle, label in zip(handles + h2, labels + l2)
+                if label and not str(label).startswith("_")
+            ]
+            if pairs:
+                legend_handles, legend_labels = zip(*pairs)
+                ax_main.legend(legend_handles, legend_labels, fontsize=legend_fs)
+
+        has_temp = _has_temp_lines()
+        ax_temp.yaxis.set_visible(has_temp)
+        ax_temp.spines["right"].set_visible(has_temp)
+        ax_temp.yaxis.label.set_visible(has_temp)
+
+        if redraw:
+            canvas.draw_idle()
+
     def _fit_all() -> None:
+        if not comp_lines:
+            _apply_axes(redraw=False)
+            canvas.draw_idle()
+            _sync_limit_entries()
+            return
+
         xs: list[float] = []
         ys_main: list[float] = []
         ys_temp: list[float] = []
@@ -3412,7 +3581,9 @@ def _open_v_vs_i_composer(
             t1 = max(ys_temp)
             dt = (t1 - t0) if t1 != t0 else (abs(t0) * 0.1 + 1.0)
             ax_temp.set_ylim(t0 - 0.05 * dt, t1 + 0.05 * dt)
-        _apply_axes()
+        _apply_axes(redraw=False)
+        canvas.draw_idle()
+        _sync_limit_entries()
 
     def _remove_key(key: str) -> None:
         for line in comp_lines.pop(key, []):
@@ -3466,7 +3637,9 @@ def _open_v_vs_i_composer(
             _remove_key(key)
         ax_main.cla()
         ax_temp.cla()
-        _apply_axes()
+        _apply_axes(redraw=False)
+        canvas.draw_idle()
+        _sync_limit_entries()
         status_var.set("Composición limpiada.")
 
     def _refresh_formatting() -> None:
@@ -3507,9 +3680,80 @@ def _open_v_vs_i_composer(
     )
     ttk.Button(plot_box, text="Ajustar todo", command=_fit_all).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
 
+    style_box = ttk.LabelFrame(ctrl, text="Apariencia", padding=8)
+    style_box.pack(fill="x", pady=(0, 10))
+    style_box.columnconfigure(1, weight=1)
+
+    ttk.Label(style_box, text="Titulo").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
+    title_fs_spin = ttk.Spinbox(style_box, from_=6.0, to=50.0, increment=0.5, textvariable=title_fs_var, width=10)
+    title_fs_spin.grid(row=0, column=1, sticky="w", pady=2)
+
+    ttk.Label(style_box, text="Etiquetas").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
+    label_fs_spin = ttk.Spinbox(style_box, from_=6.0, to=40.0, increment=0.5, textvariable=label_fs_var, width=10)
+    label_fs_spin.grid(row=1, column=1, sticky="w", pady=2)
+
+    ttk.Label(style_box, text="Leyenda").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
+    legend_fs_spin = ttk.Spinbox(style_box, from_=6.0, to=40.0, increment=0.5, textvariable=legend_fs_var, width=10)
+    legend_fs_spin.grid(row=2, column=1, sticky="w", pady=2)
+
+    ttk.Label(style_box, text="Ticks").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
+    tick_fs_spin = ttk.Spinbox(style_box, from_=6.0, to=40.0, increment=0.5, textvariable=tick_fs_var, width=10)
+    tick_fs_spin.grid(row=3, column=1, sticky="w", pady=2)
+
+    ttk.Label(style_box, text="X ticks").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
+    x_tick_spin = ttk.Spinbox(style_box, from_=2, to=20, increment=1, textvariable=x_tick_count_var, width=10)
+    x_tick_spin.grid(row=4, column=1, sticky="w", pady=2)
+
+    ttk.Label(style_box, text="Y ticks").grid(row=5, column=0, sticky="w", padx=(0, 6), pady=2)
+    y_tick_spin = ttk.Spinbox(style_box, from_=2, to=20, increment=1, textvariable=y_tick_count_var, width=10)
+    y_tick_spin.grid(row=5, column=1, sticky="w", pady=2)
+
+    for spin in (
+        title_fs_spin,
+        label_fs_spin,
+        legend_fs_spin,
+        tick_fs_spin,
+        x_tick_spin,
+        y_tick_spin,
+    ):
+        spin.configure(command=_apply_axes)
+        spin.bind("<Return>", lambda _event: _apply_axes())
+        spin.bind("<FocusOut>", lambda _event: _apply_axes())
+
+    lim_box = ttk.LabelFrame(ctrl, text="Limites de ejes", padding=8)
+    lim_box.pack(fill="x", pady=(0, 10))
+
+    def _limit_row(parent_widget, row_idx: int, label: str, variable: tk.StringVar):
+        ttk.Label(parent_widget, text=label, width=6).grid(
+            row=row_idx,
+            column=0,
+            sticky="w",
+            padx=(0, 6),
+            pady=2,
+        )
+        entry = ttk.Entry(parent_widget, textvariable=variable, width=12)
+        entry.grid(row=row_idx, column=1, sticky="w", pady=2)
+        entry.bind("<Return>", lambda _event: _apply_limits())
+        entry.bind("<FocusOut>", lambda _event: _apply_limits())
+        return entry
+
+    _limit_row(lim_box, 0, "Xmin", xmin_var)
+    _limit_row(lim_box, 1, "Xmax", xmax_var)
+    _limit_row(lim_box, 2, "Vmin", vmin_var)
+    _limit_row(lim_box, 3, "Vmax", vmax_var)
+    _limit_row(lim_box, 4, "Tmin", tmin_var)
+    _limit_row(lim_box, 5, "Tmax", tmax_var)
+
+    lim_buttons = ttk.Frame(lim_box)
+    lim_buttons.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+    ttk.Button(lim_buttons, text="Ajustar todo", command=_fit_all).pack(side="left", expand=True, fill="x", padx=(0, 6))
+    ttk.Button(lim_buttons, text="Refresh fields", command=_sync_limit_entries).pack(side="left", expand=True, fill="x")
+
     ttk.Label(ctrl, textvariable=status_var, wraplength=260, justify="left").pack(anchor="w", fill="x")
 
-    _apply_axes()
+    _apply_axes(redraw=False)
+    _sync_limit_entries()
+    canvas.draw_idle()
 
     def _on_close() -> None:
         comp.destroy()
