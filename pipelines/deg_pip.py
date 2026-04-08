@@ -498,6 +498,17 @@ def _linear_fit_slope(x_vals: list[float], y_vals: list[float]) -> float | None:
     return (n * sum_xy - sum_x * sum_y) / denom
 
 
+def _linear_fit_params(x_vals: list[float], y_vals: list[float]) -> tuple[float, float] | None:
+    if len(x_vals) < 2:
+        return None
+    slope = _linear_fit_slope(x_vals, y_vals)
+    if slope is None:
+        return None
+    n = float(len(x_vals))
+    intercept = (sum(y_vals) - slope * sum(x_vals)) / n
+    return slope, intercept
+
+
 def _edge_slope(x_vals: list[float], y_vals: list[float]) -> float | None:
     if len(x_vals) < 2:
         return None
@@ -1191,6 +1202,11 @@ def draw_v_vs_t_on_figure(
     v_max: float | None = None,
     temp_min: float | None = None,
     temp_max: float | None = None,
+    fit_t_min: TimeAxisValue | None = None,
+    fit_t_max: TimeAxisValue | None = None,
+    fit_use_linear: bool = False,
+    show_fit_line: bool = True,
+    reference_start: datetime | None = None,
 ) -> bool:
     fig.clear()
 
@@ -1219,6 +1235,67 @@ def draw_v_vs_t_on_figure(
                 linestyle=_mpl_linestyle(voltage_linestyle),
                 label=f"Stage #{deg_file.stage} V",
             )
+
+            if show_fit_line:
+                if _is_date_axis(time_unit):
+                    if reference_start is None:
+                        raise ValueError("Falta referencia de tiempo para el eje de fecha.")
+                    stage_start = _start_datetime(parsed, deg_file.path.name)
+                    offset = (stage_start - reference_start).total_seconds()
+                    time_seconds = [offset + value for value in t_vals]
+                    fit_min_sec = (
+                        _time_limit_to_seconds(fit_t_min, time_unit, reference_start)
+                        if fit_t_min is not None
+                        else None
+                    )
+                    fit_max_sec = (
+                        _time_limit_to_seconds(fit_t_max, time_unit, reference_start)
+                        if fit_t_max is not None
+                        else None
+                    )
+                else:
+                    time_seconds = list(t_vals)
+                    fit_min_sec = (
+                        float(fit_t_min) * _time_unit_scale(time_unit) if fit_t_min is not None else None
+                    )
+                    fit_max_sec = (
+                        float(fit_t_max) * _time_unit_scale(time_unit) if fit_t_max is not None else None
+                    )
+
+                filt_t, filt_v = _filtered_time_voltage(time_seconds, v_vals, fit_min_sec, fit_max_sec)
+                if len(filt_t) >= 2:
+                    if fit_use_linear:
+                        params = _linear_fit_params(filt_t, filt_v)
+                        if params is not None:
+                            slope, intercept = params
+                        else:
+                            slope = None
+                            intercept = None
+                    else:
+                        slope = _edge_slope(filt_t, filt_v)
+                        intercept = filt_v[0] - slope * filt_t[0] if slope is not None else None
+
+                    if slope is not None and intercept is not None:
+                        t0 = filt_t[0]
+                        t1 = filt_t[-1]
+                        y0 = slope * t0 + intercept
+                        y1 = slope * t1 + intercept
+                        if _is_date_axis(time_unit):
+                            plot_fit_t = [
+                                _seconds_to_time_limit(t0, time_unit, reference_start),
+                                _seconds_to_time_limit(t1, time_unit, reference_start),
+                            ]
+                        else:
+                            scale = _time_unit_scale(time_unit)
+                            plot_fit_t = [t0 / scale, t1 / scale]
+                        ax.plot(
+                            plot_fit_t,
+                            [y0, y1],
+                            color=voltage_color,
+                            linewidth=max(1.0, line_width),
+                            linestyle="--",
+                            alpha=0.6,
+                        )
         if has_temperature and ax_temp is not None:
             temp_time, temp_vals = _required_numeric_series(parsed, "T", "Temp")
             plot_temp_time = _plot_time_values(parsed, temp_time, time_unit, deg_file.path.name)
@@ -1333,6 +1410,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     slope_t_min_var = tk.StringVar(value="")
     slope_t_max_var = tk.StringVar(value="")
     slope_fit_var = tk.BooleanVar(value=False)
+    show_fit_var = tk.BooleanVar(value=False)
     slope_indicator_var = tk.StringVar(value="—")
 
     initial_state = {
@@ -1357,6 +1435,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
         "slope_t_min": "",
         "slope_t_max": "",
         "slope_fit": False,
+        "show_fit": False,
     }
 
     plot_job = {"id": None}
@@ -1439,6 +1518,10 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
             _update_degradation_indicator([])
             return
         try:
+            fit_t_min, fit_t_max = _collect_slope_limits()
+        except ValueError:
+            fit_t_min, fit_t_max = None, None
+        try:
             has_plot = draw_v_vs_t_on_figure(
                 fig=fig,
                 parsed_items=visible_items,
@@ -1454,6 +1537,11 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
                 label_fontsize=_positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
                 legend_fontsize=_positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
                 line_width=_positive_float(line_width_var.get(), "Grosor de línea"),
+                fit_t_min=fit_t_min,
+                fit_t_max=fit_t_max,
+                fit_use_linear=slope_fit_var.get(),
+                show_fit_line=show_fit_var.get(),
+                reference_start=_reference_start() if _is_date_axis(time_unit_var.get()) else None,
                 **_collect_limits(),
             )
         except ValueError as exc:
@@ -1575,6 +1663,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
             slope_t_min_var.set(initial_state["slope_t_min"])
             slope_t_max_var.set(initial_state["slope_t_max"])
             slope_fit_var.set(initial_state["slope_fit"])
+            show_fit_var.set(initial_state["show_fit"])
             for var in stage_vars.values():
                 var.set(True)
         finally:
@@ -1751,8 +1840,16 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     )
     slope_fit_check.grid(row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(3, 3))
 
+    show_fit_check = ttk.Checkbutton(
+        degradation_box,
+        text="Mostrar ajuste",
+        variable=show_fit_var,
+        command=_schedule_plot,
+    )
+    show_fit_check.grid(row=3, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))
+
     ttk.Label(degradation_box, text="dV/dt promedio [µV/h]").grid(
-        row=3,
+        row=4,
         column=0,
         columnspan=2,
         sticky="w",
@@ -1765,7 +1862,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
         justify="left",
         wraplength=240,
     )
-    slope_indicator_label.grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))
+    slope_indicator_label.grid(row=5, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))
 
     limit_specs = [
         ("t min", t_min_var),
