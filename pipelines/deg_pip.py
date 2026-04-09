@@ -20,7 +20,7 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 from pipelines.activ_pip import ACTIV_CYCLE_GRADIENTS, _build_scrollable_cycle_selector, _cycle_gradient_color
-from plot_defaults import PlotFontDefaults, resolve_plot_font_defaults
+from plot_defaults import PlotFontDefaults, apply_x_tick_label_padding, resolve_plot_font_defaults
 from ui_layout import create_resizable_plot_layout
 
 
@@ -1146,6 +1146,7 @@ def draw_dv_dt_on_figure(
     ax.set_title(final_title, fontsize=title_fontsize)
     ax.grid(True, alpha=0.25)
     ax.tick_params(axis="both", labelsize=tick_fontsize)
+    apply_x_tick_label_padding(ax, tick_fontsize)
     _apply_time_axis_format(ax, time_unit, x_tick_count)
 
     if t_min is not None or t_max is not None:
@@ -1318,6 +1319,7 @@ def draw_v_vs_t_on_figure(
     ax.set_title(final_title, fontsize=title_fontsize)
     ax.grid(True, alpha=0.25)
     ax.tick_params(axis="both", labelsize=tick_fontsize)
+    apply_x_tick_label_padding(ax, tick_fontsize)
     _apply_time_axis_format(ax, time_unit, x_tick_count)
     ax.yaxis.set_major_locator(MaxNLocator(nbins=max(2, int(y_tick_count))))
     ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))

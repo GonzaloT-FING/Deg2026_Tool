@@ -38,7 +38,12 @@ import tkinter as tk
 from tkinter import ttk, colorchooser
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-from plot_defaults import PlotFontDefaults, apply_plot_font_defaults, resolve_plot_font_defaults
+from plot_defaults import (
+    PlotFontDefaults,
+    apply_plot_font_defaults,
+    apply_x_tick_label_padding,
+    resolve_plot_font_defaults,
+)
 from ui_layout import create_resizable_plot_layout
 
 
@@ -2752,6 +2757,7 @@ def show_figures_tk(
             axc.xaxis.label.set_fontsize(label_fs)
             axc.yaxis.label.set_fontsize(label_fs)
             axc.tick_params(axis="both", labelsize=tick_fs)
+            apply_x_tick_label_padding(axc, tick_fs)
             axc.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
             axc.yaxis.set_major_locator(MaxNLocator(nbins=y_tick_count))
             axc.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
@@ -3236,6 +3242,7 @@ def show_figures_tk(
             axc_mod.yaxis.label.set_fontsize(label_fs)
             axc_phz.yaxis.label.set_fontsize(label_fs)
             axc_mod.tick_params(axis="both", labelsize=tick_fs)
+            apply_x_tick_label_padding(axc_mod, tick_fs)
             axc_phz.tick_params(axis="y", labelsize=tick_fs)
             _apply_tick_settings()
             _apply_legend(redraw=False)

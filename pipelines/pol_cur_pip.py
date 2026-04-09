@@ -35,7 +35,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
-from plot_defaults import PlotFontDefaults, resolve_plot_font_defaults
+from plot_defaults import PlotFontDefaults, apply_x_tick_label_padding, resolve_plot_font_defaults
 from ui_layout import create_resizable_plot_layout
 
 
@@ -683,6 +683,7 @@ def draw_v_vs_i_on_figure(
 
     # Tick font size
     ax_main.tick_params(axis="both", labelsize=tick_fontsize)
+    apply_x_tick_label_padding(ax_main, tick_fontsize)
     ax_main.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
     ax_main.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
@@ -1180,6 +1181,7 @@ def draw_dv_di_on_figure(
     ax_main.set_title(final_title, fontsize=title_fontsize)
     ax_main.grid(True)
     ax_main.tick_params(axis="both", labelsize=tick_fontsize)
+    apply_x_tick_label_padding(ax_main, tick_fontsize)
     ax_main.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
     ax_main.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
@@ -1391,6 +1393,7 @@ def draw_series_by_time_on_figure(
     ax_main.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
     ax_main.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
     ax_main.tick_params(axis="both", labelsize=tick_fontsize)
+    apply_x_tick_label_padding(ax_main, tick_fontsize)
 
     if t_min is not None or t_max is not None:
         ax_main.set_xlim(left=t_min, right=t_max)
@@ -3510,6 +3513,7 @@ def _open_v_vs_i_composer(
         ax_temp.grid(False)
 
         ax_main.tick_params(axis="both", labelsize=tick_fs)
+        apply_x_tick_label_padding(ax_main, tick_fs)
         ax_temp.tick_params(axis="y", labelsize=tick_fs)
         _apply_tick_settings()
 

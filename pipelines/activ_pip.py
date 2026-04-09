@@ -17,7 +17,12 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
-from plot_defaults import PlotFontDefaults, resolve_plot_font_defaults
+from plot_defaults import (
+    PlotFontDefaults,
+    apply_x_tick_label_padding,
+    ensure_axis_bottom_margin,
+    resolve_plot_font_defaults,
+)
 from ui_layout import create_resizable_plot_layout
 
 
@@ -1238,6 +1243,7 @@ def draw_v_vs_t_on_figure(
     ax_main.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
     ax_main.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
     ax_main.tick_params(axis="both", labelsize=tick_fontsize)
+    apply_x_tick_label_padding(ax_main, tick_fontsize)
 
     if t_min is not None or t_max is not None:
         ax_main.set_xlim(left=t_min, right=t_max)
@@ -1296,6 +1302,14 @@ def draw_v_vs_t_on_figure(
             1 if show_temperature and temp_ls != "None" else 0,
         ])
         bottom_margin = min(0.32, 0.12 + legend_rows * (0.04 * max(0.5, legend_scale)))
+        fig.subplots_adjust(right=0.90, bottom=bottom_margin)
+        bottom_margin = ensure_axis_bottom_margin(
+            fig,
+            ax_main,
+            bottom_margin,
+            tick_fontsize,
+            max_bottom_margin=0.38,
+        )
         fig.subplots_adjust(right=0.90, bottom=bottom_margin)
 
         if ax_current is not None or ax_temp is not None:
@@ -1433,6 +1447,7 @@ def draw_v_vs_i_on_figure(
     ax_main.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
     ax_main.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
     ax_main.tick_params(axis="both", labelsize=tick_fontsize)
+    apply_x_tick_label_padding(ax_main, tick_fontsize)
 
     if i_min is not None or i_max is not None:
         ax_main.set_xlim(left=i_min, right=i_max)
@@ -1475,6 +1490,14 @@ def draw_v_vs_i_on_figure(
             1 if show_temperature and temp_ls != "None" else 0,
         ])
         bottom_margin = min(0.32, 0.12 + legend_rows * (0.04 * max(0.5, legend_scale)))
+        fig.subplots_adjust(right=0.90, bottom=bottom_margin)
+        bottom_margin = ensure_axis_bottom_margin(
+            fig,
+            ax_main,
+            bottom_margin,
+            tick_fontsize,
+            max_bottom_margin=0.38,
+        )
         fig.subplots_adjust(right=0.90, bottom=bottom_margin)
 
         if ax_temp is not None:
