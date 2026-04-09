@@ -675,6 +675,7 @@ def draw_v_vs_t_on_figure(
     temperature_linestyle: str = "--",
     tick_count: int = 6,
     plot_title: str = "",
+    show_title: bool = True,
     title_fontsize: float = 14,
     tick_fontsize: float = 10,
     label_fontsize: float = 11,
@@ -754,7 +755,7 @@ def draw_v_vs_t_on_figure(
 
     default_title = parsed.meta_values.get("TITLE", "").strip() or source_name
     final_title = plot_title.strip() if plot_title.strip() else f"V vs t - {default_title}"
-    ax_main.set_title(final_title, fontsize=title_fontsize)
+    ax_main.set_title(final_title if show_title else "", fontsize=title_fontsize)
 
     handles = []
     labels = []
@@ -816,6 +817,7 @@ def _build_v_vs_t_tab(
     temperature_line_var = tk.StringVar(value="--")
     tick_count_var = tk.IntVar(value=6)
     plot_title_var = tk.StringVar(value="")
+    show_title_var = tk.BooleanVar(value=True)
     title_fontsize_var = tk.StringVar(value=font_default_values["title"])
     tick_fontsize_var = tk.StringVar(value=font_default_values["tick"])
     label_fontsize_var = tk.StringVar(value=font_default_values["label"])
@@ -834,6 +836,7 @@ def _build_v_vs_t_tab(
         "temperature_line": "--",
         "tick_count": 6,
         "plot_title": "",
+        "show_title": True,
         "title_fontsize": font_default_values["title"],
         "tick_fontsize": font_default_values["tick"],
         "label_fontsize": font_default_values["label"],
@@ -871,6 +874,7 @@ def _build_v_vs_t_tab(
                 temperature_linestyle=temperature_line_var.get(),
                 tick_count=tick_count_var.get(),
                 plot_title=plot_title_var.get(),
+                show_title=show_title_var.get(),
                 title_fontsize=_positive_float(title_fontsize_var.get(), "Tamaño del título"),
                 tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
                 label_fontsize=_positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
@@ -929,6 +933,7 @@ def _build_v_vs_t_tab(
             temperature_line_var.set(initial_state["temperature_line"])
             tick_count_var.set(initial_state["tick_count"])
             plot_title_var.set(initial_state["plot_title"])
+            show_title_var.set(initial_state["show_title"])
             title_fontsize_var.set(initial_state["title_fontsize"])
             tick_fontsize_var.set(initial_state["tick_fontsize"])
             label_fontsize_var.set(initial_state["label_fontsize"])
@@ -998,6 +1003,9 @@ def _build_v_vs_t_tab(
     ttk.Label(text_box, text="Título").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
     title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
+    ttk.Checkbutton(text_box, text="Mostrar titulo", variable=show_title_var, command=_schedule_plot).grid(
+        row=6, column=0, columnspan=2, sticky="w", padx=8, pady=3
+    )
 
     ttk.Label(text_box, text="Tamaño del título").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     title_size_spin = tk.Spinbox(
@@ -1165,6 +1173,7 @@ def draw_delta_v_on_figure(
     dvdt_unit: str = "V/s",
     tick_count: int = 6,
     plot_title: str = "",
+    show_title: bool = True,
     title_fontsize: float = 14,
     tick_fontsize: float = 10,
     label_fontsize: float = 11,
@@ -1273,7 +1282,7 @@ def draw_delta_v_on_figure(
 
     default_title = parsed.meta_values.get("TITLE", "").strip() or source_name
     final_title = plot_title.strip() if plot_title.strip() else f"DeltaV - {default_title}"
-    ax_main.set_title(final_title, fontsize=title_fontsize)
+    ax_main.set_title(final_title if show_title else "", fontsize=title_fontsize)
 
     main_handles, main_labels = ax_main.get_legend_handles_labels()
     handles.extend(main_handles)
@@ -1351,6 +1360,7 @@ def _build_delta_v_tab(
     delta_v_unit_var = tk.StringVar(value="Auto")
     tick_count_var = tk.IntVar(value=6)
     plot_title_var = tk.StringVar(value="")
+    show_title_var = tk.BooleanVar(value=True)
     title_fontsize_var = tk.StringVar(value=font_default_values["title"])
     tick_fontsize_var = tk.StringVar(value=font_default_values["tick"])
     label_fontsize_var = tk.StringVar(value=font_default_values["label"])
@@ -1374,6 +1384,7 @@ def _build_delta_v_tab(
         "delta_v_unit": "Auto",
         "tick_count": 6,
         "plot_title": "",
+        "show_title": True,
         "title_fontsize": font_default_values["title"],
         "tick_fontsize": font_default_values["tick"],
         "label_fontsize": font_default_values["label"],
@@ -1453,6 +1464,7 @@ def _build_delta_v_tab(
                 dvdt_unit=unit,
                 tick_count=tick_count_var.get(),
                 plot_title=plot_title_var.get(),
+                show_title=show_title_var.get(),
                 title_fontsize=_positive_float(title_fontsize_var.get(), "Tamaño del título"),
                 tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
                 label_fontsize=_positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
@@ -1543,6 +1555,7 @@ def _build_delta_v_tab(
             delta_v_unit_var.set(initial_state["delta_v_unit"])
             tick_count_var.set(initial_state["tick_count"])
             plot_title_var.set(initial_state["plot_title"])
+            show_title_var.set(initial_state["show_title"])
             title_fontsize_var.set(initial_state["title_fontsize"])
             tick_fontsize_var.set(initial_state["tick_fontsize"])
             label_fontsize_var.set(initial_state["label_fontsize"])
@@ -1658,6 +1671,9 @@ def _build_delta_v_tab(
     ttk.Label(text_box, text="Título").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
     title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
+    ttk.Checkbutton(text_box, text="Mostrar titulo", variable=show_title_var, command=_schedule_plot).grid(
+        row=6, column=0, columnspan=2, sticky="w", padx=8, pady=3
+    )
 
     ttk.Label(text_box, text="Tamaño del título").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     title_size_spin = tk.Spinbox(text_box, from_=6, to=30, increment=0.5, textvariable=title_fontsize_var, width=8)

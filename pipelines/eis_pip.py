@@ -1489,9 +1489,10 @@ def show_figures_tk(
 
         init_title_text = ax.get_title()
         title_text_var = tk.StringVar(value=init_title_text)
+        show_title_var = tk.BooleanVar(value=True)
 
         def apply_title_text():
-            ax.set_title(title_text_var.get(), fontsize=float(title_fs_var.get()))
+            ax.set_title(title_text_var.get() if show_title_var.get() else "", fontsize=float(title_fs_var.get()))
             try:
                 fig.tight_layout()
             except Exception:
@@ -2040,6 +2041,7 @@ def show_figures_tk(
             title_fs_var.set(init_title_fs)
             legend_fs_var.set(init_legend_fs)
             title_text_var.set(init_title_text)
+            show_title_var.set(True)
             apply_fonts()
             apply_title_text()
 
@@ -2221,6 +2223,9 @@ def show_figures_tk(
         title_entry = ttk.Entry(fonts_box, textvariable=title_text_var, width=18)
         title_entry.grid(row=4, column=1, sticky="w", pady=2)
         title_entry.grid(row=4, column=1, sticky="ew", pady=2)
+        ttk.Checkbutton(fonts_box, text="Mostrar titulo", variable=show_title_var, command=apply_title_text).grid(
+            row=6, column=0, columnspan=2, sticky="w", pady=(6, 0)
+        )
 
         btns_fonts = ttk.Frame(fonts_box)
         btns_fonts.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -2727,6 +2732,7 @@ def show_figures_tk(
 
         legend_var = tk.BooleanVar(value=True)
         title_text_var = tk.StringVar(value=axc.get_title() or "Composite - Nyquist")
+        show_title_var = tk.BooleanVar(value=True)
         init_title_fs = float(font_defaults.title)
         init_label_fs = float(font_defaults.label)
         init_tick_fs = float(font_defaults.tick)
@@ -2775,7 +2781,7 @@ def show_figures_tk(
             except (tk.TclError, ValueError):
                 return
 
-            axc.set_title(title_text_var.get(), fontsize=title_fs)
+            axc.set_title(title_text_var.get() if show_title_var.get() else "", fontsize=title_fs)
             axc.xaxis.label.set_fontsize(label_fs)
             axc.yaxis.label.set_fontsize(label_fs)
             axc.tick_params(axis="both", labelsize=tick_fs)
@@ -2949,6 +2955,9 @@ def show_figures_tk(
         ttk.Label(plot_box, text="Título").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
         title_entry = ttk.Entry(plot_box, textvariable=title_text_var, width=20)
         title_entry.grid(row=0, column=1, sticky="ew", pady=2)
+        ttk.Checkbutton(plot_box, text="Mostrar titulo", variable=show_title_var, command=_apply_plot_settings).grid(
+            row=7, column=0, columnspan=2, sticky="w", pady=(6, 0)
+        )
 
         ttk.Label(plot_box, text="Tamaño del título").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
         title_spin = ttk.Spinbox(plot_box, from_=6.0, to=50.0, increment=0.5, textvariable=title_fs_var, width=10)
@@ -3179,6 +3188,7 @@ def show_figures_tk(
         show_mod_var = tk.BooleanVar(value=True)
         show_phz_var = tk.BooleanVar(value=True)
         title_text_var = tk.StringVar(value=axc_mod.get_title() or default_title)
+        show_title_var = tk.BooleanVar(value=True)
         init_title_fs = float(font_defaults.title)
         init_label_fs = float(font_defaults.label)
         init_tick_fs = float(font_defaults.tick)
@@ -3260,7 +3270,7 @@ def show_figures_tk(
             except (tk.TclError, ValueError):
                 return
 
-            axc_mod.set_title(title_text_var.get(), fontsize=title_fs)
+            axc_mod.set_title(title_text_var.get() if show_title_var.get() else "", fontsize=title_fs)
             axc_mod.xaxis.label.set_fontsize(label_fs)
             axc_mod.yaxis.label.set_fontsize(label_fs)
             axc_phz.yaxis.label.set_fontsize(label_fs)

@@ -1083,6 +1083,7 @@ def draw_dv_dt_on_figure(
     dvdt_min: float | None = None,
     dvdt_max: float | None = None,
     plot_title: str = "",
+    show_title: bool = True,
     title_fontsize: float = 14,
     tick_fontsize: float = 10,
     label_fontsize: float = 11,
@@ -1143,7 +1144,7 @@ def draw_dv_dt_on_figure(
     dvdt_label_unit = "s" if _is_date_axis(time_unit) else time_unit
     ax.set_xlabel(x_label, fontsize=label_fontsize)
     ax.set_ylabel(f"dV/dt [{_dv_dt_unit_label(dvdt_label_unit)}]", fontsize=label_fontsize)
-    ax.set_title(final_title, fontsize=title_fontsize)
+    ax.set_title(final_title if show_title else "", fontsize=title_fontsize)
     ax.grid(True, alpha=0.25)
     ax.tick_params(axis="both", labelsize=tick_fontsize)
     apply_x_tick_label_padding(ax, tick_fontsize)
@@ -1192,6 +1193,7 @@ def draw_v_vs_t_on_figure(
     x_tick_count: int = 6,
     y_tick_count: int = 6,
     plot_title: str = "",
+    show_title: bool = True,
     title_fontsize: float = 14,
     tick_fontsize: float = 10,
     label_fontsize: float = 11,
@@ -1316,7 +1318,7 @@ def draw_v_vs_t_on_figure(
     ax.set_xlabel(x_label, fontsize=label_fontsize)
     if has_voltage:
         ax.set_ylabel("Voltaje [V]", fontsize=label_fontsize)
-    ax.set_title(final_title, fontsize=title_fontsize)
+    ax.set_title(final_title if show_title else "", fontsize=title_fontsize)
     ax.grid(True, alpha=0.25)
     ax.tick_params(axis="both", labelsize=tick_fontsize)
     apply_x_tick_label_padding(ax, tick_fontsize)
@@ -1398,6 +1400,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     x_tick_count_var = tk.IntVar(value=6)
     y_tick_count_var = tk.IntVar(value=6)
     plot_title_var = tk.StringVar(value="")
+    show_title_var = tk.BooleanVar(value=True)
     title_fontsize_var = tk.StringVar(value=font_default_values["title"])
     tick_fontsize_var = tk.StringVar(value=font_default_values["tick"])
     label_fontsize_var = tk.StringVar(value=font_default_values["label"])
@@ -1423,6 +1426,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
         "x_tick_count": 6,
         "y_tick_count": 6,
         "plot_title": "",
+        "show_title": True,
         "title_fontsize": font_default_values["title"],
         "tick_fontsize": font_default_values["tick"],
         "label_fontsize": font_default_values["label"],
@@ -1534,6 +1538,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
                 x_tick_count=x_tick_count_var.get(),
                 y_tick_count=y_tick_count_var.get(),
                 plot_title=plot_title_var.get(),
+                show_title=show_title_var.get(),
                 title_fontsize=_positive_float(title_fontsize_var.get(), "Tamaño del título"),
                 tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
                 label_fontsize=_positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
@@ -1651,6 +1656,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
             x_tick_count_var.set(initial_state["x_tick_count"])
             y_tick_count_var.set(initial_state["y_tick_count"])
             plot_title_var.set(initial_state["plot_title"])
+            show_title_var.set(initial_state["show_title"])
             title_fontsize_var.set(initial_state["title_fontsize"])
             tick_fontsize_var.set(initial_state["tick_fontsize"])
             label_fontsize_var.set(initial_state["label_fontsize"])
@@ -1805,6 +1811,9 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     ttk.Label(text_box, text="Título").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
     title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
+    ttk.Checkbutton(text_box, text="Mostrar titulo", variable=show_title_var, command=_schedule_plot).grid(
+        row=7, column=0, columnspan=2, sticky="w", padx=8, pady=3
+    )
 
     ttk.Label(text_box, text="Tamaño del título").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     title_size_spin = tk.Spinbox(text_box, from_=6, to=30, increment=0.5, textvariable=title_fontsize_var, width=8)
@@ -1991,6 +2000,7 @@ def open_dv_dt_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     x_tick_count_var = tk.IntVar(value=6)
     y_tick_count_var = tk.IntVar(value=6)
     plot_title_var = tk.StringVar(value="")
+    show_title_var = tk.BooleanVar(value=True)
     title_fontsize_var = tk.StringVar(value=font_default_values["title"])
     tick_fontsize_var = tk.StringVar(value=font_default_values["tick"])
     label_fontsize_var = tk.StringVar(value=font_default_values["label"])
@@ -2014,6 +2024,7 @@ def open_dv_dt_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
         "x_tick_count": 6,
         "y_tick_count": 6,
         "plot_title": "",
+        "show_title": True,
         "title_fontsize": font_default_values["title"],
         "tick_fontsize": font_default_values["tick"],
         "label_fontsize": font_default_values["label"],
@@ -2096,6 +2107,7 @@ def open_dv_dt_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
                 x_tick_count=x_tick_count_var.get(),
                 y_tick_count=y_tick_count_var.get(),
                 plot_title=plot_title_var.get(),
+                show_title=show_title_var.get(),
                 title_fontsize=_positive_float(title_fontsize_var.get(), "Tamaño del título"),
                 tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
                 label_fontsize=_positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
@@ -2211,6 +2223,7 @@ def open_dv_dt_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
             x_tick_count_var.set(initial_state["x_tick_count"])
             y_tick_count_var.set(initial_state["y_tick_count"])
             plot_title_var.set(initial_state["plot_title"])
+            show_title_var.set(initial_state["show_title"])
             title_fontsize_var.set(initial_state["title_fontsize"])
             tick_fontsize_var.set(initial_state["tick_fontsize"])
             label_fontsize_var.set(initial_state["label_fontsize"])
@@ -2332,6 +2345,9 @@ def open_dv_dt_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     ttk.Label(text_box, text="Título").grid(row=0, column=0, sticky="w", padx=8, pady=3)
     title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
     title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
+    ttk.Checkbutton(text_box, text="Mostrar titulo", variable=show_title_var, command=_schedule_plot).grid(
+        row=6, column=0, columnspan=2, sticky="w", padx=8, pady=3
+    )
 
     ttk.Label(text_box, text="Tamaño del título").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     title_size_spin = tk.Spinbox(text_box, from_=6, to=30, increment=0.5, textvariable=title_fontsize_var, width=8)
