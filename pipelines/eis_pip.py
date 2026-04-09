@@ -456,15 +456,23 @@ def _build_eis_display_name(path: Path, parsed: ParsedDTA) -> tuple[str, int | N
     )
 
     parts: list[str] = []
-    if stage_number is not None:
-        parts.append(f"Stage {stage_number}")
     if current_label:
+        if stage_number is not None:
+            parts.append(f"Stage {stage_number}")
         parts.append(current_label)
-    if voltage_label:
-        parts.append(voltage_label)
-    if characterization_label:
+        if voltage_label:
+            parts.append(voltage_label)
+    elif characterization_label:
+        if stage_number is not None:
+            parts.append(f"Stage {stage_number}")
+        if voltage_label:
+            parts.append(voltage_label)
         parts.append(characterization_label)
 
+    # Only prettify filenames when they match the expected naming schemes.
+    # Non-standard 0 V measurements should keep their stem so the composer
+    # treats them as independent series instead of merging them under a
+    # generic label such as "Stage N / 0V".
     display_name = " / ".join(parts) if parts else stem
     return display_name, stage_number, current_label, voltage_label, current_value
 
