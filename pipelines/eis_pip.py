@@ -491,6 +491,14 @@ def _assign_stage_visual_defaults(entries: list[EISPlotEntry]) -> None:
     if not entries:
         return
 
+    def _stage_entry_sort_key(entry: EISPlotEntry) -> tuple[bool, float, str, str]:
+        return (
+            entry.current_value is None,
+            entry.current_value if entry.current_value is not None else math.inf,
+            entry.current_label or "",
+            entry.path.stem.lower(),
+        )
+
     grouped: dict[int | None, list[EISPlotEntry]] = {}
     for entry in entries:
         grouped.setdefault(entry.stage_number, []).append(entry)
@@ -500,36 +508,23 @@ def _assign_stage_visual_defaults(entries: list[EISPlotEntry]) -> None:
         key=lambda stage: (stage is None, stage if stage is not None else math.inf),
     )
 
-    stage_count = max(1, len(ordered_stage_keys))
-    for stage_index, stage_key in enumerate(ordered_stage_keys):
-        stage_entries = grouped[stage_key]
-        stage_entries.sort(
-            key=lambda entry: (
-                entry.current_value is None,
-                entry.current_value if entry.current_value is not None else math.inf,
-                entry.current_label or "",
-                entry.path.stem.lower(),
-            )
-        )
+    styled_stage_keys = [stage_key for stage_key in ordered_stage_keys if stage_key is not None]
+    stage_count = max(1, len(styled_stage_keys))
 
+    for stage_entries in grouped.values():
+        stage_entries.sort(key=_stage_entry_sort_key)
+
+    for stage_index, stage_key in enumerate(styled_stage_keys):
+        stage_entries = grouped[stage_key]
         base_hue = (0.58 + (stage_index / stage_count)) % 1.0
-        if len(stage_entries) == 1:
-            stage_entries[0].nyquist_color = _hls_to_hex(base_hue, 0.46, 0.80)
-            stage_entries[0].default_marker = EIS_STAGE_MARKER_SEQUENCE[0]
-        else:
-            # Spread sibling curves farther apart in both hue and lightness
-            # so the per-stage gradient is easier to read at a glance.
-            position_denominator = len(stage_entries) - 1
-            for idx, entry in enumerate(stage_entries):
-                position = -1.0 + (2.0 * idx / position_denominator)
-                hue_offset = 0.075 * position
-                lightness = 0.24 + (0.44 * idx / position_denominator)
-                saturation = 0.82 - (0.08 * abs(position))
-                entry.nyquist_color = _hls_to_hex(base_hue + hue_offset, lightness, saturation)
-                if stage_key is not None and idx < len(EIS_STAGE_MARKER_SEQUENCE):
-                    entry.default_marker = EIS_STAGE_MARKER_SEQUENCE[idx]
-                else:
-                    entry.default_marker = None
+        stage_color = _hls_to_hex(base_hue, 0.46, 0.80)
+        for idx, entry in enumerate(stage_entries):
+            entry.nyquist_color = stage_color
+            entry.default_marker = EIS_STAGE_MARKER_SEQUENCE[idx] if idx < len(EIS_STAGE_MARKER_SEQUENCE) else None
+
+    for entry in grouped.get(None, []):
+        entry.nyquist_color = None
+        entry.default_marker = None
 
 
 def _collect_eis_plot_entries(dta_files: list[Path]) -> list[EISPlotEntry]:
