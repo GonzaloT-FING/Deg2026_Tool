@@ -77,6 +77,9 @@ DATA_MAP = {
     "Temp": "Temperatura",
 }
 
+EIS_STAGE_MARKER_SEQUENCE = ["o", "s", "^", "D", "v", "P", "X", "<", ">"]
+EIS_MARKER_OPTIONS = EIS_STAGE_MARKER_SEQUENCE + [".", "x", "+", "*", "None"]
+
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -202,6 +205,7 @@ class EISPlotEntry:
     voltage_label: str | None = None
     current_value: float | None = None
     nyquist_color: str | None = None
+    default_marker: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +487,7 @@ def _hls_to_hex(hue: float, lightness: float, saturation: float) -> str:
     return f"#{int(round(r * 255)):02x}{int(round(g * 255)):02x}{int(round(b * 255)):02x}"
 
 
-def _assign_nyquist_stage_colors(entries: list[EISPlotEntry]) -> None:
+def _assign_stage_visual_defaults(entries: list[EISPlotEntry]) -> None:
     if not entries:
         return
 
@@ -511,6 +515,7 @@ def _assign_nyquist_stage_colors(entries: list[EISPlotEntry]) -> None:
         base_hue = (0.58 + (stage_index / stage_count)) % 1.0
         if len(stage_entries) == 1:
             stage_entries[0].nyquist_color = _hls_to_hex(base_hue, 0.46, 0.80)
+            stage_entries[0].default_marker = EIS_STAGE_MARKER_SEQUENCE[0]
         else:
             # Spread sibling curves farther apart in both hue and lightness
             # so the per-stage gradient is easier to read at a glance.
@@ -521,6 +526,10 @@ def _assign_nyquist_stage_colors(entries: list[EISPlotEntry]) -> None:
                 lightness = 0.24 + (0.44 * idx / position_denominator)
                 saturation = 0.82 - (0.08 * abs(position))
                 entry.nyquist_color = _hls_to_hex(base_hue + hue_offset, lightness, saturation)
+                if stage_key is not None and idx < len(EIS_STAGE_MARKER_SEQUENCE):
+                    entry.default_marker = EIS_STAGE_MARKER_SEQUENCE[idx]
+                else:
+                    entry.default_marker = None
 
 
 def _collect_eis_plot_entries(dta_files: list[Path]) -> list[EISPlotEntry]:
@@ -540,7 +549,7 @@ def _collect_eis_plot_entries(dta_files: list[Path]) -> list[EISPlotEntry]:
             )
         )
 
-    _assign_nyquist_stage_colors(entries)
+    _assign_stage_visual_defaults(entries)
     entries.sort(
         key=lambda entry: (
             entry.stage_number is None,
@@ -656,6 +665,7 @@ def fig_nyquist(
     *,
     plot_title: str | None = None,
     line_color: str | None = None,
+    marker_style: str | None = None,
     font_defaults: PlotFontDefaults | None = None,
 ) -> Figure | None:
     x, y, f = _triplet_series(parsed, "Zreal", "Zimag", "Freq")
@@ -668,7 +678,7 @@ def fig_nyquist(
     ax = fig.add_subplot(111)
 
     line_kwargs = {
-        "marker": "o",
+        "marker": marker_style or "o",
         "linestyle": "-",
         "markerfacecolor": "none",
     }
@@ -697,6 +707,7 @@ def fig_bode(
     parsed: ParsedDTA,
     *,
     plot_title: str | None = None,
+    marker_style: str | None = None,
     font_defaults: PlotFontDefaults | None = None,
 ) -> Figure | None:
     freq_unit = _column_unit(parsed, "Freq")
@@ -721,7 +732,7 @@ def fig_bode(
     if x1 and y1:
         (ln_mod,) = ax_mod.semilogx(
             x1, y1,
-            marker="o",
+            marker=marker_style or "o",
             linestyle="-",
             markerfacecolor="none",
             color="#1f77b4",
@@ -732,7 +743,7 @@ def fig_bode(
     if x2 and y2:
         (ln_phz,) = ax_phz.semilogx(
             x2, y2,
-            marker="o",
+            marker=marker_style or "o",
             linestyle="--",
             markerfacecolor="none",
             color="#c40000",
@@ -946,13 +957,19 @@ def build_figures(
             parsed,
             plot_title=base_name,
             line_color=entry.nyquist_color,
+            marker_style=entry.default_marker,
             font_defaults=font_defaults,
         )
         if f is not None:
             figs.append((f"{base_name} — Nyquist", f))
 
     if "Bode plot" in chosen:
-        f = fig_bode(parsed, plot_title=f"{base_name} - Bode", font_defaults=font_defaults)
+        f = fig_bode(
+            parsed,
+            plot_title=f"{base_name} - Bode",
+            marker_style=entry.default_marker,
+            font_defaults=font_defaults,
+        )
         if f is not None:
             figs.append((f"{base_name} — Bode", f))
 
@@ -1051,7 +1068,7 @@ def show_figures_tk(
 
     win.protocol("WM_DELETE_WINDOW", _on_close)
 
-    marker_opts = ["o", ".", "x", "+", "s", "^", "v", "D", "None"]
+    marker_opts = EIS_MARKER_OPTIONS
     linestyle_opts = ["-", "--", "-.", ":", "None"]
 
     def _fmt(v: float) -> str:
