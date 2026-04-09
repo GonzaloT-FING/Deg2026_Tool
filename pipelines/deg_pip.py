@@ -20,7 +20,7 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 from pipelines.activ_pip import ACTIV_CYCLE_GRADIENTS, _build_scrollable_cycle_selector, _cycle_gradient_color
-from plot_defaults import PlotFontDefaults, apply_x_tick_label_padding, resolve_plot_font_defaults
+from plot_defaults import PlotFontDefaults, apply_x_tick_label_padding, make_legend_draggable, resolve_plot_font_defaults
 from ui_layout import create_resizable_plot_layout
 
 
@@ -1177,7 +1177,7 @@ def draw_dv_dt_on_figure(
             ax.yaxis.set_major_locator(MaxNLocator(nbins=y_tick_count))
         ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
-    ax.legend(handles, labels, fontsize=legend_fontsize)
+    make_legend_draggable(ax.legend(handles, labels, fontsize=legend_fontsize))
     fig.tight_layout()
     return True
 
@@ -1351,7 +1351,7 @@ def draw_v_vs_t_on_figure(
         ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
     if handles:
-        ax.legend(handles, labels, fontsize=legend_fontsize)
+        make_legend_draggable(ax.legend(handles, labels, fontsize=legend_fontsize))
     fig.tight_layout()
     return True
 

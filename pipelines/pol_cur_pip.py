@@ -35,7 +35,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
-from plot_defaults import PlotFontDefaults, apply_x_tick_label_padding, resolve_plot_font_defaults
+from plot_defaults import PlotFontDefaults, apply_x_tick_label_padding, make_legend_draggable, resolve_plot_font_defaults
 from ui_layout import create_resizable_plot_layout
 
 
@@ -719,7 +719,7 @@ def draw_v_vs_i_on_figure(
             t_max=temp_max,
         )
 
-    ax_main.legend(handles, labels, fontsize=legend_fontsize)
+    make_legend_draggable(ax_main.legend(handles, labels, fontsize=legend_fontsize))
     fig.tight_layout()
     return True
 
@@ -1212,7 +1212,7 @@ def draw_dv_di_on_figure(
             ax_main.yaxis.set_major_locator(MaxNLocator(nbins=y_tick_count))
         ax_main.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
-    ax_main.legend(handles, labels, fontsize=legend_fontsize)
+    make_legend_draggable(ax_main.legend(handles, labels, fontsize=legend_fontsize))
     fig.tight_layout()
     return True
 
@@ -1454,7 +1454,7 @@ def draw_series_by_time_on_figure(
     if show_voltage and show_current and show_temperature:
         fig.subplots_adjust(right=0.80)
 
-    ax_main.legend(handles, labels, fontsize=legend_fontsize)
+    make_legend_draggable(ax_main.legend(handles, labels, fontsize=legend_fontsize))
     fig.tight_layout()
     return True
 
@@ -3391,7 +3391,7 @@ def _open_v_vs_i_composer(
         if leg is not None:
             leg.remove()
         if legend_var.get() and (handles or h2):
-            ax_main.legend(handles + h2, labels + l2, fontsize=float(font_defaults.legend))
+            make_legend_draggable(ax_main.legend(handles + h2, labels + l2, fontsize=float(font_defaults.legend)))
 
         has_temp = any(" T" in label for lines in comp_lines.values() for label in [line.get_label() for line in lines])
         ax_temp.yaxis.set_visible(has_temp)
@@ -3542,7 +3542,7 @@ def _open_v_vs_i_composer(
             ]
             if pairs:
                 legend_handles, legend_labels = zip(*pairs)
-                ax_main.legend(legend_handles, legend_labels, fontsize=legend_fs)
+                make_legend_draggable(ax_main.legend(legend_handles, legend_labels, fontsize=legend_fs))
 
         has_temp = _has_temp_lines()
         ax_temp.yaxis.set_visible(has_temp)

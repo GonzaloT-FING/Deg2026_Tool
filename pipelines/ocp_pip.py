@@ -17,7 +17,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
-from plot_defaults import PlotFontDefaults, apply_x_tick_label_padding, resolve_plot_font_defaults
+from plot_defaults import PlotFontDefaults, apply_x_tick_label_padding, make_legend_draggable, resolve_plot_font_defaults
 from ui_layout import create_resizable_plot_layout
 
 
@@ -773,7 +773,7 @@ def draw_v_vs_t_on_figure(
         if show_temperature and ax_temp is not None:
             series_specs.append((temp_time_values, temp_values, ax_main.get_xlim(), ax_temp.get_ylim()))
         legend_loc = _pick_legend_corner(series_specs) if series_specs else "best"
-        ax_main.legend(handles, labels, loc=legend_loc, fontsize=legend_fontsize)
+        make_legend_draggable(ax_main.legend(handles, labels, loc=legend_loc, fontsize=legend_fontsize))
 
     fig.tight_layout()
     return True
@@ -1298,7 +1298,7 @@ def draw_delta_v_on_figure(
             temp_time, temp_values = _required_numeric_series(parsed, "T", "Temp")
             series_specs.append((temp_time, temp_values, ax_main.get_xlim(), ax_temp.get_ylim()))
         legend_loc = _pick_legend_corner(series_specs) if series_specs else "best"
-        ax_main.legend(handles, labels, loc=legend_loc, fontsize=legend_fontsize)
+        make_legend_draggable(ax_main.legend(handles, labels, loc=legend_loc, fontsize=legend_fontsize))
 
     fig.tight_layout()
     return True

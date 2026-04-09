@@ -42,6 +42,7 @@ from plot_defaults import (
     PlotFontDefaults,
     apply_plot_font_defaults,
     apply_x_tick_label_padding,
+    make_legend_draggable,
     resolve_plot_font_defaults,
 )
 from ui_layout import create_resizable_plot_layout
@@ -1263,7 +1264,7 @@ def show_figures_tk(
                     leg.remove()
 
                 if handles:
-                    base_ax.legend(handles, labels, loc="best", fontsize=legend_fs)
+                    make_legend_draggable(base_ax.legend(handles, labels, loc="best", fontsize=legend_fs))
 
             def _autoscale_visible_axes():
                 for k, ln in lines.items():
@@ -1912,7 +1913,7 @@ def show_figures_tk(
                     legend_fs = float(legend_fs_var.get())
                 except Exception:
                     legend_fs = float(font_defaults.legend)
-                ax.legend(handles, labels, loc="best", fontsize=legend_fs)
+                make_legend_draggable(ax.legend(handles, labels, loc="best", fontsize=legend_fs))
 
             for key in visible_keys:
                 bode_axes[key].yaxis.set_major_locator(LinearLocator(max(2, int(tick_count_var.get()))))
@@ -2004,6 +2005,7 @@ def show_figures_tk(
                 if leg is not None:
                     for t in leg.get_texts():
                         t.set_fontsize(gfs)
+                    make_legend_draggable(leg)
 
             if is_pt_series:
                 _update_legend()
@@ -2747,7 +2749,7 @@ def show_figures_tk(
                 legend_fs = float(legend_fs_var.get())
             except (tk.TclError, ValueError):
                 legend_fs = float(font_defaults.legend)
-            axc.legend(h2, l2, loc="best", fontsize=legend_fs)
+            make_legend_draggable(axc.legend(h2, l2, loc="best", fontsize=legend_fs))
             if redraw:
                 canvas.draw_idle()
 
@@ -3219,7 +3221,7 @@ def show_figures_tk(
                     legend_fs = float(legend_fs_var.get())
                 except (tk.TclError, ValueError):
                     legend_fs = float(font_defaults.legend)
-                axc_mod.legend(handles, labels, loc="best", fontsize=legend_fs)
+                make_legend_draggable(axc_mod.legend(handles, labels, loc="best", fontsize=legend_fs))
             if redraw:
                 canvas.draw_idle()
 

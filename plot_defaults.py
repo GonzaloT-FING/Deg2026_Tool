@@ -69,6 +69,16 @@ def apply_x_tick_label_padding(ax, tick_size: float) -> float:
     return pad
 
 
+def make_legend_draggable(legend):
+    if legend is None:
+        return None
+    try:
+        legend.set_draggable(True)
+    except Exception:
+        pass
+    return legend
+
+
 def axis_bottom_footprint_px(fig: Figure, ax) -> float:
     renderer = fig.canvas.get_renderer()
     axis_bbox = ax.xaxis.get_tightbbox(renderer)
@@ -114,6 +124,7 @@ def apply_plot_font_defaults(fig: Figure, font_defaults: PlotFontDefaults | None
             legend_title = legend.get_title()
             if legend_title is not None:
                 legend_title.set_fontsize(defaults.legend)
+            make_legend_draggable(legend)
 
     if fig._suptitle is not None:
         fig._suptitle.set_fontsize(defaults.title)

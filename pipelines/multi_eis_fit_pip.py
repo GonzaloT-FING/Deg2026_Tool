@@ -22,6 +22,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from matplotlib.ticker import LogLocator, MaxNLocator
 
+from plot_defaults import make_legend_draggable
+
 
 EIS_FILENAME_TOKEN = "EISPOT"
 VARYING_PARAMETER_OPTIONS = ["Voltage"]
@@ -2802,13 +2804,15 @@ def open_multifit_window(
         ax.set_aspect("equal", adjustable="box")
         handles, labels = ax.get_legend_handles_labels()
         if handles:
-            ax.legend(
-                handles,
-                labels,
-                fontsize=8,
-                loc="upper left",
-                bbox_to_anchor=(1.02, 1.0),
-                borderaxespad=0.0,
+            make_legend_draggable(
+                ax.legend(
+                    handles,
+                    labels,
+                    fontsize=8,
+                    loc="upper left",
+                    bbox_to_anchor=(1.02, 1.0),
+                    borderaxespad=0.0,
+                )
             )
             preview_fig.tight_layout(rect=(0.0, 0.0, 0.78, 1.0))
         else:
