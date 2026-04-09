@@ -2625,8 +2625,9 @@ def show_figures_tk(
         toolbar = NavigationToolbar2Tk(canvas, plot_frame)
         toolbar.update()
 
-        # Right: controls
-        ctrl = ttk.Frame(ctrl_host, padding=10)
+        # Right: controls (scrollable)
+        _topbar, ctrl_scroll = _build_scrollable_controls(ctrl_host)
+        ctrl = ttk.Frame(ctrl_scroll, padding=10)
         ctrl.pack(fill="both", expand=True)
 
         # ---- Sources list (show current title + key) ----
@@ -3134,7 +3135,8 @@ def show_figures_tk(
         toolbar = NavigationToolbar2Tk(canvas, plot_frame)
         toolbar.update()
 
-        ctrl = ttk.Frame(ctrl_host, padding=10)
+        _topbar, ctrl_scroll = _build_scrollable_controls(ctrl_host)
+        ctrl = ttk.Frame(ctrl_scroll, padding=10)
         ctrl.pack(fill="both", expand=True)
 
         src_box = ttk.LabelFrame(ctrl, text="Bode sources", padding=8)
