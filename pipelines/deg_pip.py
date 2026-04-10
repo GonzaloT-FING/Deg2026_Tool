@@ -55,6 +55,7 @@ DEG_PLOT_COLORS = {
     "voltage": "#1f5f99",
     "temperature": "#cf9a32",
     "dvdt": "#1f5f99",
+    "range": "#a6bddb",
 }
 
 DEG_STAGE_GRADIENTS = {
@@ -1209,6 +1210,7 @@ def draw_v_vs_t_on_figure(
     fit_t_max: TimeAxisValue | None = None,
     fit_use_linear: bool = False,
     show_fit_line: bool = True,
+    show_fit_range: bool = False,
     reference_start: datetime | None = None,
 ) -> bool:
     fig.clear()
@@ -1335,6 +1337,15 @@ def draw_v_vs_t_on_figure(
         ax.yaxis.set_major_locator(LinearLocator(max(2, int(y_tick_count))))
         ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
+    if show_fit_range and fit_t_min is not None and fit_t_max is not None:
+        ax.axvspan(
+            fit_t_min,
+            fit_t_max,
+            color=DEG_PLOT_COLORS["range"],
+            alpha=0.18,
+            zorder=0,
+        )
+
     handles, labels = ax.get_legend_handles_labels()
     if ax_temp is not None:
         ax_temp.tick_params(axis="y", labelsize=tick_fontsize)
@@ -1416,6 +1427,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     slope_t_max_var = tk.StringVar(value="")
     slope_fit_var = tk.BooleanVar(value=False)
     show_fit_var = tk.BooleanVar(value=False)
+    show_range_var = tk.BooleanVar(value=True)
     slope_indicator_var = tk.StringVar(value="—")
 
     initial_state = {
@@ -1442,6 +1454,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
         "slope_t_max": "",
         "slope_fit": False,
         "show_fit": False,
+        "show_range": True,
     }
 
     plot_job = {"id": None}
@@ -1527,6 +1540,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
             fit_t_min, fit_t_max = _collect_slope_limits()
         except ValueError:
             fit_t_min, fit_t_max = None, None
+        show_fit_range = show_range_var.get() and fit_t_min is not None and fit_t_max is not None
         try:
             has_plot = draw_v_vs_t_on_figure(
                 fig=fig,
@@ -1548,6 +1562,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
                 fit_t_max=fit_t_max,
                 fit_use_linear=slope_fit_var.get(),
                 show_fit_line=show_fit_var.get(),
+                show_fit_range=show_fit_range,
                 reference_start=_reference_start() if _is_date_axis(time_unit_var.get()) else None,
                 **_collect_limits(),
             )
@@ -1672,6 +1687,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
             slope_t_max_var.set(initial_state["slope_t_max"])
             slope_fit_var.set(initial_state["slope_fit"])
             show_fit_var.set(initial_state["show_fit"])
+            show_range_var.set(initial_state["show_range"])
             for var in stage_vars.values():
                 var.set(True)
         finally:
@@ -1859,8 +1875,16 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     )
     show_fit_check.grid(row=3, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))
 
+    show_range_check = ttk.Checkbutton(
+        degradation_box,
+        text="Mostrar rango",
+        variable=show_range_var,
+        command=_schedule_plot,
+    )
+    show_range_check.grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))
+
     ttk.Label(degradation_box, text="dV/dt promedio [µV/h]").grid(
-        row=4,
+        row=5,
         column=0,
         columnspan=2,
         sticky="w",
@@ -1873,7 +1897,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
         justify="left",
         wraplength=240,
     )
-    slope_indicator_label.grid(row=5, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))
+    slope_indicator_label.grid(row=6, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))
 
     limit_specs = [
         ("t min", t_min_var),
