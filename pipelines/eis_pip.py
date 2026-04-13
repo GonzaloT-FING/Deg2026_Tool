@@ -77,6 +77,26 @@ DATA_MAP = {
     "Temp": "Temperatura",
 }
 
+PRE_STAB_META_FIELDS = [
+    ("TITLE", "Tecnica"),
+    ("DATE", "Fecha"),
+    ("TIME", "Hora"),
+    ("ISTEP1", "Corriente del paso"),
+    ("TSTEP1", "Duracion del paso"),
+    ("SAMPLETIME", "Tiempo de muestreo"),
+    ("AREA", "Area"),
+]
+
+PRE_STAB_DATA_MAP = {
+    "Pt": "Pt",
+    "T": "time",
+    "Vf": "Voltaje",
+    "Im": "Corriente",
+    "Sig": "Sig",
+    "Ach": "Ach",
+    "Temp": "Temperatura",
+}
+
 EIS_STAGE_MARKER_SEQUENCE = ["o", "s", "^", "D", "v", "P", "X", "<", ">"]
 EIS_MARKER_OPTIONS = EIS_STAGE_MARKER_SEQUENCE + [".", "x", "+", "*", "None"]
 
@@ -276,6 +296,71 @@ def parse_gamry_dta(path: Path) -> ParsedDTA:
     )
 
 
+def parse_gamry_curve_dta(path: Path) -> ParsedDTA:
+    """Parse one Gamry .DTA file containing a CURVE table."""
+    text = path.read_text(encoding="latin-1", errors="replace")
+    lines = text.splitlines()
+
+    meta_values: dict[str, str] = {}
+    meta_units: dict[str, str] = {}
+    header: list[str] | None = None
+    units: list[str] = []
+    rows: list[list[str]] = []
+
+    table_started = False
+
+    for line in lines:
+        if not table_started:
+            if line.startswith("CURVE") and "TABLE" in line:
+                table_started = True
+                continue
+
+            if not line.strip():
+                continue
+
+            parts = line.split("\t")
+            if len(parts) >= 3 and parts[0].strip():
+                key = parts[0].strip()
+                value = parts[2].strip()
+                description = " ".join(part.strip() for part in parts[3:] if part.strip())
+                meta_values[key] = value
+                meta_units[key] = _extract_meta_unit(key, description)
+
+            continue
+
+        if not line.strip():
+            continue
+
+        parts = _drop_leading_blank([part.strip() for part in line.rstrip("\r\n").split("\t")])
+        if not parts:
+            continue
+
+        first = parts[0]
+        if header is None:
+            if first == "Pt":
+                header = parts
+            continue
+
+        if not units:
+            if first == "#":
+                units = parts
+            continue
+
+        if re.fullmatch(r"-?\d+", first):
+            rows.append(parts)
+
+    if header is None:
+        raise ValueError(f"No data header found in {path.name} (expected 'Pt ...')")
+
+    return ParsedDTA(
+        meta_values=meta_values,
+        meta_units=meta_units,
+        header=header,
+        units=units,
+        rows=rows,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Data extraction for plotting
 # ---------------------------------------------------------------------------
@@ -295,6 +380,12 @@ def _column_unit(parsed: ParsedDTA, column_name: str) -> str:
     if unit == "#":
         return ""
     return unit
+
+def _metadata_area_cm2(parsed: ParsedDTA) -> float | None:
+    area = to_float(parsed.meta_values.get("AREA", ""))
+    if area is None or area <= 0:
+        return None
+    return area
 
 def _paired_series(
     parsed: ParsedDTA,
@@ -558,12 +649,66 @@ def _collect_eis_plot_entries(dta_files: list[Path]) -> list[EISPlotEntry]:
     return entries
 
 
+def _build_pre_stabilization_display_name(path: Path) -> tuple[str, int | None, str | None, float | None]:
+    stage_number = _extract_stage_number(path.stem)
+    current_label, current_value = _extract_current_label(path.stem)
+
+    parts: list[str] = []
+    if stage_number is not None:
+        parts.append(f"Stage {stage_number}")
+    if current_label:
+        parts.append(current_label)
+
+    return (" - ".join(parts) if parts else path.stem, stage_number, current_label, current_value)
+
+
+def _collect_pre_stabilization_entries(dta_files: list[Path]) -> list[EISPlotEntry]:
+    entries: list[EISPlotEntry] = []
+    for dta_file in dta_files:
+        parsed = parse_gamry_curve_dta(dta_file)
+        display_name, stage_number, current_label, current_value = _build_pre_stabilization_display_name(dta_file)
+        entries.append(
+            EISPlotEntry(
+                path=dta_file,
+                parsed=parsed,
+                display_name=display_name,
+                stage_number=stage_number,
+                current_label=current_label,
+                current_value=current_value,
+            )
+        )
+
+    entries.sort(
+        key=lambda entry: (
+            entry.stage_number is None,
+            entry.stage_number if entry.stage_number is not None else math.inf,
+            entry.current_value is None,
+            entry.current_value if entry.current_value is not None else math.inf,
+            entry.current_label or "",
+            entry.path.stem.lower(),
+        )
+    )
+    return entries
+
+
 # ---------------------------------------------------------------------------
 # Excel export
 # ---------------------------------------------------------------------------
 
-def export_to_xlsx(parsed: ParsedDTA, out_path: Path) -> None:
+def export_to_xlsx(
+    parsed: ParsedDTA,
+    out_path: Path,
+    *,
+    meta_fields: list[tuple[str, str]] | None = None,
+    data_map: dict[str, str] | None = None,
+    numeric_meta_keys: set[str] | None = None,
+) -> None:
     """Create one .xlsx with Metadata + Data sheets."""
+    meta_fields = META_FIELDS if meta_fields is None else meta_fields
+    data_map = DATA_MAP if data_map is None else data_map
+    if numeric_meta_keys is None:
+        numeric_meta_keys = {"VDC", "FREQINIT", "FREQFINAL", "PTSPERDEC", "VAC", "AREA"}
+
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -578,9 +723,7 @@ def export_to_xlsx(parsed: ParsedDTA, out_path: Path) -> None:
         ws_meta[ref].font = Font(bold=True)
     ws_meta.freeze_panes = "A2"
 
-    numeric_meta_keys = {"VDC", "FREQINIT", "FREQFINAL", "PTSPERDEC", "VAC", "AREA"}
-
-    for row_idx, (key, label) in enumerate(META_FIELDS, start=2):
+    for row_idx, (key, label) in enumerate(meta_fields, start=2):
         raw_value = parsed.meta_values.get(key, "")
         raw_unit = parsed.meta_units.get(key, "")
 
@@ -596,8 +739,8 @@ def export_to_xlsx(parsed: ParsedDTA, out_path: Path) -> None:
 
     # ---------------- Data sheet -------------------------------------------
     col_idx = {name: idx for idx, name in enumerate(parsed.header)}
-    selected_source_cols = [name for name in DATA_MAP if name in col_idx]
-    selected_output_headers = [DATA_MAP[name] for name in selected_source_cols]
+    selected_source_cols = [name for name in data_map if name in col_idx]
+    selected_output_headers = [data_map[name] for name in selected_source_cols]
 
     # Row 1 = names
     for col_num, header_name in enumerate(selected_output_headers, start=1):
@@ -840,8 +983,8 @@ def fig_series_vs_pt(
     axI = fig.add_subplot(111)
 
     pt_default_colors = {
-        "I": "#1f77b4",
-        "V": "#3bc400",
+        "I": "#2f9e44",
+        "V": "#1f77b4",
         "T": "#c40000",
     }
 
@@ -897,6 +1040,10 @@ def fig_series_vs_pt(
             label=lab,
         )
         ln._eis_freq = f
+        if key == "I":
+            ln._eis_abs_ydata = tuple(y)
+            ln._eis_abs_label = lab
+            ln._eis_density_label = "Densidad de corriente (A/cm^2)"
         lines[key] = ln
         ylabels[key] = lab
 
@@ -928,10 +1075,77 @@ def fig_series_vs_pt(
     fig._pt_axes = axes
     fig._pt_ylabels = ylabels
     fig._pt_base_key = base_key  # which axis drives the grid/tick alignment
+    fig._pt_current_area_cm2 = _metadata_area_cm2(parsed)
 
     apply_plot_font_defaults(fig, font_defaults)
     fig.tight_layout()
     return fig
+
+
+def fig_pre_stabilization(
+    entry: EISPlotEntry,
+    *,
+    font_defaults: PlotFontDefaults | None = None,
+) -> Figure | None:
+    parsed = entry.parsed
+    fig = _new_figure()
+    axV = fig.add_subplot(111)
+    axI = axV.twinx()
+    axT = axV.twinx()
+    axT.spines["right"].set_position(("outward", 60))
+
+    axI.spines["left"].set_visible(False)
+    axT.spines["left"].set_visible(False)
+    axI.yaxis.tick_right()
+    axI.yaxis.set_label_position("right")
+    axT.yaxis.tick_right()
+    axT.yaxis.set_label_position("right")
+
+    axes = {"I": axI, "V": axV, "T": axT}
+    lines: dict[str, object] = {}
+
+    time_unit = _column_unit(parsed, "T")
+    axV.set_xlabel(f"Tiempo ({time_unit})" if time_unit else "Tiempo")
+    axV.grid(True)
+    axI.grid(False)
+    axT.grid(False)
+
+    def _add_series(key: str, col: str, label: str, ax, color: str):
+        x, y = _paired_series(parsed, "T", col)
+        if not x or not y:
+            return
+
+        unit = _column_unit(parsed, col)
+        series_label = f"{label} ({unit})" if unit else label
+        (ln,) = ax.plot(
+            x,
+            y,
+            marker="o",
+            linestyle="-",
+            markerfacecolor="none",
+            color=color,
+            label=series_label,
+        )
+        lines[key] = ln
+        ax.set_ylabel(series_label)
+
+    _add_series("V", "Vf", "Voltaje", axV, "#1f77b4")
+    _add_series("I", "Im", "Corriente", axI, "#2f9e44")
+    _add_series("T", "Temp", "Temperatura", axT, "#c40000")
+
+    if not lines:
+        return None
+
+    axV.set_title(f"{entry.display_name} - Pre-estabilizacion")
+
+    fig._pre_stab_series = True
+    fig._pre_stab_lines = lines
+    fig._pre_stab_axes = axes
+
+    apply_plot_font_defaults(fig, font_defaults)
+    fig.tight_layout()
+    return fig
+
 
 def build_figures(
     entry: EISPlotEntry,
@@ -976,6 +1190,605 @@ def build_figures(
     # "Equivalent circuit fit" is listed in GUI but not implemented here yet.
     return figs
 
+
+def _open_composer_pt(
+    win,
+    pt_sources: dict[str, dict],
+    font_defaults: PlotFontDefaults,
+    *,
+    window_title: str = "Composite (Series vs Pt)",
+    default_title: str = "Composite - Series vs Pt",
+    sources_title: str = "Series vs Pt sources",
+) -> None:
+    source_keys = sorted(pt_sources.keys(), key=lambda k: k.lower())
+    if not source_keys:
+        return
+
+    existing = getattr(win, "_composer_win_pt", None)
+    if existing is not None and existing.winfo_exists():
+        existing.lift()
+        existing.focus_force()
+        return
+
+    series_order = ("I", "V", "T")
+    series_names = {"I": "Idc", "V": "Vdc", "T": "Temp"}
+
+    def _fmt(v: float) -> str:
+        return f"{v:.6g}"
+
+    def _source_line(key: str, kind: str):
+        src = pt_sources.get(key, {})
+        return src.get("lines", {}).get(kind)
+
+    def _source_axis(key: str, kind: str):
+        src = pt_sources.get(key, {})
+        return src.get("axes", {}).get(kind)
+
+    def _src_label(key: str) -> str:
+        for kind in series_order:
+            ax_src = _source_axis(key, kind)
+            if ax_src is not None:
+                title = (ax_src.get_title() or "").strip()
+                if title:
+                    return title
+        return key
+
+    def _source_axis_label(key: str, kind: str) -> str:
+        ln = _source_line(key, kind)
+        if ln is not None:
+            label = (ln.get_label() or "").strip()
+            if label and not label.startswith("_"):
+                return label
+        ax_src = _source_axis(key, kind)
+        if ax_src is not None:
+            label = (ax_src.get_ylabel() or "").strip()
+            if label:
+                return label
+        return series_names[kind]
+
+    def _legend_series_name(key: str, kind: str) -> str:
+        axis_label = _source_axis_label(key, kind)
+        if kind == "I" and ("A/cm" in axis_label or "densidad" in axis_label.lower()):
+            return "Densidad de corriente"
+        return series_names[kind]
+
+    def _default_xlabel() -> str:
+        for key in source_keys:
+            for kind in series_order:
+                ax_src = _source_axis(key, kind)
+                if ax_src is not None:
+                    label = (ax_src.get_xlabel() or "").strip()
+                    if label:
+                        return label
+        return "Pt"
+
+    def _default_ylabel(kind: str) -> str:
+        for key in source_keys:
+            if _source_line(key, kind) is not None:
+                return _source_axis_label(key, kind)
+        return series_names[kind]
+
+    default_xlabel = _default_xlabel()
+    default_ylabels = {kind: _default_ylabel(kind) for kind in series_order}
+
+    comp = tk.Toplevel(win)
+    win._composer_win_pt = comp  # type: ignore[attr-defined]
+    comp.title(window_title)
+    comp.geometry("1280x800")
+
+    ctrl_host, plot_frame = create_resizable_plot_layout(
+        comp,
+        sidebar_width=320,
+        sidebar_side="right",
+        plot_padding=0,
+    )
+
+    figc = _new_figure()
+    axc_I = figc.add_subplot(111)
+    axc_V = axc_I.twinx()
+    axc_T = axc_I.twinx()
+    axes = {"I": axc_I, "V": axc_V, "T": axc_T}
+    comp._pt_legend = None  # type: ignore[attr-defined]
+    comp._pt_legend_dragger = None  # type: ignore[attr-defined]
+
+    def _reset_axes():
+        for ax_reset in axes.values():
+            ax_reset.cla()
+        axc_I.grid(True)
+        axc_I.set_title(default_title)
+        axc_I.set_xlabel(default_xlabel)
+        axc_I.set_ylabel(default_ylabels["I"])
+        axc_V.set_ylabel(default_ylabels["V"])
+        axc_T.set_ylabel(default_ylabels["T"])
+
+        axc_V.spines["left"].set_visible(False)
+        axc_T.spines["left"].set_visible(False)
+        axc_V.yaxis.tick_right()
+        axc_V.yaxis.set_label_position("right")
+        axc_T.yaxis.tick_right()
+        axc_T.yaxis.set_label_position("right")
+        axc_T.spines["right"].set_position(("outward", 60))
+
+    _reset_axes()
+
+    canvas = FigureCanvasTkAgg(figc, master=plot_frame)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    toolbar = NavigationToolbar2Tk(canvas, plot_frame)
+    toolbar.update()
+
+    _topbar, ctrl_scroll = _build_scrollable_controls(ctrl_host)
+    ctrl = ttk.Frame(ctrl_scroll, padding=10)
+    ctrl.pack(fill="both", expand=True)
+
+    src_box = ttk.LabelFrame(ctrl, text=sources_title, padding=8)
+    src_box.pack(fill="x", pady=(0, 10))
+
+    lb = tk.Listbox(src_box, selectmode="extended", height=12, exportselection=False)
+    lb.pack(fill="x", expand=False)
+
+    idx_to_key: list[str] = []
+
+    def _rebuild_listbox():
+        nonlocal idx_to_key
+        lb.delete(0, "end")
+        idx_to_key = []
+        keys = sorted(source_keys, key=lambda k: _src_label(k).lower())
+        for key in keys:
+            lb.insert("end", f"{_src_label(key)}   [{key}]")
+            idx_to_key.append(key)
+
+    _rebuild_listbox()
+
+    def _selected_keys() -> list[str]:
+        return [idx_to_key[i] for i in lb.curselection()]
+
+    comp_lines: dict[str, dict[str, object]] = {"I": {}, "V": {}, "T": {}}
+    legend_var = tk.BooleanVar(value=True)
+    title_text_var = tk.StringVar(value=default_title)
+    show_title_var = tk.BooleanVar(value=True)
+    title_fs_var = tk.DoubleVar(value=float(font_defaults.title))
+    label_fs_var = tk.DoubleVar(value=float(font_defaults.label))
+    legend_fs_var = tk.DoubleVar(value=float(font_defaults.legend))
+    tick_fs_var = tk.DoubleVar(value=float(font_defaults.tick))
+    x_tick_count_var = tk.IntVar(value=6)
+    y_tick_count_var = tk.IntVar(value=6)
+
+    def _copy_style(src_line, dst_line):
+        dst_line.set_color(src_line.get_color())
+        dst_line.set_linestyle(src_line.get_linestyle())
+        dst_line.set_marker(src_line.get_marker())
+        dst_line.set_linewidth(src_line.get_linewidth())
+        dst_line.set_markersize(src_line.get_markersize())
+        try:
+            dst_line.set_markerfacecolor(src_line.get_markerfacecolor())
+        except Exception:
+            pass
+        try:
+            dst_line.set_markeredgecolor(src_line.get_markeredgecolor())
+        except Exception:
+            pass
+        try:
+            dst_line.set_alpha(src_line.get_alpha())
+        except Exception:
+            pass
+
+    def _copy_data_and_style(key: str, kind: str, dst_line) -> bool:
+        src_line = _source_line(key, kind)
+        if src_line is None:
+            return False
+        dst_line.set_xdata(list(src_line.get_xdata(orig=False)))
+        dst_line.set_ydata(list(src_line.get_ydata(orig=False)))
+        _copy_style(src_line, dst_line)
+        dst_line.set_label(f"{_src_label(key)} - {_legend_series_name(key, kind)}")
+        dst_line._pt_axis_label = _source_axis_label(key, kind)  # type: ignore[attr-defined]
+        return True
+
+    def _source_kind_visible(key: str, kind: str) -> bool:
+        src_line = _source_line(key, kind)
+        return bool(src_line is not None and src_line.get_visible())
+
+    def _visible_source_kinds(key: str) -> list[str]:
+        return [kind for kind in series_order if _source_kind_visible(key, kind)]
+
+    def _active_lines(kind: str) -> list[object]:
+        return [ln for ln in comp_lines[kind].values() if ln.get_visible()]
+
+    def _axis_label_for(kind: str) -> str:
+        labels = []
+        for ln in comp_lines[kind].values():
+            label = getattr(ln, "_pt_axis_label", "")
+            if label:
+                labels.append(str(label))
+        unique = sorted(set(labels))
+        if len(unique) == 1:
+            return unique[0]
+        if unique and kind == "I":
+            return "Idc / densidad de corriente"
+        return series_names[kind] if unique else default_ylabels[kind]
+
+    def _apply_legend(redraw: bool = True):
+        for axis in axes.values():
+            leg = axis.get_legend()
+            if leg is not None:
+                leg.remove()
+        comp._pt_legend = None  # type: ignore[attr-defined]
+        comp._pt_legend_dragger = None  # type: ignore[attr-defined]
+
+        if not legend_var.get():
+            if redraw:
+                canvas.draw_idle()
+            return
+
+        handles = []
+        labels = []
+        for kind in series_order:
+            for key in sorted(comp_lines[kind].keys(), key=lambda k: _src_label(k).lower()):
+                ln = comp_lines[kind][key]
+                if ln.get_visible():
+                    handles.append(ln)
+                    labels.append(ln.get_label())
+
+        if handles:
+            try:
+                legend_fs = float(legend_fs_var.get())
+            except (tk.TclError, ValueError):
+                legend_fs = float(font_defaults.legend)
+            # The Pt composer uses twinx axes; attach the legend to the topmost
+            # axis so draggable legend events are not intercepted by a twin axis.
+            legend = axc_T.legend(handles, labels, loc="best", fontsize=legend_fs)
+            make_legend_draggable(legend)
+            comp._pt_legend = legend  # type: ignore[attr-defined]
+            comp._pt_legend_dragger = getattr(legend, "_draggable", None)  # type: ignore[attr-defined]
+        if redraw:
+            canvas.draw_idle()
+
+    def _apply_tick_settings():
+        try:
+            x_tick_count = max(2, int(x_tick_count_var.get()))
+        except (tk.TclError, ValueError):
+            x_tick_count = 6
+        try:
+            y_tick_count = max(2, int(y_tick_count_var.get()))
+        except (tk.TclError, ValueError):
+            y_tick_count = 6
+        axc_I.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
+        axc_I.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+        for axis in axes.values():
+            axis.yaxis.set_major_locator(LinearLocator(y_tick_count))
+            axis.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+            axis.yaxis.get_offset_text().set_visible(False)
+
+    def _sync_axis_visibility(redraw: bool = True):
+        for kind in series_order:
+            ax_kind = axes[kind]
+            for ln in comp_lines[kind].values():
+                ln.set_visible(True)
+
+            axis_visible = bool(comp_lines[kind])
+            ax_kind.yaxis.set_visible(axis_visible)
+            ax_kind.yaxis.label.set_visible(axis_visible)
+            ax_kind.set_ylabel(_axis_label_for(kind))
+            if kind == "I":
+                ax_kind.tick_params(
+                    axis="y",
+                    labelleft=axis_visible,
+                    left=axis_visible,
+                    labelright=False,
+                    right=False,
+                )
+                ax_kind.spines["left"].set_visible(axis_visible)
+            else:
+                ax_kind.tick_params(
+                    axis="y",
+                    labelleft=False,
+                    left=False,
+                    labelright=axis_visible,
+                    right=axis_visible,
+                )
+                ax_kind.spines["right"].set_visible(axis_visible)
+
+        axc_I.grid(True)
+        _apply_tick_settings()
+        _apply_legend(redraw=False)
+        _update_right_axis_spacing(figc, canvas, axes)
+        if redraw:
+            canvas.draw_idle()
+
+    def _apply_plot_settings(redraw: bool = True):
+        try:
+            title_fs = float(title_fs_var.get())
+            label_fs = float(label_fs_var.get())
+            tick_fs = float(tick_fs_var.get())
+        except (tk.TclError, ValueError):
+            return
+
+        axc_I.set_title(title_text_var.get() if show_title_var.get() else "", fontsize=title_fs)
+        axc_I.xaxis.label.set_fontsize(label_fs)
+        for axis in axes.values():
+            axis.yaxis.label.set_fontsize(label_fs)
+            axis.tick_params(axis="both", labelsize=tick_fs)
+        apply_x_tick_label_padding(axc_I, tick_fs)
+        _apply_tick_settings()
+        _apply_legend(redraw=False)
+        _update_right_axis_spacing(figc, canvas, axes)
+        if redraw:
+            canvas.draw_idle()
+
+    pending_plot_settings = {"id": None}
+
+    def _schedule_plot_settings(_evt=None):
+        if pending_plot_settings["id"] is not None:
+            comp.after_cancel(pending_plot_settings["id"])
+        pending_plot_settings["id"] = comp.after(180, _apply_plot_settings)
+
+    def _sync_limit_entries():
+        x0, x1 = axc_I.get_xlim()
+        xmin_var.set(_fmt(x0))
+        xmax_var.set(_fmt(x1))
+        for kind in series_order:
+            y0, y1 = axes[kind].get_ylim()
+            ymin_vars[kind].set(_fmt(y0))
+            ymax_vars[kind].set(_fmt(y1))
+
+    def _fit_all():
+        active_by_kind = {kind: _active_lines(kind) for kind in series_order}
+        active_all = [ln for lineset in active_by_kind.values() for ln in lineset]
+        if not active_all:
+            return
+
+        xs: list[float] = []
+        for ln in active_all:
+            xs.extend([float(v) for v in ln.get_xdata(orig=False)])
+        if not xs:
+            return
+
+        x0, x1 = min(xs), max(xs)
+        dx = (x1 - x0) if x1 != x0 else (abs(x0) * 0.1 + 1.0)
+        for axis in axes.values():
+            axis.set_xlim(x0 - 0.05 * dx, x1 + 0.05 * dx)
+
+        for kind, lineset in active_by_kind.items():
+            if not lineset:
+                continue
+            ys: list[float] = []
+            for ln in lineset:
+                ys.extend([float(v) for v in ln.get_ydata(orig=False)])
+            if not ys:
+                continue
+            y0, y1 = min(ys), max(ys)
+            dy = (y1 - y0) if y1 != y0 else (abs(y0) * 0.1 + 1.0)
+            axes[kind].set_ylim(y0 - 0.05 * dy, y1 + 0.05 * dy)
+
+        _sync_axis_visibility(redraw=False)
+        _apply_plot_settings(redraw=False)
+        canvas.draw_idle()
+        _sync_limit_entries()
+
+    def add_selected():
+        added = False
+        for key in _selected_keys():
+            for kind in _visible_source_kinds(key):
+                if key in comp_lines[kind]:
+                    continue
+                src_line = _source_line(key, kind)
+                if src_line is None:
+                    continue
+                axis = axes[kind]
+                x = list(src_line.get_xdata(orig=False))
+                y = list(src_line.get_ydata(orig=False))
+                (ln,) = axis.plot(x, y, label=f"{_src_label(key)} - {_legend_series_name(key, kind)}")
+                _copy_style(src_line, ln)
+                ln._pt_axis_label = _source_axis_label(key, kind)  # type: ignore[attr-defined]
+                comp_lines[kind][key] = ln
+                added = True
+
+        if added:
+            _sync_axis_visibility(redraw=False)
+            _fit_all()
+
+    def remove_selected():
+        removed = False
+        for key in _selected_keys():
+            for kind in series_order:
+                ln = comp_lines[kind].pop(key, None)
+                if ln is not None:
+                    try:
+                        ln.remove()
+                    except Exception:
+                        pass
+                    removed = True
+        if removed:
+            _sync_axis_visibility(redraw=False)
+            _fit_all()
+
+    def clear_all():
+        for kind in series_order:
+            comp_lines[kind].clear()
+        _reset_axes()
+        _sync_axis_visibility(redraw=False)
+        _apply_plot_settings(redraw=False)
+        canvas.draw_idle()
+        _sync_limit_entries()
+        _apply_legend()
+        try:
+            lb.selection_clear(0, "end")
+        except Exception:
+            pass
+
+    def refresh_formatting():
+        source_keys_in_composite = sorted(
+            {key for kind in series_order for key in comp_lines[kind].keys()},
+            key=lambda item: _src_label(item).lower(),
+        )
+        changed = False
+        for key in source_keys_in_composite:
+            for kind in series_order:
+                ln = comp_lines[kind].get(key)
+                if _source_kind_visible(key, kind):
+                    if ln is None:
+                        src_line = _source_line(key, kind)
+                        if src_line is None:
+                            continue
+                        (ln,) = axes[kind].plot([], [])
+                        comp_lines[kind][key] = ln
+                    _copy_data_and_style(key, kind, ln)
+                    changed = True
+                    continue
+
+                if ln is not None:
+                    comp_lines[kind].pop(key, None)
+                    try:
+                        ln.remove()
+                    except Exception:
+                        pass
+                    changed = True
+        _rebuild_listbox()
+        if changed:
+            _sync_axis_visibility(redraw=False)
+            _fit_all()
+        else:
+            _apply_legend()
+            canvas.draw_idle()
+
+    btns = ttk.Frame(src_box)
+    btns.pack(fill="x", pady=(8, 0))
+    ttk.Button(btns, text="Anadir", command=add_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
+    ttk.Button(btns, text="Remover", command=remove_selected).pack(side="left", expand=True, fill="x", padx=(0, 6))
+    ttk.Button(btns, text="Limpiar", command=clear_all).pack(side="left", expand=True, fill="x")
+
+    ttk.Button(src_box, text="Actualizar formato", command=refresh_formatting).pack(fill="x", pady=(8, 0))
+    ttk.Checkbutton(ctrl, text="Leyenda", variable=legend_var, command=_apply_legend).pack(anchor="w", pady=(0, 10))
+
+    plot_box = ttk.LabelFrame(ctrl, text="Grafico", padding=8)
+    plot_box.pack(fill="x", pady=(0, 10))
+    plot_box.columnconfigure(1, weight=1)
+
+    ttk.Label(plot_box, text="Titulo").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
+    title_entry = ttk.Entry(plot_box, textvariable=title_text_var, width=20)
+    title_entry.grid(row=0, column=1, sticky="ew", pady=2)
+
+    ttk.Label(plot_box, text="Tamano del titulo").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
+    title_spin = ttk.Spinbox(plot_box, from_=6.0, to=50.0, increment=0.5, textvariable=title_fs_var, width=10)
+    title_spin.grid(row=1, column=1, sticky="w", pady=2)
+
+    ttk.Label(plot_box, text="Tamano de etiquetas").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
+    label_spin = ttk.Spinbox(plot_box, from_=6.0, to=40.0, increment=0.5, textvariable=label_fs_var, width=10)
+    label_spin.grid(row=2, column=1, sticky="w", pady=2)
+
+    ttk.Label(plot_box, text="Tamano de leyenda").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=2)
+    legend_spin = ttk.Spinbox(plot_box, from_=6.0, to=40.0, increment=0.5, textvariable=legend_fs_var, width=10)
+    legend_spin.grid(row=3, column=1, sticky="w", pady=2)
+
+    ttk.Label(plot_box, text="Tamano de ticks").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=2)
+    tick_spin = ttk.Spinbox(plot_box, from_=6.0, to=40.0, increment=0.5, textvariable=tick_fs_var, width=10)
+    tick_spin.grid(row=4, column=1, sticky="w", pady=2)
+
+    ttk.Label(plot_box, text="X ticks").grid(row=5, column=0, sticky="w", padx=(0, 6), pady=2)
+    x_tick_spin = ttk.Spinbox(plot_box, from_=2, to=20, increment=1, textvariable=x_tick_count_var, width=10)
+    x_tick_spin.grid(row=5, column=1, sticky="w", pady=2)
+
+    ttk.Label(plot_box, text="Y ticks").grid(row=6, column=0, sticky="w", padx=(0, 6), pady=2)
+    y_tick_spin = ttk.Spinbox(plot_box, from_=2, to=20, increment=1, textvariable=y_tick_count_var, width=10)
+    y_tick_spin.grid(row=6, column=1, sticky="w", pady=2)
+
+    ttk.Checkbutton(plot_box, text="Mostrar titulo", variable=show_title_var, command=_apply_plot_settings).grid(
+        row=7, column=0, columnspan=2, sticky="w", pady=(6, 0)
+    )
+
+    lim_box = ttk.LabelFrame(ctrl, text="Limites de ejes", padding=8)
+    lim_box.pack(fill="x", pady=(0, 10))
+
+    xmin_var = tk.StringVar()
+    xmax_var = tk.StringVar()
+    ymin_vars = {kind: tk.StringVar() for kind in series_order}
+    ymax_vars = {kind: tk.StringVar() for kind in series_order}
+
+    def _parse_float(s: str) -> float | None:
+        s = s.strip()
+        if not s:
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    def apply_limits():
+        raw_values = [xmin_var.get(), xmax_var.get()]
+        for kind in series_order:
+            raw_values.extend([ymin_vars[kind].get(), ymax_vars[kind].get()])
+        if any(_is_incomplete_number(raw) for raw in raw_values):
+            return
+
+        cur_x0, cur_x1 = axc_I.get_xlim()
+        nx0 = _parse_float(xmin_var.get())
+        nx1 = _parse_float(xmax_var.get())
+        new_x0 = cur_x0 if nx0 is None else nx0
+        new_x1 = cur_x1 if nx1 is None else nx1
+        for axis in axes.values():
+            axis.set_xlim(new_x0, new_x1)
+
+        for kind in series_order:
+            cur_y0, cur_y1 = axes[kind].get_ylim()
+            ny0 = _parse_float(ymin_vars[kind].get())
+            ny1 = _parse_float(ymax_vars[kind].get())
+            axes[kind].set_ylim(cur_y0 if ny0 is None else ny0, cur_y1 if ny1 is None else ny1)
+
+        _apply_plot_settings(redraw=False)
+        canvas.draw_idle()
+        _sync_limit_entries()
+
+    def _row(parent, row: int, label: str, var):
+        ttk.Label(parent, text=label, width=6).grid(row=row, column=0, sticky="w", padx=(0, 6), pady=2)
+        entry = ttk.Entry(parent, textvariable=var, width=12)
+        entry.grid(row=row, column=1, sticky="w", pady=2)
+        return entry
+
+    entries = []
+    next_row = 0
+    entries.append(_row(lim_box, next_row, "Xmin", xmin_var))
+    next_row += 1
+    entries.append(_row(lim_box, next_row, "Xmax", xmax_var))
+    next_row += 1
+    for kind, label in (("I", "I"), ("V", "V"), ("T", "T")):
+        entries.append(_row(lim_box, next_row, f"{label}min", ymin_vars[kind]))
+        next_row += 1
+        entries.append(_row(lim_box, next_row, f"{label}max", ymax_vars[kind]))
+        next_row += 1
+
+    for entry in entries:
+        entry.bind("<Return>", lambda ev: apply_limits())
+        entry.bind("<FocusOut>", lambda ev: apply_limits())
+
+    title_entry.bind("<Return>", lambda ev: _apply_plot_settings())
+    title_entry.bind("<FocusOut>", lambda ev: _apply_plot_settings())
+    title_entry.bind("<KeyRelease>", _schedule_plot_settings)
+
+    for spin in (title_spin, label_spin, legend_spin, tick_spin, x_tick_spin, y_tick_spin):
+        spin.configure(command=_apply_plot_settings)
+        spin.bind("<Return>", lambda ev: _apply_plot_settings())
+        spin.bind("<FocusOut>", lambda ev: _apply_plot_settings())
+
+    limit_buttons = ttk.Frame(lim_box)
+    limit_buttons.grid(row=next_row, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+    ttk.Button(limit_buttons, text="Ajustar todo", command=_fit_all).pack(side="left", expand=True, fill="x", padx=(0, 6))
+    ttk.Button(limit_buttons, text="Refresh fields", command=_sync_limit_entries).pack(side="left", expand=True, fill="x")
+
+    _sync_limit_entries()
+    _sync_axis_visibility(redraw=False)
+    _apply_plot_settings(redraw=False)
+
+    def _on_close():
+        comp.destroy()
+        try:
+            delattr(win, "_composer_win_pt")
+        except Exception:
+            pass
+
+    comp.protocol("WM_DELETE_WINDOW", _on_close)
+
+
 def show_figures_tk(
     figures: list[tuple[str, Figure]],
     window_title: str = "EIS plots",
@@ -1010,6 +1823,8 @@ def show_figures_tk(
 
     nyquist_sources: dict[str, dict] = {}
     bode_sources = {"zmod": {}, "zphz": {}}
+    pt_sources: dict[str, dict] = {}
+    pre_stabilization_sources: dict[str, dict] = {}
 
     plot_names_var = tk.StringVar()
     plot_select = ttk.Combobox(topbar, textvariable=plot_names_var, state="readonly", width=32)
@@ -1018,7 +1833,7 @@ def show_figures_tk(
     compose_btn = ttk.Button(topbar, text="Componer")
     compose_btn.pack(side="top", pady=(8, 0), fill="x")
 
-    composer_enabled = "Series by Pt" not in window_title
+    composer_enabled = True
 
     nb = ttk.Notebook(plot_frame)
     nb.pack(fill="both", expand=True)
@@ -1124,6 +1939,8 @@ def show_figures_tk(
         title_by_tab_id[tab_id] = tab_title
 
         is_pt_series = bool(getattr(fig, "_pt_series", False))
+        is_pre_stabilization = bool(getattr(fig, "_pre_stab_series", False))
+        is_multi_series = is_pt_series or is_pre_stabilization
         is_bode_plot = bool(getattr(fig, "_bode_plot", False))
 
         tlow = tab_title.lower()
@@ -1173,8 +1990,8 @@ def show_figures_tk(
         ax = fig.axes[0] if fig.axes else fig.add_subplot(111)
         line = ax.lines[0] if ax.lines else None
 
-        # --- Pt Series controls (only on Series vs Pt figures) ---
-        if getattr(fig, "_pt_series", False):
+        # --- Multi-axis series controls (Series vs Pt / Pre-estabilizacion) ---
+        if is_multi_series:
 
             def _apply_axis_color(ax, color: str, enabled: bool, side: str):
                 # side: "left" or "right"
@@ -1196,23 +2013,14 @@ def show_figures_tk(
             color_axes_var = tk.BooleanVar(value=True)
 
             def _refresh_axis_colors():
-                if "I" in lines and "I" in axes:
+                for key, side in series_sides:
+                    if key not in lines or key not in axes:
+                        continue
                     _apply_axis_color(
-                        axes["I"], lines["I"].get_color(),
-                        enabled=(color_axes_var.get() and lines["I"].get_visible()),
-                        side="left",
-                    )
-                if "V" in lines and "V" in axes:
-                    _apply_axis_color(
-                        axes["V"], lines["V"].get_color(),
-                        enabled=(color_axes_var.get() and lines["V"].get_visible()),
-                        side="right",
-                    )
-                if "T" in lines and "T" in axes:
-                    _apply_axis_color(
-                        axes["T"], lines["T"].get_color(),
-                        enabled=(color_axes_var.get() and lines["T"].get_visible()),
-                        side="right",
+                        axes[key],
+                        lines[key].get_color(),
+                        enabled=(color_axes_var.get() and lines[key].get_visible()),
+                        side=side,
                     )
             
             def _pick_series_color(k: str):
@@ -1237,11 +2045,14 @@ def show_figures_tk(
                     _update_legend()
                     canvas.draw_idle()
 
-            pt_box = ttk.LabelFrame(ctrl_frame, text="Series vs Pt", padding=8)
+            multi_title = "Series vs Pt" if is_pt_series else "Pre-estabilizacion"
+            pt_box = ttk.LabelFrame(ctrl_frame, text=multi_title, padding=8)
             pt_box.pack(fill="x", pady=(0, 10))
 
-            lines = getattr(fig, "_pt_lines", {})
-            ylabels = getattr(fig, "_pt_ylabels", {})
+            lines = getattr(fig, "_pt_lines", {}) if is_pt_series else getattr(fig, "_pre_stab_lines", {})
+            ylabels = getattr(fig, "_pt_ylabels", {}) if is_pt_series else {
+                key: line_obj.get_label() for key, line_obj in lines.items()
+            }
 
             style_nb = ttk.Notebook(pt_box)
             style_nb.pack(fill="x", pady=(8, 0))
@@ -1251,12 +2062,25 @@ def show_figures_tk(
             ttk.Checkbutton(pt_box, text="y-axes a color", variable=color_axes_var,
                 command=lambda: (_refresh_axis_colors(), canvas.draw_idle())).pack(anchor="w", pady=(6,0))
 
+            current_density_var = tk.BooleanVar(value=False)
+            current_density_state = {"value": False}
+            show_I = tk.BooleanVar(value=("I" in lines and lines["I"].get_visible()))
             show_V = tk.BooleanVar(value=("V" in lines and lines["V"].get_visible()))
             show_T = tk.BooleanVar(value=("T" in lines and lines["T"].get_visible()))
 
-            axes = getattr(fig, "_pt_axes", {})          # {"I": axI, "V": axV, "T": axT}
-            base_key = getattr(fig, "_pt_base_key", "I")
+            axes = getattr(fig, "_pt_axes", {}) if is_pt_series else getattr(fig, "_pre_stab_axes", {})
+            base_key = getattr(fig, "_pt_base_key", "I") if is_pt_series else "V"
             base_ax = axes.get(base_key, ax)
+            series_sides = (
+                (("I", "left"), ("V", "right"), ("T", "right"))
+                if is_pt_series
+                else (("V", "left"), ("I", "right"), ("T", "right"))
+            )
+
+            def _right_spacing_axes():
+                if is_pt_series:
+                    return axes
+                return {"V": axes.get("I"), "T": axes.get("T")}
 
             def _update_legend():
                 handles = []
@@ -1293,6 +2117,19 @@ def show_figures_tk(
                 except Exception:
                     return 6
 
+            def _current_x_tick_count() -> int:
+                try:
+                    return max(2, int(x_tick_count_var.get()))
+                except Exception:
+                    return 6
+
+            def _apply_pt_x_axis_scaling(nbins: int | None = None):
+                tick_count = _current_x_tick_count() if nbins is None else nbins
+                for axx in axes.values():
+                    axx.xaxis.set_major_locator(LinearLocator(tick_count))
+                    axx.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+                    axx.xaxis.get_offset_text().set_visible(False)
+
             def _apply_pt_axis_scaling(axk, nbins: int | None = None):
                 axk.yaxis.set_major_locator(LinearLocator(_current_tick_count() if nbins is None else nbins))
                 axk.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
@@ -1307,21 +2144,74 @@ def show_figures_tk(
                 if not xdata or not ydata:
                     return
 
-                tick_count = _current_tick_count()
-                x0, x1 = _snap_linear_limits(min(xdata), max(xdata), nbins=tick_count)
-                y0, y1 = _snap_linear_limits(min(ydata), max(ydata), nbins=tick_count, force_zero_floor=force_zero_floor)
+                x_tick_count = _current_x_tick_count()
+                y_tick_count = _current_tick_count()
+                x0, x1 = _snap_linear_limits(min(xdata), max(xdata), nbins=x_tick_count)
+                y0, y1 = _snap_linear_limits(min(ydata), max(ydata), nbins=y_tick_count, force_zero_floor=force_zero_floor)
 
                 axk.set_xlim(x0, x1)
                 axk.set_ylim(y0, y1)
-                _apply_pt_axis_scaling(axk, nbins=tick_count)
+                _apply_pt_x_axis_scaling(nbins=x_tick_count)
+                _apply_pt_axis_scaling(axk, nbins=y_tick_count)
+
+            def _apply_current_density():
+                if "I" not in lines or "I" not in axes:
+                    return
+
+                new_state = bool(current_density_var.get())
+                old_state = bool(current_density_state["value"])
+                area_cm2 = getattr(fig, "_pt_current_area_cm2", None)
+
+                if new_state and (area_cm2 is None or area_cm2 <= 0):
+                    mb.showerror(
+                        "Series vs Pt",
+                        "No se pudo leer un AREA valida de la metadata para convertir la corriente.",
+                    )
+                    current_density_var.set(old_state)
+                    return
+
+                ln = lines["I"]
+                absolute_values = getattr(ln, "_eis_abs_ydata", None)
+                if absolute_values is None:
+                    absolute_values = tuple(float(y) for y in ln.get_ydata(orig=False) if y is not None)
+                    ln._eis_abs_ydata = absolute_values
+
+                if new_state:
+                    y_values = [float(y) / area_cm2 for y in absolute_values]
+                    label = getattr(ln, "_eis_density_label", "Densidad de corriente (A/cm^2)")
+                else:
+                    y_values = [float(y) for y in absolute_values]
+                    label = getattr(ln, "_eis_abs_label", "Idc")
+
+                ln.set_ydata(y_values)
+                ln.set_label(label)
+                ylabels["I"] = label
+                axes["I"].set_ylabel(label)
+                current_density_state["value"] = new_state
+
+                if ln.get_visible():
+                    _autoscale_pt_axis(axes["I"], ln, force_zero_floor=False)
+                    try:
+                        pt_init_limits["I"] = axes["I"].get_ylim()
+                    except NameError:
+                        pass
+
+                _update_legend()
+                _refresh_axis_colors()
+                _update_right_axis_spacing(fig, canvas, _right_spacing_axes())
+                try:
+                    _update_limit_entries()
+                except NameError:
+                    pass
+                canvas.draw_idle()
 
             def _apply_visibility():
                 if "I" in lines:
-                    lines["I"].set_visible(True)
+                    lines["I"].set_visible(True if is_pt_series else bool(show_I.get()))
                 if "V" in lines: lines["V"].set_visible(bool(show_V.get()))
                 if "T" in lines: lines["T"].set_visible(bool(show_T.get()))
 
-                for key, side in (("I", "left"), ("V", "right"), ("T", "right")):
+                for key, side in series_sides:
                     axk = axes.get(key)
                     ln = lines.get(key)
                     if axk is None:
@@ -1329,7 +2219,7 @@ def show_figures_tk(
                     axis_visible = bool(ln is not None and ln.get_visible())
                     axk.yaxis.set_visible(axis_visible)
                     axk.yaxis.label.set_visible(axis_visible)
-                    if key == "I":
+                    if side == "left":
                         axk.tick_params(axis="y", labelleft=axis_visible, left=axis_visible, labelright=False, right=False)
                     else:
                         axk.tick_params(axis="y", labelleft=False, left=False, labelright=axis_visible, right=axis_visible)
@@ -1337,19 +2227,23 @@ def show_figures_tk(
                         axk.spines[side].set_visible(axis_visible)
 
                 # decide master (Idc preferred)
-                visible_keys = [k for k in ("I", "V", "T") if k in lines and lines[k].get_visible()]
+                visible_keys = [k for k, _side in series_sides if k in lines and lines[k].get_visible()]
                 for axx in axes.values():
                     axx.grid(False)
 
                 if visible_keys:
-                    master_key = "I" if "I" in visible_keys else visible_keys[0]
+                    master_key = (
+                        "I" if is_pt_series and "I" in visible_keys
+                        else "V" if is_pre_stabilization and "V" in visible_keys
+                        else visible_keys[0]
+                    )
                     master_ax = axes[master_key]
                     master_ax.grid(True)
 
                     for key in visible_keys:
                         _autoscale_pt_axis(axes[key], lines[key], force_zero_floor=False)
 
-                _update_right_axis_spacing(fig, canvas, axes)
+                _update_right_axis_spacing(fig, canvas, _right_spacing_axes())
 
                 _update_legend()
                 _refresh_axis_colors()
@@ -1402,7 +2296,12 @@ def show_figures_tk(
                 else:
                     entry.configure(bg="white", fg="black")
 
-            for k, title in (("I", "Idc"), ("V", "Vdc"), ("T", "Temp")):
+            series_titles = (
+                (("I", "Idc"), ("V", "Vdc"), ("T", "Temp"))
+                if is_pt_series
+                else (("I", "Corriente"), ("V", "Voltaje"), ("T", "Temperatura"))
+            )
+            for k, title in series_titles:
                 if k not in lines:
                     continue
 
@@ -1463,8 +2362,46 @@ def show_figures_tk(
                 sp_lw.bind("<KeyRelease>", lambda e, kk=k: _apply_series_style(kk))
                 sp_ms.bind("<KeyRelease>", lambda e, kk=k: _apply_series_style(kk))
 
-            ttk.Checkbutton(pt_box, text="Vdc", variable=show_V, command=_apply_visibility).pack(anchor="w")
-            ttk.Checkbutton(pt_box, text="Temp", variable=show_T, command=_apply_visibility).pack(anchor="w")
+            if is_pt_series and "I" in lines:
+                ttk.Checkbutton(
+                    pt_box,
+                    text="Densidad de corriente",
+                    variable=current_density_var,
+                    command=_apply_current_density,
+                ).pack(anchor="w", pady=(8, 0))
+            if is_pre_stabilization and "I" in lines:
+                ttk.Checkbutton(pt_box, text="Corriente", variable=show_I, command=_apply_visibility).pack(anchor="w")
+            ttk.Checkbutton(
+                pt_box,
+                text="Vdc" if is_pt_series else "Voltaje",
+                variable=show_V,
+                command=_apply_visibility,
+            ).pack(anchor="w")
+            ttk.Checkbutton(
+                pt_box,
+                text="Temp" if is_pt_series else "Temperatura",
+                variable=show_T,
+                command=_apply_visibility,
+            ).pack(anchor="w")
+            if is_pt_series:
+                pt_sources[tab_title] = {
+                    "lines": lines,
+                    "axes": axes,
+                    "fig": fig,
+                }
+            else:
+                pre_stabilization_sources[tab_title] = {
+                    "lines": lines,
+                    "axes": axes,
+                    "fig": fig,
+                }
+
+        if is_pre_stabilization:
+            pre_stabilization_sources[tab_title] = {
+                "lines": getattr(fig, "_pre_stab_lines", {}),
+                "axes": getattr(fig, "_pre_stab_axes", {}),
+                "fig": fig,
+            }
 
         if line is not None and not is_bode_plot:
             if "nyquist" in tlow:
@@ -1518,7 +2455,12 @@ def show_figures_tk(
         init_lw = float(line.get_linewidth()) if line else 1.0
         init_ms = float(line.get_markersize()) if line else 4.0
         tick_count_var = tk.IntVar(value=6)
-        pt_axes = getattr(fig, "_pt_axes", {}) if is_pt_series else {}
+        x_tick_count_var = tk.IntVar(value=6)
+        pt_axes = (
+            getattr(fig, "_pt_axes", {})
+            if is_pt_series
+            else getattr(fig, "_pre_stab_axes", {}) if is_pre_stabilization else {}
+        )
         pt_limit_vars: dict[str, dict[str, tk.StringVar]] = {}
         pt_init_limits: dict[str, tuple[float, float]] = {}
         bode_axes = getattr(fig, "_bode_axes", {}) if is_bode_plot else {}
@@ -1529,7 +2471,7 @@ def show_figures_tk(
         bode_style_vars: dict[str, dict[str, object]] = {}
         bode_color_axes_var = tk.BooleanVar(value=True) if is_bode_plot else None
 
-        if is_pt_series:
+        if is_multi_series:
             for key in ("I", "V", "T"):
                 axk = pt_axes.get(key)
                 if axk is None:
@@ -1584,7 +2526,7 @@ def show_figures_tk(
             xmax_var.set(_fmt(a1))
             ymin_var.set(_fmt(b0))
             ymax_var.set(_fmt(b1))
-            if is_pt_series:
+            if is_multi_series:
                 for key, vars_map in pt_limit_vars.items():
                     axk = pt_axes.get(key)
                     if axk is None:
@@ -1611,7 +2553,7 @@ def show_figures_tk(
                 return None
 
         def apply_axes(live: bool = False):
-            if is_pt_series:
+            if is_multi_series:
                 raw_values = [xmin_var.get(), xmax_var.get()]
                 for vars_map in pt_limit_vars.values():
                     raw_values.extend([vars_map["min"].get(), vars_map["max"].get()])
@@ -1636,6 +2578,7 @@ def show_figures_tk(
                     axk.set_xlim(new_x0, new_x1)
                     axk.set_ylim(cur_y0 if ny0 is None else ny0, cur_y1 if ny1 is None else ny1)
                     _apply_pt_axis_scaling(axk)
+                _apply_pt_x_axis_scaling()
 
                 canvas.draw_idle()
                 if not live:
@@ -1716,7 +2659,7 @@ def show_figures_tk(
                 _update_limit_entries()
 
         def reset_axes():
-            if is_pt_series:
+            if is_multi_series:
                 ax.set_xlim(*init_xlim)
                 for key, limits in pt_init_limits.items():
                     axk = pt_axes.get(key)
@@ -1725,6 +2668,7 @@ def show_figures_tk(
                     axk.set_xlim(*init_xlim)
                     axk.set_ylim(*limits)
                     _apply_pt_axis_scaling(axk)
+                _apply_pt_x_axis_scaling()
                 canvas.draw_idle()
                 _update_limit_entries()
                 return
@@ -1753,7 +2697,7 @@ def show_figures_tk(
 
         def autoscale_axes():
             tick_count = max(2, int(tick_count_var.get()))
-            if is_pt_series:
+            if is_multi_series:
                 _apply_visibility()
                 _update_limit_entries()
                 return
@@ -1995,11 +2939,6 @@ def show_figures_tk(
         refresh_frequency_labels = None
 
         def apply_fonts():
-
-            if getattr(fig, "_pt_series", False):
-                axes = getattr(fig, "_pt_axes", {})
-                _update_right_axis_spacing(fig, canvas, axes)
-
             # Apply to all axes in the figure (safe even if later you add multi-axes figs)
             try:
                 tfs = float(tick_fs_var.get())
@@ -2020,7 +2959,7 @@ def show_figures_tk(
                         t.set_fontsize(gfs)
                     make_legend_draggable(leg)
 
-            if is_pt_series:
+            if is_multi_series:
                 _update_legend()
             if is_bode_plot:
                 _apply_bode_visibility()
@@ -2032,6 +2971,9 @@ def show_figures_tk(
                 fig.tight_layout()
             except Exception:
                 pass
+
+            if is_multi_series:
+                _update_right_axis_spacing(fig, canvas, _right_spacing_axes())
 
             canvas.draw_idle()
 
@@ -2069,7 +3011,7 @@ def show_figures_tk(
         next_row += 1
         axis_entries.append(_row(axes_box, next_row, "Xmax", xmax_var))
         next_row += 1
-        if is_pt_series:
+        if is_multi_series:
             for key, label in (("I", "I"), ("V", "V"), ("T", "T")):
                 if key not in pt_limit_vars:
                     continue
@@ -2090,8 +3032,16 @@ def show_figures_tk(
             next_row += 1
             axis_entries.append(_row(axes_box, next_row, "Ymax", ymax_var))
             next_row += 1
-        ttk.Label(axes_box, text="Ticks", width=5).grid(row=next_row, column=0, sticky="w", padx=(0, 6), pady=2)
-        tick_count_spin = ttk.Spinbox(axes_box, from_=2, to=12, increment=1, textvariable=tick_count_var, width=10)
+        x_tick_count_spin = None
+        if is_multi_series:
+            ttk.Label(axes_box, text="X ticks", width=7).grid(row=next_row, column=0, sticky="w", padx=(0, 6), pady=2)
+            x_tick_count_spin = ttk.Spinbox(axes_box, from_=2, to=20, increment=1, textvariable=x_tick_count_var, width=10)
+            x_tick_count_spin.grid(row=next_row, column=1, sticky="w", pady=2)
+            next_row += 1
+            ttk.Label(axes_box, text="Y ticks", width=7).grid(row=next_row, column=0, sticky="w", padx=(0, 6), pady=2)
+        else:
+            ttk.Label(axes_box, text="Ticks", width=5).grid(row=next_row, column=0, sticky="w", padx=(0, 6), pady=2)
+        tick_count_spin = ttk.Spinbox(axes_box, from_=2, to=20, increment=1, textvariable=tick_count_var, width=10)
         tick_count_spin.grid(row=next_row, column=1, sticky="w", pady=2)
 
         pending_axes = {"id": None}
@@ -2113,6 +3063,10 @@ def show_figures_tk(
         tick_count_spin.configure(command=autoscale_axes)
         tick_count_spin.bind("<Return>", lambda ev: autoscale_axes())
         tick_count_spin.bind("<FocusOut>", lambda ev: autoscale_axes())
+        if x_tick_count_spin is not None:
+            x_tick_count_spin.configure(command=autoscale_axes)
+            x_tick_count_spin.bind("<Return>", lambda ev: autoscale_axes())
+            x_tick_count_spin.bind("<FocusOut>", lambda ev: autoscale_axes())
 
         if is_bode_plot:
             bode_box = ttk.LabelFrame(ctrl_frame, text="Bode", padding=8)
@@ -2191,7 +3145,7 @@ def show_figures_tk(
                 sp_ms.bind("<KeyRelease>", lambda e, kk=key: _apply_bode_style(kk))
 
         style_box = ttk.LabelFrame(ctrl_frame, text="Estilo", padding=8)
-        if not is_pt_series and not is_bode_plot:
+        if not is_multi_series and not is_bode_plot:
             style_box.pack(fill="x", pady=(0, 10))
         # else: don’t pack it (it won’t appear, but code stays safe)
 
@@ -2572,7 +3526,7 @@ def show_figures_tk(
         title_entry.bind("<FocusOut>", lambda e: apply_title_text())
         title_entry.bind("<KeyRelease>", _schedule_title)
 
-        if is_pt_series:
+        if is_multi_series:
             _apply_visibility()
 
         if is_bode_plot:
@@ -3568,7 +4522,22 @@ def show_figures_tk(
             open_composer_bode()
             return
 
-        mb.showinfo("Componer", "Componer está disponible para gráficos Nyquist y Bode.")
+        if "series vs pt" in key or "series by pt" in key:
+            _open_composer_pt(win, pt_sources, font_defaults)
+            return
+
+        if "pre-estabiliz" in key:
+            _open_composer_pt(
+                win,
+                pre_stabilization_sources,
+                font_defaults,
+                window_title="Composite (Pre-estabilizacion)",
+                default_title="Composite - Pre-estabilizacion",
+                sources_title="Pre-estabilizacion sources",
+            )
+            return
+
+        mb.showinfo("Componer", "Componer esta disponible para graficos Nyquist, Bode, Series vs Pt y Pre-estabilizacion.")
 
     compose_btn.configure(command=open_composer_for_current)
 
@@ -3592,11 +4561,30 @@ def find_eis_files(input_dir: Path) -> list[Path]:
         ]
     )
 
-def export_folder(input_dir: Path, output_dir: Path) -> list[Path]:
+def find_pre_stabilization_files(input_dir: Path) -> list[Path]:
+    return sorted(
+        [
+            p for p in input_dir.iterdir()
+            if p.is_file() and p.suffix.lower() == ".dta" and p.name.lower().startswith("est_eis")
+        ]
+    )
+
+
+def _wants_pre_stabilization(selected_options: Iterable[str] | None) -> bool:
+    return any("pre-estabiliz" in option.lower() for option in (selected_options or []))
+
+
+def export_folder(
+    input_dir: Path,
+    output_dir: Path,
+    *,
+    include_pre_stabilization: bool = False,
+) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dta_files = find_eis_files(input_dir)
-    if not dta_files:
+    pre_stabilization_files = find_pre_stabilization_files(input_dir) if include_pre_stabilization else []
+    if not dta_files and not pre_stabilization_files:
         return []
 
     exported_xlsx: list[Path] = []
@@ -3605,6 +4593,18 @@ def export_folder(input_dir: Path, output_dir: Path) -> list[Path]:
         parsed = parse_gamry_dta(dta_file)
         xlsx_path = output_dir / f"{dta_file.stem}.xlsx"
         export_to_xlsx(parsed, xlsx_path)
+        exported_xlsx.append(xlsx_path)
+
+    for dta_file in pre_stabilization_files:
+        parsed = parse_gamry_curve_dta(dta_file)
+        xlsx_path = output_dir / f"{dta_file.stem}.xlsx"
+        export_to_xlsx(
+            parsed,
+            xlsx_path,
+            meta_fields=PRE_STAB_META_FIELDS,
+            data_map=PRE_STAB_DATA_MAP,
+            numeric_meta_keys={"ISTEP1", "TSTEP1", "SAMPLETIME", "AREA"},
+        )
         exported_xlsx.append(xlsx_path)
 
     return exported_xlsx
@@ -3618,22 +4618,30 @@ def run_pipeline(
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
 
-    exported_xlsx = export_folder(input_dir, output_dir)
+    chosen = set(selected_options or [])
+    wants_pre_stabilization = _wants_pre_stabilization(chosen)
+
+    exported_xlsx = export_folder(
+        input_dir,
+        output_dir,
+        include_pre_stabilization=wants_pre_stabilization,
+    )
 
     if not exported_xlsx:
         return []
 
-    chosen = set(selected_options or [])
     if not chosen:
         return exported_xlsx
 
     dta_files = find_eis_files(input_dir)
+    pre_stabilization_files = find_pre_stabilization_files(input_dir) if wants_pre_stabilization else []
     plot_entries = _collect_eis_plot_entries(dta_files)
 
     option_order = [
         "Nyquist plot",
         "Bode plot",
         "Series by Pt",
+        "Pre-estabilización",
         "Equivalent circuit fit",
         "MultiFit",
     ]
@@ -3649,8 +4657,15 @@ def run_pipeline(
             continue
 
         option_figs: list[tuple[str, Figure]] = []
-        for entry in plot_entries:
-            option_figs.extend(build_figures(entry, [option], font_defaults=font_defaults))
+        if _wants_pre_stabilization([option]):
+            pre_entries = _collect_pre_stabilization_entries(pre_stabilization_files)
+            for entry in pre_entries:
+                fig = fig_pre_stabilization(entry, font_defaults=font_defaults)
+                if fig is not None:
+                    option_figs.append((f"{entry.display_name} - Pre-estabilizacion", fig))
+        else:
+            for entry in plot_entries:
+                option_figs.extend(build_figures(entry, [option], font_defaults=font_defaults))
 
         if option_figs:
             show_figures_tk(option_figs, window_title=f"EIS - {option}", font_defaults=font_defaults)
@@ -3663,7 +4678,7 @@ def main() -> None:
     input_dir = Path(r"C:\\path\\to\\your\\input")
     output_dir = Path(r"C:\\path\\to\\your\\output")
 
-    exported = export_folder(input_dir, output_dir, selected_options=["Nyquist plot", "Bode plot"])
+    exported = export_folder(input_dir, output_dir)
     print(f"Exported {len(exported)} file(s)")
     for path in exported:
         print(" -", path)

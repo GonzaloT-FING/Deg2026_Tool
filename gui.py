@@ -18,7 +18,7 @@ PIPELINE_OPTIONS = {
     "Activacion": ["V vs t", "V vs I", "dV/dI"],
     "OCP": ["V vs t", "DeltaV"],
     "CV": ["I vs V", "Peak current"],
-    "EIS": ["Nyquist plot", "Bode plot", "Series by Pt", "MultiFit"],
+    "EIS": ["Nyquist plot", "Bode plot", "Series by Pt", "Pre-estabilización", "MultiFit"],
     "PC": ["V vs I", "Series by time", "dV/dI", "Step Stability"],
     "Deg": ["V vs t", "dV/dt"],
     "Analisis multiple": ["EIS", "CV", "PC", "OCP", "Deg"],
@@ -44,7 +44,7 @@ RUNNERS = {
 }
 
 NOT_FOUND_MSG = {
-    "EIS": "No se encontraron archivos .DTA con 'EISPOT' en la carpeta de entrada.",
+    "EIS": "No se encontraron archivos .DTA con 'EISPOT' o 'Est_EIS' en la carpeta de entrada.",
     "PC": "No se encontraron archivos .DTA con 'Curva_Polarizacion_' en la carpeta de entrada.",
     "OCP": "No se encontraron archivos .DTA con 'OCP_' en la carpeta de entrada.",
     "CV": "No se encontraron archivos .DTA con 'Voltametria_ciclica' en la carpeta de entrada.",
