@@ -3357,10 +3357,16 @@ def show_figures_tk(
             manual_label_idxs: list[int] = []
             auto_label_spec: dict[str, float | int] | None = None
 
-            def _sync_freq_label_metadata(idxs: list[int], spec: dict[str, float | int] | None = None):
+            def _sync_freq_label_metadata(
+                idxs: list[int],
+                spec: dict[str, float | int] | None = None,
+                label_fontsize: float | None = None,
+            ):
                 try:
                     line._freq_label_idxs = list(idxs)  # type: ignore[attr-defined]
                     line._freq_label_spec = spec        # type: ignore[attr-defined]
+                    if label_fontsize is not None:
+                        line._freq_label_fontsize = float(label_fontsize)  # type: ignore[attr-defined]
                 except Exception:
                     pass
 
@@ -3399,7 +3405,7 @@ def show_figures_tk(
                     static_artists.append(a)
 
                 spec = auto_label_spec if auto_label_idxs and not manual_label_idxs and idxs == sorted(auto_label_idxs) else None
-                _sync_freq_label_metadata(idxs, spec)
+                _sync_freq_label_metadata(idxs, spec, label_fs)
                 canvas.draw_idle()
 
             refresh_frequency_labels = _redraw_frequency_labels
@@ -3676,6 +3682,10 @@ def show_figures_tk(
 
             xdata = list(dst_line.get_xdata(orig=False))
             ydata = list(dst_line.get_ydata(orig=False))
+            try:
+                label_fs = float(label_fs_var.get())
+            except (tk.TclError, ValueError):
+                label_fs = float(font_defaults.label)
 
             arts: list[object] = []
             for i in idxs:
@@ -3685,7 +3695,7 @@ def show_figures_tk(
                     xy=(xdata[i], ydata[i]),
                     xytext=(6, 6),
                     textcoords="offset points",
-                    fontsize=8.5,
+                    fontsize=label_fs,
                     bbox=dict(boxstyle="round,pad=0.15", fc="white", alpha=0.7),
                 )
                 arts.append(a)
@@ -3752,6 +3762,12 @@ def show_figures_tk(
             axc.yaxis.set_major_locator(MaxNLocator(nbins=y_tick_count))
             axc.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
             axc.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+            for artists in comp_label_artists.values():
+                for artist in artists:
+                    try:
+                        artist.set_fontsize(label_fs)
+                    except Exception:
+                        pass
             _apply_legend(redraw=False)
             if redraw:
                 canvas.draw_idle()
