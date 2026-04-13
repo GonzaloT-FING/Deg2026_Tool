@@ -381,6 +381,14 @@ def _column_unit(parsed: ParsedDTA, column_name: str) -> str:
         return ""
     return unit
 
+def _impedance_unit(parsed: ParsedDTA, column_name: str) -> str:
+    unit = _column_unit(parsed, column_name).strip()
+    if not unit:
+        return "ohm"
+    if unit.lower() in {"ohm", "ohms"}:
+        return "ohm"
+    return unit
+
 def _metadata_area_cm2(parsed: ParsedDTA) -> float | None:
     area = to_float(parsed.meta_values.get("AREA", ""))
     if area is None or area <= 0:
@@ -554,13 +562,13 @@ def _build_eis_display_name(path: Path, parsed: ParsedDTA) -> tuple[str, int | N
     parts: list[str] = []
     if current_label:
         if stage_number is not None:
-            parts.append(f"Stage {stage_number}")
+            parts.append(f"Etapa {stage_number}")
         parts.append(current_label)
         if voltage_label:
             parts.append(voltage_label)
     elif characterization_label:
         if stage_number is not None:
-            parts.append(f"Stage {stage_number}")
+            parts.append(f"Etapa {stage_number}")
         if voltage_label:
             parts.append(voltage_label)
         parts.append(characterization_label)
@@ -568,7 +576,7 @@ def _build_eis_display_name(path: Path, parsed: ParsedDTA) -> tuple[str, int | N
     # Only prettify filenames when they match the expected naming schemes.
     # Non-standard 0 V measurements should keep their stem so the composer
     # treats them as independent series instead of merging them under a
-    # generic label such as "Stage N / 0V".
+    # generic label such as "Etapa N / 0V".
     display_name = " / ".join(parts) if parts else stem
     return display_name, stage_number, current_label, voltage_label, current_value
 
@@ -655,7 +663,7 @@ def _build_pre_stabilization_display_name(path: Path) -> tuple[str, int | None, 
 
     parts: list[str] = []
     if stage_number is not None:
-        parts.append(f"Stage {stage_number}")
+        parts.append(f"Etapa {stage_number}")
     if current_label:
         parts.append(current_label)
 
@@ -830,8 +838,8 @@ def fig_nyquist(
     ax.set_aspect("equal", adjustable="box")
     ax.margins(0.05)
 
-    x_unit = _column_unit(parsed, "Zreal")
-    y_unit = _column_unit(parsed, "Zimag")
+    x_unit = _impedance_unit(parsed, "Zreal")
+    y_unit = _impedance_unit(parsed, "Zimag")
     ax.set_title(plot_title or _technique_name(parsed))
     ax.set_xlabel(f"Zreal ({x_unit})" if x_unit else "Zreal")
     ax.set_ylabel(f"-Zimag ({y_unit})" if y_unit else "-Zimag")
@@ -3581,14 +3589,14 @@ def show_figures_tk(
             axc.set_aspect("equal", adjustable="box")
             axc.grid(True)
             axc.set_title("Composite - Nyquist")
-            axc.set_xlabel("Zreal")
-            axc.set_ylabel("-Zimag")
+            axc.set_xlabel("Zreal (ohm)")
+            axc.set_ylabel("-Zimag (ohm)")
 
         axc.set_aspect("equal", adjustable="box")
         axc.grid(True)
         axc.set_title("Composite - Nyquist")
-        axc.set_xlabel("Zreal")
-        axc.set_ylabel("-Zimag")
+        axc.set_xlabel("Zreal (ohm)")
+        axc.set_ylabel("-Zimag (ohm)")
 
         canvas = FigureCanvasTkAgg(figc, master=plot_frame)
         canvas.draw()

@@ -1129,7 +1129,7 @@ def draw_dv_dt_on_figure(
         ax.plot(
             [row["time"] for row in delta_rows],
             [row["dVdt"] for row in delta_rows],
-            label=f"Stage #{deg_file.stage} dV/dt",
+            label=f"Etapa #{deg_file.stage} dV/dt",
             **_line_kwargs(color),
         )
 
@@ -1238,7 +1238,7 @@ def draw_v_vs_t_on_figure(
                 color=voltage_color,
                 linewidth=line_width,
                 linestyle=_mpl_linestyle(voltage_linestyle),
-                label=f"Stage #{deg_file.stage} V",
+                label=f"Etapa #{deg_file.stage} V",
             )
 
             if show_fit_line:
@@ -1310,7 +1310,7 @@ def draw_v_vs_t_on_figure(
                 color=temperature_color,
                 linewidth=line_width,
                 linestyle=_mpl_linestyle(temperature_linestyle),
-                label=f"Stage #{deg_file.stage} T",
+                label=f"Etapa #{deg_file.stage} T",
             )
 
     default_title = "V vs t - Degradacion galvanostatica"
