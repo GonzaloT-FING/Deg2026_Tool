@@ -3714,6 +3714,15 @@ def show_figures_tk(
         tick_fs_var = tk.DoubleVar(value=init_tick_fs)
         x_tick_count_var = tk.IntVar(value=6)
         y_tick_count_var = tk.IntVar(value=6)
+        inset_enabled_var = tk.BooleanVar(value=False)
+        inset_markers_var = tk.BooleanVar(value=True)
+        inset_position_var = tk.StringVar(value="Upper right")
+        inset_scale_var = tk.DoubleVar(value=0.35)
+        inset_xmin_var = tk.StringVar()
+        inset_xmax_var = tk.StringVar()
+        inset_ymin_var = tk.StringVar()
+        inset_ymax_var = tk.StringVar()
+        inset_state = {"ax": None, "indicator": None, "win": None, "bounds": None, "drag": None}
 
         def _apply_legend(redraw: bool = True):
             # Always remove existing legend first (prevents stacking / stale legends)
@@ -3769,6 +3778,7 @@ def show_figures_tk(
                     except Exception:
                         pass
             _apply_legend(redraw=False)
+            _rebuild_zoom_inset(redraw=False)
             if redraw:
                 canvas.draw_idle()
 
@@ -3801,6 +3811,391 @@ def show_figures_tk(
             except Exception:
                 pass
 
+        def _remove_inset_indicator():
+            indicator = inset_state.get("indicator")
+            if indicator is None:
+                return
+            try:
+                indicator.remove()
+            except Exception:
+                if isinstance(indicator, tuple):
+                    for artist in indicator:
+                        if isinstance(artist, tuple):
+                            for child in artist:
+                                try:
+                                    child.remove()
+                                except Exception:
+                                    pass
+                        else:
+                            try:
+                                artist.remove()
+                            except Exception:
+                                pass
+            finally:
+                inset_state["indicator"] = None
+
+        def _clear_zoom_inset():
+            inset_state["drag"] = None
+            _remove_inset_indicator()
+            ax_inset = inset_state.get("ax")
+            if ax_inset is not None:
+                try:
+                    figc.delaxes(ax_inset)
+                except Exception:
+                    try:
+                        ax_inset.remove()
+                    except Exception:
+                        pass
+            inset_state["ax"] = None
+
+        def _inset_size() -> float:
+            try:
+                size = float(inset_scale_var.get())
+            except (tk.TclError, ValueError):
+                size = 0.35
+            return min(0.70, max(0.12, size))
+
+        def _clamp_inset_bounds(x: float, y: float, size: float) -> list[float]:
+            parent_bbox = axc.get_position()
+            x_min = -parent_bbox.x0 / parent_bbox.width
+            y_min = -parent_bbox.y0 / parent_bbox.height
+            size = min(0.70, max(0.12, size))
+            x_max = (1.0 - parent_bbox.x0 - size * parent_bbox.width) / parent_bbox.width
+            y_max = (1.0 - parent_bbox.y0 - size * parent_bbox.height) / parent_bbox.height
+            return [
+                min(max(x_min, x), x_max),
+                min(max(y_min, y), y_max),
+                size,
+                size,
+            ]
+
+        def _clamp_inset_size_for_anchor(x: float, y: float, size: float) -> float:
+            parent_bbox = axc.get_position()
+            max_x_size = (1.0 - parent_bbox.x0 - x * parent_bbox.width) / parent_bbox.width
+            max_y_size = (1.0 - parent_bbox.y0 - y * parent_bbox.height) / parent_bbox.height
+            max_size = max(0.12, min(0.70, max_x_size, max_y_size))
+            return min(max(0.12, size), max_size)
+
+        def _default_inset_bounds(size: float) -> list[float]:
+            pad = 0.06
+            pos = inset_position_var.get()
+            if pos == "Upper left":
+                return [pad, 1.0 - pad - size, size, size]
+            if pos == "Lower left":
+                return [pad, pad, size, size]
+            if pos == "Lower right":
+                return [1.0 - pad - size, pad, size, size]
+            return [1.0 - pad - size, 1.0 - pad - size, size, size]
+
+        def _inset_bounds() -> list[float]:
+            size = _inset_size()
+            custom_bounds = inset_state.get("bounds")
+            if custom_bounds is not None:
+                x, y = custom_bounds[0], custom_bounds[1]
+                return _clamp_inset_bounds(float(x), float(y), size)
+            return _default_inset_bounds(size)
+
+        def _set_inset_bounds(bounds: list[float], *, redraw: bool = True):
+            size = float(bounds[2]) if len(bounds) >= 3 else _inset_size()
+            new_bounds = _clamp_inset_bounds(float(bounds[0]), float(bounds[1]), size)
+            inset_state["bounds"] = new_bounds
+            try:
+                inset_scale_var.set(new_bounds[2])
+            except Exception:
+                pass
+            ax_inset = inset_state.get("ax")
+            if ax_inset is None:
+                return
+
+            ax_inset.set_position(_inset_fig_bounds(new_bounds))
+
+            _remove_inset_indicator()
+            if inset_markers_var.get():
+                try:
+                    inset_state["indicator"] = axc.indicate_inset_zoom(
+                        ax_inset,
+                        edgecolor="0.35",
+                        alpha=0.8,
+                    )
+                    _style_inset_indicator()
+                except Exception:
+                    inset_state["indicator"] = None
+
+            if redraw:
+                canvas.draw_idle()
+
+        def _inset_fig_bounds(bounds: list[float]) -> list[float]:
+            parent_bbox = axc.get_position()
+            return [
+                parent_bbox.x0 + bounds[0] * parent_bbox.width,
+                parent_bbox.y0 + bounds[1] * parent_bbox.height,
+                bounds[2] * parent_bbox.width,
+                bounds[3] * parent_bbox.height,
+            ]
+
+        def _style_inset_indicator():
+            indicator = inset_state.get("indicator")
+            if indicator is None:
+                return
+
+            def _walk_artists(value):
+                if isinstance(value, tuple):
+                    for child in value:
+                        yield from _walk_artists(child)
+                else:
+                    yield value
+
+            for artist in _walk_artists(indicator):
+                try:
+                    artist.set_zorder(4)
+                    artist.set_picker(False)
+                except Exception:
+                    pass
+
+        def _style_inset_axes(ax_inset):
+            ax_inset.set_zorder(10)
+            try:
+                ax_inset.patch.set_facecolor("white")
+                ax_inset.patch.set_alpha(0.92)
+                ax_inset.patch.set_zorder(10)
+            except Exception:
+                pass
+            for spine in ax_inset.spines.values():
+                spine.set_zorder(11)
+
+        def _inset_float(var: tk.StringVar) -> float | None:
+            text = var.get().strip()
+            if not text:
+                return None
+            try:
+                return float(text)
+            except ValueError:
+                return None
+
+        def _rebuild_zoom_inset(redraw: bool = True):
+            _clear_zoom_inset()
+            if not inset_enabled_var.get() or not comp_lines:
+                if redraw:
+                    canvas.draw_idle()
+                return
+
+            raws = [
+                inset_xmin_var.get(),
+                inset_xmax_var.get(),
+                inset_ymin_var.get(),
+                inset_ymax_var.get(),
+            ]
+            if any(_is_incomplete_number(raw) for raw in raws) or any(not raw.strip() for raw in raws):
+                if redraw:
+                    canvas.draw_idle()
+                return
+
+            x0 = _inset_float(inset_xmin_var)
+            x1 = _inset_float(inset_xmax_var)
+            y0 = _inset_float(inset_ymin_var)
+            y1 = _inset_float(inset_ymax_var)
+            if x0 is None or x1 is None or y0 is None or y1 is None or x0 == x1 or y0 == y1:
+                if redraw:
+                    canvas.draw_idle()
+                return
+
+            bounds = _inset_bounds()
+            ax_inset = figc.add_axes(_inset_fig_bounds(bounds))
+            inset_state["ax"] = ax_inset
+            inset_state["bounds"] = bounds
+            _style_inset_axes(ax_inset)
+            ax_inset.set_aspect("equal", adjustable="box")
+            ax_inset.grid(True)
+
+            try:
+                tick_fs = float(tick_fs_var.get())
+            except (tk.TclError, ValueError):
+                tick_fs = float(font_defaults.tick)
+            ax_inset.tick_params(axis="both", labelsize=tick_fs)
+            ax_inset.xaxis.set_major_locator(MaxNLocator(nbins=4))
+            ax_inset.yaxis.set_major_locator(MaxNLocator(nbins=4))
+            ax_inset.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+            ax_inset.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+
+            for src_line in comp_lines.values():
+                x = list(src_line.get_xdata(orig=False))
+                y = list(src_line.get_ydata(orig=False))
+                (ln,) = ax_inset.plot(x, y, label="_nolegend_")
+                _copy_style(src_line, ln)
+
+            ax_inset.set_xlim(x0, x1)
+            ax_inset.set_ylim(y0, y1)
+
+            if inset_markers_var.get():
+                try:
+                    inset_state["indicator"] = axc.indicate_inset_zoom(
+                        ax_inset,
+                        edgecolor="0.35",
+                        alpha=0.8,
+                    )
+                    _style_inset_indicator()
+                except Exception:
+                    inset_state["indicator"] = None
+
+            if redraw:
+                canvas.draw_idle()
+
+        def _set_inset_from_main_view():
+            x0, x1 = axc.get_xlim()
+            y0, y1 = axc.get_ylim()
+            inset_xmin_var.set(_fmt(x0))
+            inset_xmax_var.set(_fmt(x1))
+            inset_ymin_var.set(_fmt(y0))
+            inset_ymax_var.set(_fmt(y1))
+            _rebuild_zoom_inset()
+
+        def _open_inset_window():
+            existing = inset_state.get("win")
+            if existing is not None and existing.winfo_exists():
+                existing.lift()
+                existing.focus_force()
+                return
+
+            popup = tk.Toplevel(comp)
+            inset_state["win"] = popup
+            popup.title("Inset")
+            popup.geometry("320x360")
+
+            if not any(
+                var.get().strip()
+                for var in (inset_xmin_var, inset_xmax_var, inset_ymin_var, inset_ymax_var)
+            ):
+                x0, x1 = axc.get_xlim()
+                y0, y1 = axc.get_ylim()
+                inset_xmin_var.set(f"{x0:.6g}")
+                inset_xmax_var.set(f"{x1:.6g}")
+                inset_ymin_var.set(f"{y0:.6g}")
+                inset_ymax_var.set(f"{y1:.6g}")
+
+            body = ttk.Frame(popup, padding=12)
+            body.pack(fill="both", expand=True)
+            body.columnconfigure(1, weight=1)
+
+            ttk.Checkbutton(body, text="Show inset", variable=inset_enabled_var, command=_rebuild_zoom_inset).grid(
+                row=0, column=0, columnspan=2, sticky="w", pady=(0, 6)
+            )
+            ttk.Checkbutton(body, text="Show zoom markers", variable=inset_markers_var, command=_rebuild_zoom_inset).grid(
+                row=1, column=0, columnspan=2, sticky="w", pady=(0, 10)
+            )
+
+            def _popup_row(row: int, label: str, var: tk.StringVar):
+                ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
+                entry = ttk.Entry(body, textvariable=var, width=12)
+                entry.grid(row=row, column=1, sticky="ew", pady=2)
+                entry.bind("<Return>", lambda _ev: _rebuild_zoom_inset())
+                entry.bind("<FocusOut>", lambda _ev: _rebuild_zoom_inset())
+                return entry
+
+            _popup_row(2, "Xmin", inset_xmin_var)
+            _popup_row(3, "Xmax", inset_xmax_var)
+            _popup_row(4, "Ymin", inset_ymin_var)
+            _popup_row(5, "Ymax", inset_ymax_var)
+
+            ttk.Label(body, text="Scale").grid(row=6, column=0, sticky="w", padx=(0, 8), pady=(10, 2))
+            scale_spin = ttk.Spinbox(
+                body,
+                from_=0.12,
+                to=0.70,
+                increment=0.05,
+                textvariable=inset_scale_var,
+                width=10,
+                command=_rebuild_zoom_inset,
+            )
+            scale_spin.grid(row=6, column=1, sticky="w", pady=(10, 2))
+
+            ttk.Label(body, text="Position").grid(row=7, column=0, sticky="w", padx=(0, 8), pady=2)
+            pos_combo = ttk.Combobox(
+                body,
+                textvariable=inset_position_var,
+                values=("Upper right", "Upper left", "Lower right", "Lower left"),
+                state="readonly",
+                width=14,
+            )
+            pos_combo.grid(row=7, column=1, sticky="w", pady=2)
+            def _choose_inset_position(_ev=None):
+                inset_state["bounds"] = None
+                _rebuild_zoom_inset()
+
+            pos_combo.bind("<<ComboboxSelected>>", _choose_inset_position)
+
+            ttk.Button(body, text="Use current view", command=_set_inset_from_main_view).grid(
+                row=8, column=0, columnspan=2, sticky="ew", pady=(14, 4)
+            )
+            ttk.Button(body, text="Apply", command=_rebuild_zoom_inset).grid(
+                row=9, column=0, columnspan=2, sticky="ew", pady=4
+            )
+
+            for widget in (scale_spin,):
+                widget.bind("<Return>", lambda _ev: _rebuild_zoom_inset())
+                widget.bind("<FocusOut>", lambda _ev: _rebuild_zoom_inset())
+
+            def _on_popup_close():
+                inset_state["win"] = None
+                popup.destroy()
+
+            popup.protocol("WM_DELETE_WINDOW", _on_popup_close)
+
+        def _on_inset_press(event):
+            mode = getattr(toolbar, "mode", "")
+            mode = getattr(mode, "value", mode)
+            if mode:
+                return
+            ax_inset = inset_state.get("ax")
+            if ax_inset is None or event.button != 1 or event.x is None or event.y is None:
+                return
+            bbox = ax_inset.get_window_extent().expanded(1.04, 1.04)
+            if event.inaxes is not ax_inset and not bbox.contains(event.x, event.y):
+                return
+            handle_px = 18
+            corner_dx = abs(event.x - ax_inset.bbox.x1)
+            corner_dy = abs(event.y - ax_inset.bbox.y1)
+            drag_mode = "resize" if corner_dx <= handle_px and corner_dy <= handle_px else "move"
+            inset_state["drag"] = {
+                "mode": drag_mode,
+                "x": event.x,
+                "y": event.y,
+                "bounds": list(_inset_bounds()),
+            }
+
+        def _on_inset_motion(event):
+            drag = inset_state.get("drag")
+            if not drag or event.x is None or event.y is None:
+                return
+            parent_bbox = axc.bbox
+            if parent_bbox.width <= 0 or parent_bbox.height <= 0:
+                return
+            start_bounds = drag["bounds"]
+            dx = (event.x - drag["x"]) / parent_bbox.width
+            dy = (event.y - drag["y"]) / parent_bbox.height
+            if drag.get("mode") == "resize":
+                delta = dx if abs(dx) >= abs(dy) else dy
+                new_size = _clamp_inset_size_for_anchor(
+                    start_bounds[0],
+                    start_bounds[1],
+                    start_bounds[2] + delta,
+                )
+                _set_inset_bounds(
+                    [start_bounds[0], start_bounds[1], new_size, new_size],
+                    redraw=True,
+                )
+            else:
+                _set_inset_bounds(
+                    [start_bounds[0] + dx, start_bounds[1] + dy, start_bounds[2], start_bounds[3]],
+                    redraw=True,
+                )
+
+        def _on_inset_release(_event):
+            inset_state["drag"] = None
+
+        canvas.mpl_connect("button_press_event", _on_inset_press)
+        canvas.mpl_connect("motion_notify_event", _on_inset_motion)
+        canvas.mpl_connect("button_release_event", _on_inset_release)
+
         def _fit_all():
             if not comp_lines:
                 return
@@ -3831,6 +4226,7 @@ def show_figures_tk(
             axc.set_aspect("equal", adjustable="box")
 
             _apply_plot_settings(redraw=False)
+            _rebuild_zoom_inset(redraw=False)
             canvas.draw_idle()
             _sync_limit_entries()
 
@@ -3858,6 +4254,7 @@ def show_figures_tk(
             axc.set_aspect("equal", adjustable="box")
             _apply_legend()
             _fit_all()
+            _rebuild_zoom_inset()
 
         def remove_selected():
             removed = False
@@ -3873,6 +4270,7 @@ def show_figures_tk(
             if removed:
                 _apply_legend()
                 _fit_all()
+                _rebuild_zoom_inset()
 
         def clear_all():
             # Clear our bookkeeping first
@@ -3885,6 +4283,7 @@ def show_figures_tk(
                 pass
 
             # Clear the axes in one shot (fast, removes lines + annotations + legend)
+            _clear_zoom_inset()
             axc.cla()
             _reset_composite_axes()
             _apply_plot_settings(redraw=False)
@@ -3915,6 +4314,7 @@ def show_figures_tk(
 
             _rebuild_listbox()
             _apply_legend()
+            _rebuild_zoom_inset(redraw=False)
             canvas.draw_idle()
 
         btns = ttk.Frame(src_box)
@@ -3924,6 +4324,7 @@ def show_figures_tk(
         ttk.Button(btns, text="Limpiar", command=clear_all).pack(side="left", expand=True, fill="x")
 
         ttk.Button(src_box, text="Actualizar formato", command=refresh_formatting).pack(fill="x", pady=(8, 0))
+        ttk.Button(src_box, text="Inset", command=_open_inset_window).pack(fill="x", pady=(8, 0))
         ttk.Checkbutton(ctrl, text="Leyenda", variable=legend_var, command=_apply_legend).pack(anchor="w", pady=(0, 10))
 
         plot_box = ttk.LabelFrame(ctrl, text="Gráfico", padding=8)
