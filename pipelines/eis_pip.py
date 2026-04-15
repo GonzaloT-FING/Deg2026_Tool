@@ -28,6 +28,7 @@ import re
 import math
 
 from matplotlib.figure import Figure
+from matplotlib.text import Annotation
 from matplotlib.ticker import LinearLocator, LogLocator, MaxNLocator, StrMethodFormatter
 
 from openpyxl import Workbook
@@ -3722,7 +3723,15 @@ def show_figures_tk(
         inset_xmax_var = tk.StringVar()
         inset_ymin_var = tk.StringVar()
         inset_ymax_var = tk.StringVar()
-        inset_state = {"ax": None, "indicator": None, "win": None, "bounds": None, "drag": None}
+        inset_state = {
+            "ax": None,
+            "indicator": None,
+            "win": None,
+            "bounds": None,
+            "drag": None,
+            "line_sig": None,
+            "syncing": False,
+        }
 
         def _apply_legend(redraw: bool = True):
             # Always remove existing legend first (prevents stacking / stale legends)
@@ -3847,6 +3856,7 @@ def show_figures_tk(
                     except Exception:
                         pass
             inset_state["ax"] = None
+            inset_state["line_sig"] = None
 
         def _inset_size() -> float:
             try:
@@ -3972,6 +3982,32 @@ def show_figures_tk(
             except ValueError:
                 return None
 
+        def _main_line_signature():
+            sig = []
+            for ln in axc.get_lines():
+                if not ln.get_visible():
+                    continue
+                x = list(ln.get_xdata(orig=False))
+                y = list(ln.get_ydata(orig=False))
+                if not x or not y:
+                    continue
+                sig.append(
+                    (
+                        ln,
+                        len(x),
+                        len(y),
+                        float(x[0]),
+                        float(x[-1]),
+                        float(y[0]),
+                        float(y[-1]),
+                        str(ln.get_color()),
+                        str(ln.get_marker() or ""),
+                        float(ln.get_markersize()),
+                        float(ln.get_linewidth()),
+                    )
+                )
+            return tuple(sig)
+
         def _rebuild_zoom_inset(redraw: bool = True):
             _clear_zoom_inset()
             if not inset_enabled_var.get() or not comp_lines:
@@ -4017,14 +4053,63 @@ def show_figures_tk(
             ax_inset.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
             ax_inset.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
-            for src_line in comp_lines.values():
+            # Mirror every visible line artist from the main composite axis.
+            # This keeps dedicated highlight lines (e.g., selected-frequency
+            # markers) visually consistent between the main view and inset.
+            for src_line in axc.get_lines():
+                if not src_line.get_visible():
+                    continue
                 x = list(src_line.get_xdata(orig=False))
                 y = list(src_line.get_ydata(orig=False))
+                if not x or not y:
+                    continue
                 (ln,) = ax_inset.plot(x, y, label="_nolegend_")
                 _copy_style(src_line, ln)
 
             ax_inset.set_xlim(x0, x1)
             ax_inset.set_ylim(y0, y1)
+
+            # Mirror frequency annotations from main axis into inset.
+            # Only keep those whose anchor point falls inside inset limits.
+            xlo, xhi = min(x0, x1), max(x0, x1)
+            ylo, yhi = min(y0, y1), max(y0, y1)
+            for art in axc.texts:
+                if not isinstance(art, Annotation) or not art.get_visible():
+                    continue
+                try:
+                    if art.axes is not axc:
+                        continue
+                    xy = art.xy
+                    xv = float(xy[0])
+                    yv = float(xy[1])
+                except Exception:
+                    continue
+                if not (xlo <= xv <= xhi and ylo <= yv <= yhi):
+                    continue
+                try:
+                    bbox = dict(boxstyle="round,pad=0.15", fc="white", alpha=0.7)
+                    bbox_patch = art.get_bbox_patch()
+                    if bbox_patch is not None:
+                        try:
+                            bbox = {
+                                "boxstyle": "round,pad=0.15",
+                                "fc": bbox_patch.get_facecolor(),
+                                "ec": bbox_patch.get_edgecolor(),
+                                "alpha": bbox_patch.get_alpha(),
+                            }
+                        except Exception:
+                            pass
+                    ax_inset.annotate(
+                        art.get_text(),
+                        xy=(xv, yv),
+                        xytext=(6, 6),
+                        textcoords="offset points",
+                        fontsize=art.get_fontsize(),
+                        color=art.get_color(),
+                        bbox=bbox,
+                    )
+                except Exception:
+                    pass
 
             if inset_markers_var.get():
                 try:
@@ -4036,6 +4121,8 @@ def show_figures_tk(
                     _style_inset_indicator()
                 except Exception:
                     inset_state["indicator"] = None
+
+            inset_state["line_sig"] = _main_line_signature()
 
             if redraw:
                 canvas.draw_idle()
@@ -4192,9 +4279,25 @@ def show_figures_tk(
         def _on_inset_release(_event):
             inset_state["drag"] = None
 
+        def _on_main_draw(_event):
+            if inset_state.get("syncing"):
+                return
+            if not inset_enabled_var.get() or inset_state.get("ax") is None:
+                return
+            new_sig = _main_line_signature()
+            if new_sig == inset_state.get("line_sig"):
+                return
+            inset_state["syncing"] = True
+            try:
+                _rebuild_zoom_inset(redraw=False)
+            finally:
+                inset_state["syncing"] = False
+            canvas.draw_idle()
+
         canvas.mpl_connect("button_press_event", _on_inset_press)
         canvas.mpl_connect("motion_notify_event", _on_inset_motion)
         canvas.mpl_connect("button_release_event", _on_inset_release)
+        canvas.mpl_connect("draw_event", _on_main_draw)
 
         def _fit_all():
             if not comp_lines:
