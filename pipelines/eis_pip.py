@@ -46,7 +46,7 @@ from plot_defaults import (
     make_legend_draggable,
     resolve_plot_font_defaults,
 )
-from ui_layout import create_resizable_plot_layout
+from ui_layout import create_resizable_plot_layout, create_scrollable_controls
 
 
 # ---------------------------------------------------------------------------
@@ -160,40 +160,7 @@ def _is_incomplete_number(s: str) -> bool:
 
 
 def _build_scrollable_controls(parent) -> tuple[ttk.Frame, ttk.Frame]:
-    outer = ttk.Frame(parent, padding=(8, 6))
-    outer.pack(fill="both", expand=True)
-
-    canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0)
-    scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-    controls_frame = ttk.Frame(canvas, padding=(0, 0, 6, 0))
-
-    controls_frame.bind(
-        "<Configure>",
-        lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
-    )
-
-    canvas_window = canvas.create_window((0, 0), window=controls_frame, anchor="nw")
-    canvas.configure(yscrollcommand=scrollbar.set)
-
-    def _resize_controls(event):
-        canvas.itemconfigure(canvas_window, width=event.width)
-
-    def _bind_mousewheel(_event):
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
-
-    def _unbind_mousewheel(_event):
-        canvas.unbind_all("<MouseWheel>")
-
-    def _on_mousewheel(event):
-        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-    canvas.bind("<Configure>", _resize_controls)
-    canvas.bind("<Enter>", _bind_mousewheel)
-    canvas.bind("<Leave>", _unbind_mousewheel)
-
-    canvas.pack(side="left", fill="both", expand=True)
-    scrollbar.pack(side="right", fill="y")
-
+    _outer, controls_frame = create_scrollable_controls(parent, outer_padding=(8, 6))
     top_frame = ttk.Frame(controls_frame)
     top_frame.pack(fill="x")
 

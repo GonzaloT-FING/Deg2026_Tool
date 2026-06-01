@@ -21,7 +21,7 @@ from openpyxl.utils import get_column_letter
 
 from pipelines.activ_pip import ACTIV_CYCLE_GRADIENTS, _build_scrollable_cycle_selector, _cycle_gradient_color
 from plot_defaults import PlotFontDefaults, apply_x_tick_label_padding, make_legend_draggable, resolve_plot_font_defaults
-from ui_layout import create_resizable_plot_layout
+from ui_layout import create_resizable_plot_layout, create_scrollable_controls
 
 
 META_FIELDS = [
@@ -578,60 +578,7 @@ def compute_degradation_rate(
     slope = _linear_fit_slope(filt_t, filt_v) if use_linear_fit else _edge_slope(filt_t, filt_v)
     return slope, len(filt_t)
 def _build_scrollable_controls(parent) -> ttk.Frame:
-    outer = ttk.Frame(parent, padding=10)
-    outer.pack(fill="both", expand=True)
-
-    style = ttk.Style(parent)
-    canvas_bg = style.lookup("App.TFrame", "background") or style.lookup("TFrame", "background") or "#10161d"
-
-    canvas = tk.Canvas(
-        outer,
-        highlightthickness=0,
-        borderwidth=0,
-        bg=canvas_bg,
-        bd=0,
-        relief="flat",
-    )
-    scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-    canvas.configure(yscrollcommand=scrollbar.set)
-
-    scrollbar.pack(side="right", fill="y")
-    canvas.pack(side="left", fill="both", expand=True)
-
-    inner = ttk.Frame(canvas, padding=(0, 0, 6, 0))
-    window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
-
-    def _update_scrollregion(_event=None):
-        canvas.configure(scrollregion=canvas.bbox("all"))
-
-    def _sync_width(event):
-        canvas.itemconfigure(window_id, width=event.width)
-
-    inner.bind("<Configure>", _update_scrollregion)
-    canvas.bind("<Configure>", _sync_width)
-
-    def _on_mousewheel(event):
-        if event.delta:
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        else:
-            step = -1 if event.num == 4 else 1
-            canvas.yview_scroll(step, "units")
-
-    def _bind_mousewheel(_event=None):
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
-        canvas.bind_all("<Button-4>", _on_mousewheel)
-        canvas.bind_all("<Button-5>", _on_mousewheel)
-
-    def _unbind_mousewheel(_event=None):
-        canvas.unbind_all("<MouseWheel>")
-        canvas.unbind_all("<Button-4>")
-        canvas.unbind_all("<Button-5>")
-
-    outer.bind("<Enter>", _bind_mousewheel)
-    outer.bind("<Leave>", _unbind_mousewheel)
-    outer.after_idle(lambda: canvas.yview_moveto(0))
-    outer.bind("<Configure>", lambda _event: canvas.yview_moveto(0), add="+")
-
+    _outer, inner = create_scrollable_controls(parent, reset_y_on_resize=True)
     return inner
 
 

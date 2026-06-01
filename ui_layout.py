@@ -4,6 +4,87 @@ import tkinter as tk
 from tkinter import ttk
 
 
+def create_scrollable_controls(
+    parent: tk.Widget,
+    *,
+    outer_padding: int | tuple[int, ...] = 10,
+    inner_padding: int | tuple[int, ...] = (0, 0, 6, 0),
+    pack: bool = True,
+    fixed_width: int | None = None,
+    reset_y_on_resize: bool = False,
+) -> tuple[ttk.Frame, ttk.Frame]:
+    outer_kwargs = {}
+    if fixed_width is not None:
+        outer_kwargs["width"] = fixed_width
+
+    outer = ttk.Frame(parent, padding=outer_padding, **outer_kwargs)
+    if fixed_width is not None:
+        outer.pack_propagate(False)
+        outer.grid_propagate(False)
+    if pack:
+        outer.pack(fill="both", expand=True)
+
+    outer.columnconfigure(0, weight=1, minsize=1)
+    outer.columnconfigure(1, weight=0)
+    outer.rowconfigure(0, weight=1)
+
+    style = ttk.Style(parent)
+    canvas_bg = style.lookup("App.TFrame", "background") or style.lookup("TFrame", "background") or "#10161d"
+    canvas = tk.Canvas(
+        outer,
+        width=1,
+        highlightthickness=0,
+        borderwidth=0,
+        bg=canvas_bg,
+        bd=0,
+        relief="flat",
+    )
+    scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+    inner = ttk.Frame(canvas, padding=inner_padding)
+    window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+
+    canvas.grid(row=0, column=0, sticky="nsew")
+    scrollbar.grid(row=0, column=1, sticky="ns")
+
+    def _update_scrollregion(_event=None) -> None:
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def _sync_width(event) -> None:
+        canvas.itemconfigure(window_id, width=max(1, event.width))
+
+    inner.bind("<Configure>", _update_scrollregion)
+    canvas.bind("<Configure>", _sync_width)
+
+    def _on_mousewheel(event) -> str:
+        if getattr(event, "delta", 0):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        else:
+            step = -1 if getattr(event, "num", None) == 4 else 1
+            canvas.yview_scroll(step, "units")
+        return "break"
+
+    def _bind_mousewheel_tree(widget: tk.Widget) -> None:
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            widget.bind(sequence, _on_mousewheel)
+
+        for child in widget.winfo_children():
+            _bind_mousewheel_tree(child)
+
+    def _refresh_mousewheel_bindings(_event=None) -> None:
+        for widget in (outer, canvas, scrollbar, inner):
+            _bind_mousewheel_tree(widget)
+
+    inner.bind("<Configure>", _refresh_mousewheel_bindings, add="+")
+    outer.after_idle(_refresh_mousewheel_bindings)
+
+    if reset_y_on_resize:
+        outer.after_idle(lambda: canvas.yview_moveto(0))
+        outer.bind("<Configure>", lambda _event: canvas.yview_moveto(0), add="+")
+
+    return outer, inner
+
+
 def create_resizable_plot_layout(
     parent: tk.Widget,
     *,

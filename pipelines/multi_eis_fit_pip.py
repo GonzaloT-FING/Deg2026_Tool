@@ -23,6 +23,7 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import LogLocator, MaxNLocator
 
 from plot_defaults import make_legend_draggable
+from ui_layout import create_scrollable_controls
 
 
 EIS_FILENAME_TOKEN = "EISPOT"
@@ -1709,48 +1710,13 @@ def fit_dataset(
 
 
 def _build_scrollable_controls(parent, width: int = 560) -> tuple[ttk.Frame, ttk.Frame]:
-    outer = ttk.Frame(parent, width=width)
-    outer.pack_propagate(False)
-
-    canvas = tk.Canvas(outer, highlightthickness=0, width=width)
-    scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-    canvas.configure(yscrollcommand=scrollbar.set)
-
-    scrollbar.pack(side="right", fill="y")
-    canvas.pack(side="left", fill="both", expand=True)
-
-    inner = ttk.Frame(canvas, padding=10)
-    window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
-
-    def _update_scrollregion(_event=None):
-        canvas.configure(scrollregion=canvas.bbox("all"))
-
-    def _sync_width(event):
-        canvas.itemconfigure(window_id, width=event.width)
-
-    inner.bind("<Configure>", _update_scrollregion)
-    canvas.bind("<Configure>", _sync_width)
-
-    def _on_mousewheel(event):
-        if event.delta:
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        else:
-            step = -1 if event.num == 4 else 1
-            canvas.yview_scroll(step, "units")
-
-    def _bind_mousewheel(_event=None):
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
-        canvas.bind_all("<Button-4>", _on_mousewheel)
-        canvas.bind_all("<Button-5>", _on_mousewheel)
-
-    def _unbind_mousewheel(_event=None):
-        canvas.unbind_all("<MouseWheel>")
-        canvas.unbind_all("<Button-4>")
-        canvas.unbind_all("<Button-5>")
-
-    outer.bind("<Enter>", _bind_mousewheel)
-    outer.bind("<Leave>", _unbind_mousewheel)
-
+    outer, inner = create_scrollable_controls(
+        parent,
+        outer_padding=0,
+        fixed_width=width,
+        pack=False,
+        inner_padding=10,
+    )
     return outer, inner
 
 

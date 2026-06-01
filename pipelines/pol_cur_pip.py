@@ -24,9 +24,10 @@ import re
 from math import floor, ceil, log10
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.backends.backend_pdf import PdfPages
 
 from matplotlib.ticker import LinearLocator, LogLocator, LogFormatterSciNotation, MaxNLocator, FormatStrFormatter, StrMethodFormatter
 from math import floor, ceil
@@ -36,7 +37,7 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 from plot_defaults import PlotFontDefaults, apply_x_tick_label_padding, make_legend_draggable, resolve_plot_font_defaults
-from ui_layout import create_resizable_plot_layout
+from ui_layout import create_resizable_plot_layout, create_scrollable_controls
 
 
 # ---------------------------------------------------------------------------
@@ -197,12 +198,18 @@ def apply_temperature_axis_scaling(
     ax_temp.yaxis.set_major_locator(LinearLocator(tick_count))
     ax_temp.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
-def apply_current_axis_scaling(ax_current, current_values: list[float], tick_count: int) -> None:
+def apply_current_axis_scaling(
+    ax_current,
+    current_values: list[float],
+    tick_count: int,
+    i_min: float | None = None,
+    i_max: float | None = None,
+) -> None:
     if not current_values:
         return
 
-    i_lo = 0.0
-    i_hi = ceil(max(current_values))
+    i_lo = 0.0 if i_min is None else i_min
+    i_hi = ceil(max(current_values)) if i_max is None else i_max
 
     if i_hi <= i_lo:
         i_hi = i_lo + 1.0
@@ -255,6 +262,20 @@ def _fmt_range_value(i_min: float | None, i_max: float | None) -> str:
     if i_min is None or i_max is None:
         return ""
     return f"{i_min:g} a {i_max:g}"
+
+
+def _format_report_value(value: object, digits: int = 6) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return f"{value:.{digits}g}"
+    return str(value)
+
+
+def _safe_filename_part(text: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*]+', "_", text.strip())
+    cleaned = re.sub(r"\s+", "_", cleaned)
+    return cleaned.strip("._") or "curve"
 
 
 def _column_index(parsed: ParsedDTA, column_name: str) -> int | None:
@@ -1231,6 +1252,7 @@ def draw_series_by_time_on_figure(
     voltage_linestyle: str,
     current_linestyle: str,
     temperature_linestyle: str,
+    use_current_density: bool = False,
     time_unit: str = "s",
     x_tick_count: int = 6,
     y_tick_count: int = 6,
@@ -1238,6 +1260,8 @@ def draw_series_by_time_on_figure(
     t_max: float | None = None,
     v_min: float | None = None,
     v_max: float | None = None,
+    i_min: float | None = None,
+    i_max: float | None = None,
     temp_min: float | None = None,
     temp_max: float | None = None,
     plot_title: str = "",
@@ -1261,6 +1285,7 @@ def draw_series_by_time_on_figure(
     y_tick_count = max(2, int(y_tick_count))
 
     plot_data = build_series_by_time_plot_data(bundle, time_unit=time_unit)
+    area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
     asc_rows = plot_data["asc_rows"] if show_asc else []
     dsc_rows = plot_data["dsc_rows"] if show_dsc else []
 
@@ -1347,7 +1372,7 @@ def draw_series_by_time_on_figure(
         if show_current and ax_current is not None and _series_visible(current_linestyle):
             ax_current.plot(
                 x_vals,
-                [r["Corriente"] for r in rows],
+                [_scaled_current(r["Corriente"], use_current_density, area_cm2) for r in rows],
                 label=f"{prefix} I",
                 **_line_kwargs(
                     PC_PLOT_COLORS["asc_current"] if prefix == "Asc" else PC_PLOT_COLORS["dsc_current"],
@@ -1379,9 +1404,13 @@ def draw_series_by_time_on_figure(
             labels += l2
 
     if ax_current is ax_main:
-        ax_main.set_ylabel("Corriente (A)", fontsize=label_fontsize)
-        current_values = [r["Corriente"] for r in asc_rows] + [r["Corriente"] for r in dsc_rows]
-        apply_current_axis_scaling(ax_main, current_values, y_tick_count)
+        current_label = "Densidad de corriente (A/cm^2)" if use_current_density else "Corriente (A)"
+        ax_main.set_ylabel(current_label, fontsize=label_fontsize)
+        current_values = [
+            _scaled_current(r["Corriente"], use_current_density, area_cm2)
+            for r in asc_rows + dsc_rows
+        ]
+        apply_current_axis_scaling(ax_main, current_values, y_tick_count, i_min, i_max)
 
     if not handles:
         fig.clear()
@@ -1415,9 +1444,13 @@ def draw_series_by_time_on_figure(
     else:
         # Main axis is being used by current or temperature
         if ax_current is ax_main:
-            ax_main.set_ylabel("Corriente (A)", fontsize=label_fontsize)
-            current_values = [r["Corriente"] for r in asc_rows] + [r["Corriente"] for r in dsc_rows]
-            apply_secondary_axis_scaling(ax_main, current_values, y_tick_count)
+            current_label = "Densidad de corriente (A/cm^2)" if use_current_density else "Corriente (A)"
+            ax_main.set_ylabel(current_label, fontsize=label_fontsize)
+            current_values = [
+                _scaled_current(r["Corriente"], use_current_density, area_cm2)
+                for r in asc_rows + dsc_rows
+            ]
+            apply_current_axis_scaling(ax_main, current_values, y_tick_count, i_min, i_max)
         elif ax_temp is ax_main:
             ax_main.set_ylabel("Temperatura (°C)", fontsize=label_fontsize)
             temp_values = [r["Temperatura"] for r in asc_rows] + [r["Temperatura"] for r in dsc_rows]
@@ -1434,9 +1467,13 @@ def draw_series_by_time_on_figure(
 
     if ax_current is not None and ax_current is not ax_main:
         ax_current.tick_params(axis="y", labelsize=tick_fontsize)
-        ax_current.set_ylabel("Corriente (A)", fontsize=label_fontsize)
-        current_values = [r["Corriente"] for r in asc_rows] + [r["Corriente"] for r in dsc_rows]
-        apply_current_axis_scaling(ax_current, current_values, y_tick_count)
+        current_label = "Densidad de corriente (A/cm^2)" if use_current_density else "Corriente (A)"
+        ax_current.set_ylabel(current_label, fontsize=label_fontsize)
+        current_values = [
+            _scaled_current(r["Corriente"], use_current_density, area_cm2)
+            for r in asc_rows + dsc_rows
+        ]
+        apply_current_axis_scaling(ax_current, current_values, y_tick_count, i_min, i_max)
 
     if ax_temp is not None and ax_temp is not ax_main:
         ax_temp.tick_params(axis="y", labelsize=tick_fontsize)
@@ -1470,49 +1507,7 @@ def _mpl_linestyle(value: str) -> str:
 
 
 def _build_scrollable_controls(parent) -> ttk.Frame:
-    outer = ttk.Frame(parent, padding=10)
-    outer.pack(fill="both", expand=True)
-
-    style = ttk.Style(parent)
-    canvas_bg = style.lookup("App.TFrame", "background") or style.lookup("TFrame", "background") or "#10161d"
-
-    canvas = tk.Canvas(
-        outer,
-        highlightthickness=0,
-        bg=canvas_bg,
-        bd=0,
-        relief="flat",
-    )
-    scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-    controls_frame = ttk.Frame(canvas, padding=(0, 0, 6, 0))
-
-    controls_frame.bind(
-        "<Configure>",
-        lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
-    )
-
-    canvas_window = canvas.create_window((0, 0), window=controls_frame, anchor="nw")
-    canvas.configure(yscrollcommand=scrollbar.set)
-
-    def _resize_controls(event):
-        canvas.itemconfigure(canvas_window, width=event.width)
-
-    def _bind_mousewheel(_event):
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
-
-    def _unbind_mousewheel(_event):
-        canvas.unbind_all("<MouseWheel>")
-
-    def _on_mousewheel(event):
-        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-    canvas.bind("<Configure>", _resize_controls)
-    canvas.bind("<Enter>", _bind_mousewheel)
-    canvas.bind("<Leave>", _unbind_mousewheel)
-
-    canvas.pack(side="left", fill="both", expand=True)
-    scrollbar.pack(side="right", fill="y")
-
+    _outer, controls_frame = create_scrollable_controls(parent)
     return controls_frame
 
 def compute_autofit_series_by_time_limits(
@@ -1859,9 +1854,11 @@ def build_series_by_time_plot_data(bundle: CurveBundle, time_unit: str = "s") ->
 def compute_default_series_by_time_limits(
     bundle: CurveBundle,
     time_unit: str = "s",
+    use_current_density: bool = False,
 ) -> dict[str, str]:
     plot_data = build_series_by_time_plot_data(bundle, time_unit=time_unit)
     time_decimals = _time_unit_decimals(time_unit)
+    area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
 
     rows = plot_data["asc_rows"] + plot_data["dsc_rows"]
     if not rows:
@@ -1870,12 +1867,18 @@ def compute_default_series_by_time_limits(
             "t_max": "",
             "v_min": "",
             "v_max": "",
+            "i_min": "",
+            "i_max": "",
             "temp_min": "",
             "temp_max": "",
         }
 
     t_min, t_max = _padded_limits([r["plot_time"] for r in rows])
     v_min, v_max = _padded_limits([r["Voltaje"] for r in rows])
+    i_min, i_max = _padded_limits([
+        _scaled_current(r["Corriente"], use_current_density, area_cm2)
+        for r in rows
+    ])
     temp_min, temp_max = _padded_limits([r["Temperatura"] for r in rows])
 
     return {
@@ -1883,6 +1886,8 @@ def compute_default_series_by_time_limits(
         "t_max": _format_limit_value(t_max, time_decimals),
         "v_min": _format_limit_value(v_min),
         "v_max": _format_limit_value(v_max),
+        "i_min": _format_limit_value(i_min),
+        "i_max": _format_limit_value(i_max),
         "temp_min": _format_limit_value(temp_min),
         "temp_max": _format_limit_value(temp_max),
     }
@@ -1896,6 +1901,7 @@ def compute_autofit_series_by_time_limits(
     show_current: bool,
     show_temperature: bool,
     time_unit: str = "s",
+    use_current_density: bool = False,
 ) -> dict[str, str]:
     if not (show_asc or show_dsc):
         raise ValueError("Debe seleccionar Ascendente y/o Descendente para usar Autoescala.")
@@ -1904,6 +1910,7 @@ def compute_autofit_series_by_time_limits(
         raise ValueError("Debe seleccionar al menos una magnitud para usar Autoescala.")
 
     plot_data = build_series_by_time_plot_data(bundle, time_unit=time_unit)
+    area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
 
     rows = []
     if show_asc:
@@ -1919,6 +1926,8 @@ def compute_autofit_series_by_time_limits(
         "t_max": "",
         "v_min": "",
         "v_max": "",
+        "i_min": "",
+        "i_max": "",
         "temp_min": "",
         "temp_max": "",
     }
@@ -1935,6 +1944,13 @@ def compute_autofit_series_by_time_limits(
             voltage_step = _autoscale_step_from_values(v_values)
             out["v_min"] = _format_step_aligned_value(_round_down_to_step(min(v_values), voltage_step), voltage_step)
             out["v_max"] = _format_step_aligned_value(_round_up_to_step(max(v_values), voltage_step), voltage_step)
+
+    if show_current:
+        i_values = [_scaled_current(r["Corriente"], use_current_density, area_cm2) for r in rows]
+        if i_values:
+            current_step = _autoscale_step_from_values(i_values)
+            out["i_min"] = _format_step_aligned_value(_round_down_to_step(min(i_values), current_step), current_step)
+            out["i_max"] = _format_step_aligned_value(_round_up_to_step(max(i_values), current_step), current_step)
 
     if show_temperature:
         temp_values = [r["Temperatura"] for r in rows]
@@ -2128,6 +2144,426 @@ def _voltage_state_at_current_from_points(
     }
 
 
+def _linear_fit(points: list[tuple[float, float]]) -> dict[str, float] | None:
+    if len(points) < 2:
+        return None
+
+    n = float(len(points))
+    sum_x = sum(point[0] for point in points)
+    sum_y = sum(point[1] for point in points)
+    sum_xx = sum(point[0] * point[0] for point in points)
+    sum_xy = sum(point[0] * point[1] for point in points)
+    denominator = (n * sum_xx) - (sum_x * sum_x)
+    if abs(denominator) <= 1e-18:
+        return None
+
+    slope = ((n * sum_xy) - (sum_x * sum_y)) / denominator
+    intercept = (sum_y - slope * sum_x) / n
+    mean_y = sum_y / n
+    ss_tot = sum((point[1] - mean_y) ** 2 for point in points)
+    ss_res = sum((point[1] - (slope * point[0] + intercept)) ** 2 for point in points)
+    r2 = 1.0 if ss_tot <= 1e-18 else 1.0 - (ss_res / ss_tot)
+    return {"slope": slope, "intercept": intercept, "r2": r2}
+
+
+def _pc_report_direction_points(
+    rows: list[dict[str, float]],
+    current_tolerance: float,
+    point_fraction: float,
+    use_current_density: bool,
+    area_cm2: float | None,
+) -> list[tuple[float, float]]:
+    selected_rows = select_fractional_point_per_step(rows, current_tolerance, point_fraction)
+    return _v_vs_i_voltage_points(selected_rows, use_current_density, area_cm2)
+
+
+def _pc_report_linear_points(
+    points: list[tuple[float, float]],
+    threshold_current: float,
+) -> list[tuple[float, float]]:
+    linear_points = [point for point in points if point[0] >= threshold_current]
+    if len(linear_points) >= 2:
+        return linear_points
+    return points[-2:] if len(points) >= 2 else []
+
+
+def build_pc_report_metadata(
+    bundle: CurveBundle,
+    use_current_density: bool = False,
+) -> list[tuple[str, str, str]]:
+    reference_files = bundle.asc_files + bundle.dsc_files
+    if not reference_files:
+        raise ValueError("No se encontraron archivos Asc ni Dsc para generar el reporte.")
+
+    first_parsed = parse_gamry_dta(reference_files[0].path)
+    step_duration = to_float(first_parsed.meta_values.get("TSTEP1", ""))
+    sample_time = to_float(first_parsed.meta_values.get("SAMPLETIME", ""))
+    area = to_float(first_parsed.meta_values.get("AREA", ""))
+    i1 = to_float(first_parsed.meta_values.get("ISTEP1", ""))
+    i2 = to_float(first_parsed.meta_values.get("ISTEP2", ""))
+    current_step = abs(i2 - i1) if i1 is not None and i2 is not None else None
+    sweep_rate = (
+        current_step / step_duration
+        if current_step is not None and step_duration is not None and step_duration > 0
+        else None
+    )
+    i_min, i_max = _collect_current_extremes(reference_files)
+    current_range_text = _fmt_range_value(i_min, i_max)
+    current_unit = "A"
+    current_step_unit = "A"
+    sweep_rate_unit = "A/s"
+
+    if use_current_density and area is not None and area > 0:
+        density_min = i_min / area if i_min is not None else None
+        density_max = i_max / area if i_max is not None else None
+        current_range_text = _fmt_range_value(density_min, density_max)
+        current_step = current_step / area if current_step is not None else None
+        sweep_rate = sweep_rate / area if sweep_rate is not None else None
+        current_unit = "A/cm^2"
+        current_step_unit = "A/cm^2"
+        sweep_rate_unit = "A/cm^2/s"
+
+    return [
+        ("Curve", f"{bundle.description} #{bundle.curve_id}", ""),
+        ("Technique", first_parsed.meta_values.get("TITLE", ""), ""),
+        ("Date", first_parsed.meta_values.get("DATE", ""), ""),
+        ("Time", first_parsed.meta_values.get("TIME", ""), ""),
+        ("Current range", current_range_text, current_unit),
+        ("Step duration", _format_report_value(step_duration), "s"),
+        ("Current step", _format_report_value(current_step), current_step_unit),
+        ("Sweeping rate", _format_report_value(sweep_rate), sweep_rate_unit),
+        ("Sampling time", _format_report_value(sample_time), "s"),
+        ("Area", _format_report_value(area), "cm^2"),
+        ("Asc files", str(len(bundle.asc_files)), ""),
+        ("Dsc files", str(len(bundle.dsc_files)), ""),
+    ]
+
+
+def build_pc_report_indicators(
+    bundle: CurveBundle,
+    point_fraction: float = 1.0,
+    use_current_density: bool = False,
+    high_current_fraction: float = 0.90,
+    linear_start_fraction: float = 0.20,
+) -> list[tuple[str, str, str]]:
+    curve_data = build_curve_bundle_data(bundle)
+    area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
+
+    asc_points = _pc_report_direction_points(
+        curve_data["asc_rows"],
+        curve_data["asc_tol"],
+        point_fraction,
+        use_current_density,
+        area_cm2,
+    ) if curve_data["asc_rows"] else []
+    dsc_points = _pc_report_direction_points(
+        curve_data["dsc_rows"],
+        curve_data["dsc_tol"],
+        point_fraction,
+        use_current_density,
+        area_cm2,
+    ) if curve_data["dsc_rows"] else []
+
+    all_points = asc_points + dsc_points
+    current_unit = "A/cm^2" if use_current_density else "A"
+    slope_unit = "V/(A/cm^2)" if use_current_density else "V/A"
+    rows: list[tuple[str, str, str]] = []
+
+    if all_points:
+        currents = [point[0] for point in all_points]
+        current_min = min(currents)
+        current_max = max(currents)
+        current_span = current_max - current_min
+        high_current = current_min + high_current_fraction * current_span
+        linear_threshold = current_min + linear_start_fraction * current_span
+        rows.append(("High current target", _format_report_value(high_current), current_unit))
+        rows.append(("Linear fit starts at", _format_report_value(linear_threshold), current_unit))
+    else:
+        high_current = None
+        linear_threshold = None
+
+    for label, points in (("Asc", asc_points), ("Dsc", dsc_points)):
+        if high_current is None:
+            high_slope = None
+        else:
+            high_slope = _slope_at_current_from_points(points, high_current) if points else None
+        rows.append((f"High current dV/dI ({label})", _format_report_value(high_slope), slope_unit))
+
+        linear_points = _pc_report_linear_points(points, linear_threshold) if linear_threshold is not None else []
+        fit = _linear_fit(linear_points)
+        rows.append((
+            f"Onset Voltage ({label})",
+            _format_report_value(fit["intercept"] if fit is not None else None),
+            "V",
+        ))
+        rows.append((
+            f"Onset fit R2 ({label})",
+            _format_report_value(fit["r2"] if fit is not None else None),
+            "",
+        ))
+
+    raw_rows = curve_data["asc_rows"] + curve_data["dsc_rows"]
+    temp_values = [row["Temperatura"] for row in raw_rows]
+    if temp_values:
+        avg_temp = sum(temp_values) / len(temp_values)
+        max_delta_t = max(temp_values) - min(temp_values)
+    else:
+        avg_temp = None
+        max_delta_t = None
+
+    rows.append(("Average temperature", _format_report_value(avg_temp), "C"))
+    rows.append(("Maximum Delta T", _format_report_value(max_delta_t), "C"))
+    return rows
+
+
+def draw_temperature_vs_current_on_figure(
+    fig: Figure,
+    bundle: CurveBundle,
+    *,
+    point_fraction: float = 1.0,
+    use_current_density: bool = True,
+    x_tick_count: int = 6,
+    y_tick_count: int = 6,
+    title_fontsize: float = 14,
+    tick_fontsize: float = 10,
+    label_fontsize: float = 11,
+    legend_fontsize: float = 10,
+    marker_size: float = 6,
+    line_width: float = 1.5,
+    hollow_markers: bool = False,
+) -> bool:
+    fig.clear()
+    curve_data = build_curve_bundle_data(bundle)
+    area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
+
+    asc_rows = (
+        select_fractional_point_per_step(curve_data["asc_rows"], curve_data["asc_tol"], point_fraction)
+        if curve_data["asc_rows"] else []
+    )
+    dsc_rows = (
+        select_fractional_point_per_step(curve_data["dsc_rows"], curve_data["dsc_tol"], point_fraction)
+        if curve_data["dsc_rows"] else []
+    )
+    if not asc_rows and not dsc_rows:
+        return False
+
+    ax = fig.add_subplot(111)
+
+    def _plot_rows(rows: list[dict[str, float]], label: str, color: str, marker: str) -> None:
+        if not rows:
+            return
+        ax.plot(
+            [_scaled_current(row["Corriente"], use_current_density, area_cm2) for row in rows],
+            [row["Temperatura"] for row in rows],
+            color=color,
+            marker=marker,
+            linestyle="-",
+            linewidth=line_width,
+            markersize=marker_size,
+            markerfacecolor="none" if hollow_markers else color,
+            markeredgecolor=color,
+            markeredgewidth=1.2,
+            label=label,
+        )
+
+    _plot_rows(asc_rows, "Asc T", PC_PLOT_COLORS["asc_temperature"], "^")
+    _plot_rows(dsc_rows, "Dsc T", PC_PLOT_COLORS["dsc_temperature"], "v")
+
+    handles, labels = ax.get_legend_handles_labels()
+    if not handles:
+        fig.clear()
+        return False
+
+    ax.set_xlabel(
+        "Densidad de corriente (A/cm^2)" if use_current_density else "Corriente (A)",
+        fontsize=label_fontsize,
+    )
+    ax.set_ylabel("Temperatura (C)", fontsize=label_fontsize)
+    ax.set_title(f"Temperatura vs corriente - {bundle.description} #{bundle.curve_id}", fontsize=title_fontsize)
+    ax.grid(True)
+    ax.tick_params(axis="both", labelsize=tick_fontsize)
+    apply_x_tick_label_padding(ax, tick_fontsize)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=max(2, int(x_tick_count))))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=max(2, int(y_tick_count))))
+    ax.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    make_legend_draggable(ax.legend(handles, labels, fontsize=legend_fontsize))
+    fig.tight_layout()
+    return True
+
+
+def _add_report_table(
+    ax,
+    title: str,
+    rows: list[tuple[str, str, str]],
+    bbox: list[float],
+) -> None:
+    ax.text(
+        bbox[0],
+        bbox[1] + bbox[3] + 0.025,
+        title,
+        fontsize=13,
+        fontweight="bold",
+        ha="left",
+        va="bottom",
+        transform=ax.transAxes,
+    )
+    table = ax.table(
+        cellText=[[name, value, unit] for name, value, unit in rows],
+        colLabels=["Name", "Value", "Unit"],
+        cellLoc="left",
+        colLoc="left",
+        bbox=bbox,
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8.6)
+    for (row_idx, _col_idx), cell in table.get_celld().items():
+        cell.set_edgecolor("#b8c0c8")
+        cell.set_linewidth(0.5)
+        if row_idx == 0:
+            cell.set_facecolor("#edf2f7")
+            cell.set_text_props(weight="bold")
+        else:
+            cell.set_facecolor("white")
+
+
+def export_pc_curve_report_pdf(
+    bundle: CurveBundle,
+    output_path: Path,
+    *,
+    plot_kwargs: dict[str, object],
+) -> Path:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    plot_kwargs = dict(plot_kwargs)
+    point_fraction = float(plot_kwargs.get("point_fraction", 1.0))
+    use_current_density = bool(plot_kwargs.get("use_current_density", False))
+
+    metadata_rows = build_pc_report_metadata(bundle, use_current_density=use_current_density)
+    indicator_rows = build_pc_report_indicators(
+        bundle,
+        point_fraction=point_fraction,
+        use_current_density=use_current_density,
+    )
+
+    with PdfPages(output_path) as pdf:
+        plot_fig = Figure(figsize=(9.5, 6.2), dpi=150)
+        has_plot = draw_v_vs_i_on_figure(plot_fig, bundle=bundle, **plot_kwargs)
+        if not has_plot:
+            raise ValueError("No hay datos suficientes para generar el grafico del reporte.")
+        pdf.savefig(plot_fig, bbox_inches="tight")
+
+        temp_fig = Figure(figsize=(9.5, 6.2), dpi=150)
+        has_temp_plot = draw_temperature_vs_current_on_figure(
+            temp_fig,
+            bundle,
+            point_fraction=point_fraction,
+            use_current_density=use_current_density,
+            x_tick_count=int(plot_kwargs.get("x_tick_count", 6)),
+            y_tick_count=int(plot_kwargs.get("y_tick_count", 6)),
+            title_fontsize=float(plot_kwargs.get("title_fontsize", 14)),
+            tick_fontsize=float(plot_kwargs.get("tick_fontsize", 10)),
+            label_fontsize=float(plot_kwargs.get("label_fontsize", 11)),
+            legend_fontsize=float(plot_kwargs.get("legend_fontsize", 10)),
+            marker_size=float(plot_kwargs.get("marker_size", 6)),
+            line_width=float(plot_kwargs.get("line_width", 1.5)),
+            hollow_markers=bool(plot_kwargs.get("hollow_markers", False)),
+        )
+        if has_temp_plot:
+            pdf.savefig(temp_fig, bbox_inches="tight")
+
+        table_fig = Figure(figsize=(8.5, 11.0), dpi=150)
+        ax = table_fig.add_subplot(111)
+        ax.axis("off")
+        table_fig.text(
+            0.05,
+            0.965,
+            f"PC Report - {bundle.description} #{bundle.curve_id}",
+            fontsize=18,
+            fontweight="bold",
+            ha="left",
+            va="top",
+        )
+        table_fig.text(
+            0.05,
+            0.935,
+            "Polarization curve metadata and indicators",
+            fontsize=10,
+            ha="left",
+            va="top",
+            color="#4a5568",
+        )
+        _add_report_table(ax, "Metadata", metadata_rows, [0.05, 0.53, 0.90, 0.34])
+        _add_report_table(ax, "Indicators", indicator_rows, [0.05, 0.08, 0.90, 0.36])
+        pdf.savefig(table_fig, bbox_inches="tight")
+
+    return output_path
+
+
+def export_pc_series_by_time_report_pdf(
+    bundle: CurveBundle,
+    output_path: Path,
+    *,
+    plot_kwargs: dict[str, object],
+) -> Path:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    plot_kwargs = dict(plot_kwargs)
+    plot_kwargs.update(
+        {
+            "show_voltage": True,
+            "show_current": True,
+            "show_temperature": True,
+            "use_current_density": bool(plot_kwargs.get("use_current_density", True)),
+        }
+    )
+    point_fraction = float(plot_kwargs.pop("point_fraction", 1.0))
+    use_current_density = bool(plot_kwargs.get("use_current_density", True))
+
+    metadata_rows = build_pc_report_metadata(bundle, use_current_density=use_current_density)
+    indicator_rows = build_pc_report_indicators(
+        bundle,
+        point_fraction=point_fraction,
+        use_current_density=use_current_density,
+    )
+
+    with PdfPages(output_path) as pdf:
+        plot_fig = Figure(figsize=(10.0, 6.4), dpi=150)
+        has_plot = draw_series_by_time_on_figure(plot_fig, bundle=bundle, **plot_kwargs)
+        if not has_plot:
+            raise ValueError("No hay datos suficientes para generar el grafico del reporte.")
+        pdf.savefig(plot_fig, bbox_inches="tight")
+
+        table_fig = Figure(figsize=(8.5, 11.0), dpi=150)
+        ax = table_fig.add_subplot(111)
+        ax.axis("off")
+        table_fig.text(
+            0.05,
+            0.965,
+            f"PC Series by time Report - {bundle.description} #{bundle.curve_id}",
+            fontsize=18,
+            fontweight="bold",
+            ha="left",
+            va="top",
+        )
+        table_fig.text(
+            0.05,
+            0.935,
+            "Shared PC curve metadata and indicators",
+            fontsize=10,
+            ha="left",
+            va="top",
+            color="#4a5568",
+        )
+        _add_report_table(ax, "Metadata", metadata_rows, [0.05, 0.53, 0.90, 0.34])
+        _add_report_table(ax, "Indicators", indicator_rows, [0.05, 0.08, 0.90, 0.36])
+        pdf.savefig(table_fig, bbox_inches="tight")
+
+    return output_path
+
+
 def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
     bundles = discover_curve_bundles(Path(input_dir))
     if not bundles:
@@ -2137,7 +2573,7 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
     font_default_values = font_defaults.as_strings()
     bundle = bundles[0]
 
-    default_limits = compute_default_v_vs_i_limits(bundle)
+    default_limits = compute_default_v_vs_i_limits(bundle, use_current_density=True)
 
     win = tk.Toplevel()
     win.title(f"PC - V vs I - {bundle.description} #{bundle.curve_id}")
@@ -2173,7 +2609,7 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
     dsc_var = tk.BooleanVar(value=True)
     voltage_var = tk.BooleanVar(value=True)
     temperature_var = tk.BooleanVar(value=False)
-    current_density_var = tk.BooleanVar(value=False)
+    current_density_var = tk.BooleanVar(value=True)
     point_fraction_var = tk.DoubleVar(value=1.0)
     indicator_current_var = tk.DoubleVar(value=0.0)
     show_slope_guides_var = tk.BooleanVar(value=False)
@@ -2206,7 +2642,7 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
         "dsc": True,
         "voltage": True,
         "temperature": False,
-        "current_density": False,
+        "current_density": True,
         "fraction": 1.0,
         "x_min": default_limits["x_min"],
         "x_max": default_limits["x_max"],
@@ -2231,7 +2667,7 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
         "line_width": "1.5",
         "show_slope_guides": False,
     }
-    current_density_state = {"value": False}
+    current_density_state = {"value": True}
     indicator_scale_state = {"min": 0.0, "max": 1.0}
 
     def _schedule_plot(*_args):
@@ -2781,9 +3217,10 @@ def _build_v_vs_i_tab(
     composer_parent,
     source_contexts: dict[str, dict[str, object]],
     font_defaults: PlotFontDefaults,
+    output_dir: Path | None = None,
 ) -> dict[str, object]:
     tab_title = f"Etapa {bundle.curve_id} - {bundle.description}"
-    default_limits = compute_default_v_vs_i_limits(bundle)
+    default_limits = compute_default_v_vs_i_limits(bundle, use_current_density=True)
 
     tab = ttk.Frame(notebook)
     notebook.add(tab, text=tab_title[:28] + ("..." if len(tab_title) > 28 else ""))
@@ -2817,7 +3254,7 @@ def _build_v_vs_i_tab(
     dsc_var = tk.BooleanVar(value=True)
     voltage_var = tk.BooleanVar(value=True)
     temperature_var = tk.BooleanVar(value=False)
-    current_density_var = tk.BooleanVar(value=False)
+    current_density_var = tk.BooleanVar(value=True)
     show_slope_guides_var = tk.BooleanVar(value=False)
 
     asc_marker_var = tk.StringVar(value="^")
@@ -2855,7 +3292,7 @@ def _build_v_vs_i_tab(
         "dsc": True,
         "voltage": True,
         "temperature": False,
-        "current_density": False,
+        "current_density": True,
         "show_slope_guides": False,
         "asc_marker": "^",
         "dsc_marker": "v",
@@ -2883,7 +3320,7 @@ def _build_v_vs_i_tab(
 
     plot_job = {"id": None}
     suspend_events = {"value": False}
-    current_density_state = {"value": False}
+    current_density_state = {"value": True}
     indicator_scale_state = {"min": 0.0, "max": 1.0}
 
     def _positive_float(text: str, name: str) -> float:
@@ -3112,6 +3549,62 @@ def _build_v_vs_i_tab(
         _plot()
         status_var.set("Valores restaurados.")
 
+    def _collect_report_plot_kwargs() -> dict[str, object]:
+        return {
+            "show_asc": bool(asc_var.get()),
+            "show_dsc": bool(dsc_var.get()),
+            "show_voltage": bool(voltage_var.get()),
+            "show_temperature": bool(temperature_var.get()),
+            "use_current_density": bool(current_density_var.get()),
+            "point_fraction": float(point_fraction_var.get()),
+            "asc_marker": asc_marker_var.get(),
+            "dsc_marker": dsc_marker_var.get(),
+            "voltage_linestyle": voltage_line_var.get(),
+            "temperature_linestyle": temperature_line_var.get(),
+            "x_tick_count": int(x_tick_count_var.get()),
+            "y_tick_count": int(y_tick_count_var.get()),
+            "plot_title": plot_title_var.get(),
+            "show_title": bool(show_title_var.get()),
+            "title_fontsize": _positive_float(title_fontsize_var.get(), "TamaÃ±o del tÃ­tulo"),
+            "tick_fontsize": _positive_float(tick_fontsize_var.get(), "TamaÃ±o de ticks"),
+            "label_fontsize": _positive_float(label_fontsize_var.get(), "TamaÃ±o de etiquetas"),
+            "legend_fontsize": _positive_float(legend_fontsize_var.get(), "TamaÃ±o de leyenda"),
+            "marker_size": _positive_float(marker_size_var.get(), "TamaÃ±o de marcador"),
+            "hollow_markers": bool(hollow_markers_var.get()),
+            "line_width": _positive_float(line_width_var.get(), "Grosor de lÃ­nea"),
+            "show_slope_guides": bool(show_slope_guides_var.get()),
+            "indicator_current": float(indicator_current_var.get()),
+            **_collect_limits(),
+        }
+
+    def _export_report() -> None:
+        try:
+            initial_dir = Path(output_dir) if output_dir is not None else Path.cwd()
+            initial_dir.mkdir(parents=True, exist_ok=True)
+            default_name = f"PC_Report_{_safe_filename_part(bundle.description)}_#{bundle.curve_id}.pdf"
+            path_text = filedialog.asksaveasfilename(
+                title="Guardar reporte PC",
+                initialdir=str(initial_dir),
+                initialfile=default_name,
+                defaultextension=".pdf",
+                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            )
+            if not path_text:
+                status_var.set("Exportacion de reporte cancelada.")
+                return
+
+            exported_path = export_pc_curve_report_pdf(
+                bundle=bundle,
+                output_path=Path(path_text),
+                plot_kwargs=_collect_report_plot_kwargs(),
+            )
+        except Exception as exc:
+            status_var.set(f"Error al exportar reporte: {type(exc).__name__}: {exc}")
+            messagebox.showerror("PC Report", str(exc))
+            return
+
+        status_var.set(f"Reporte exportado: {exported_path}")
+
     def _update_point_label(_event=None) -> None:
         point_value_label.config(text=f"{point_fraction_var.get():.2f}")
 
@@ -3275,6 +3768,7 @@ def _build_v_vs_i_tab(
     buttons.pack(fill="x", pady=(5, 0))
     ttk.Button(buttons, text="Restablecer", command=_reset).pack(side="left", padx=(0, 6))
     ttk.Button(buttons, text="Autoescala", command=_autofit).pack(side="left")
+    ttk.Button(buttons, text="Reporte PDF", command=_export_report).pack(side="left", padx=(6, 0))
 
     _update_point_label()
     _plot()
@@ -3793,7 +4287,11 @@ def _open_v_vs_i_composer(
     comp.protocol("WM_DELETE_WINDOW", _on_close)
 
 
-def open_v_vs_i_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
+def open_v_vs_i_window(
+    input_dir: Path,
+    font_defaults: PlotFontDefaults | None = None,
+    output_dir: Path | None = None,
+) -> None:
     bundles = discover_curve_bundles(Path(input_dir))
     if not bundles:
         raise ValueError("No se encontraron curvas de polarizaciÃ³n vÃ¡lidas.")
@@ -3828,6 +4326,7 @@ def open_v_vs_i_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
             win,
             source_contexts,
             font_defaults,
+            output_dir=output_dir,
         )
         source_contexts[str(context["tab_title"])] = context
 
@@ -4521,10 +5020,10 @@ def run_pipeline(
     chosen = set(selected_options or [])
 
     if "V vs I" in chosen:
-        open_v_vs_i_window(input_dir, font_defaults=font_defaults)
+        open_v_vs_i_window(input_dir, font_defaults=font_defaults, output_dir=output_dir)
 
     if "Series by time" in chosen:
-        open_series_by_time_window(input_dir, font_defaults=font_defaults)
+        open_series_by_time_window(input_dir, font_defaults=font_defaults, output_dir=output_dir)
 
     if "dV/dI" in chosen:
         open_dv_di_window(input_dir, font_defaults=font_defaults)
@@ -4536,7 +5035,11 @@ def run_pipeline(
 
 
 
-def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
+def open_series_by_time_window(
+    input_dir: Path,
+    font_defaults: PlotFontDefaults | None = None,
+    output_dir: Path | None = None,
+) -> None:
     bundles = discover_curve_bundles(Path(input_dir))
     if not bundles:
         raise ValueError("No se encontraron curvas de polarización válidas.")
@@ -4544,7 +5047,7 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
     font_defaults = resolve_plot_font_defaults(font_defaults)
     font_default_values = font_defaults.as_strings()
     bundle = bundles[0]
-    default_limits = compute_default_series_by_time_limits(bundle, time_unit="s")
+    default_limits = compute_default_series_by_time_limits(bundle, time_unit="s", use_current_density=True)
 
     win = tk.Toplevel()
     win.title(f"PC - Series by time - {bundle.description} #{bundle.curve_id}")
@@ -4578,14 +5081,17 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
     asc_var = tk.BooleanVar(value=True)
     dsc_var = tk.BooleanVar(value=True)
     voltage_var = tk.BooleanVar(value=True)
-    current_var = tk.BooleanVar(value=False)
-    temperature_var = tk.BooleanVar(value=False)
+    current_var = tk.BooleanVar(value=True)
+    temperature_var = tk.BooleanVar(value=True)
+    current_density_var = tk.BooleanVar(value=True)
     time_unit_var = tk.StringVar(value="s")
 
     t_min_var = tk.StringVar(value=default_limits["t_min"])
     t_max_var = tk.StringVar(value=default_limits["t_max"])
     v_min_var = tk.StringVar(value=default_limits["v_min"])
     v_max_var = tk.StringVar(value=default_limits["v_max"])
+    i_min_var = tk.StringVar(value=default_limits["i_min"])
+    i_max_var = tk.StringVar(value=default_limits["i_max"])
     temp_min_var = tk.StringVar(value=default_limits["temp_min"])
     temp_max_var = tk.StringVar(value=default_limits["temp_max"])
 
@@ -4606,13 +5112,16 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
         "asc": True,
         "dsc": True,
         "voltage": True,
-        "current": False,
-        "temperature": False,
+        "current": True,
+        "temperature": True,
+        "current_density": True,
         "time_unit": "s",
         "t_min": default_limits["t_min"],
         "t_max": default_limits["t_max"],
         "v_min": default_limits["v_min"],
         "v_max": default_limits["v_max"],
+        "i_min": default_limits["i_min"],
+        "i_max": default_limits["i_max"],
         "temp_min": default_limits["temp_min"],
         "temp_max": default_limits["temp_max"],
         "voltage_line": "-",
@@ -4646,6 +5155,8 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
             t_max=_optional_float(t_max_var.get()),
             v_min=_optional_float(v_min_var.get()),
             v_max=_optional_float(v_max_var.get()),
+            i_min=_optional_float(i_min_var.get()),
+            i_max=_optional_float(i_max_var.get()),
             temp_min=_optional_float(temp_min_var.get()),
             temp_max=_optional_float(temp_max_var.get()),
         )
@@ -4667,6 +5178,7 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
 
     plot_job = {"id": None}
     current_time_unit = {"value": time_unit_var.get()}
+    current_density_state = {"value": True}
     suspend_events = {"value": False}
 
     def _plot():
@@ -4685,6 +5197,7 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
                 voltage_linestyle=voltage_line_var.get(),
                 current_linestyle=current_line_var.get(),
                 temperature_linestyle=temperature_line_var.get(),
+                use_current_density=current_density_var.get(),
                 time_unit=time_unit_var.get(),
                 x_tick_count=x_tick_count_var.get(),
                 y_tick_count=y_tick_count_var.get(),
@@ -4729,6 +5242,7 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
                 show_current=current_var.get(),
                 show_temperature=temperature_var.get(),
                 time_unit=time_unit_var.get(),
+                use_current_density=current_density_var.get(),
             )
         except ValueError as exc:
             status_var.set(f"Error: {exc}")
@@ -4741,6 +5255,9 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
             if fitted["v_min"] != "" or fitted["v_max"] != "":
                 v_min_var.set(fitted["v_min"])
                 v_max_var.set(fitted["v_max"])
+            if fitted["i_min"] != "" or fitted["i_max"] != "":
+                i_min_var.set(fitted["i_min"])
+                i_max_var.set(fitted["i_max"])
             if fitted["temp_min"] != "" or fitted["temp_max"] != "":
                 temp_min_var.set(fitted["temp_min"])
                 temp_max_var.set(fitted["temp_max"])
@@ -4762,13 +5279,21 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
             if t_min_var.get().strip():
                 t_min_var.set(_convert_time_limit_text(t_min_var.get(), old_unit, new_unit))
             else:
-                defaults = compute_default_series_by_time_limits(bundle, time_unit=new_unit)
+                defaults = compute_default_series_by_time_limits(
+                    bundle,
+                    time_unit=new_unit,
+                    use_current_density=current_density_var.get(),
+                )
                 t_min_var.set(defaults["t_min"])
 
             if t_max_var.get().strip():
                 t_max_var.set(_convert_time_limit_text(t_max_var.get(), old_unit, new_unit))
             else:
-                defaults = compute_default_series_by_time_limits(bundle, time_unit=new_unit)
+                defaults = compute_default_series_by_time_limits(
+                    bundle,
+                    time_unit=new_unit,
+                    use_current_density=current_density_var.get(),
+                )
                 t_max_var.set(defaults["t_max"])
 
             current_time_unit["value"] = new_unit
@@ -4776,6 +5301,35 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
             suspend_events["value"] = False
 
         _schedule_plot()
+
+    def _on_current_density_toggle():
+        new_state = current_density_var.get()
+        old_state = current_density_state["value"]
+        if new_state == old_state:
+            return
+
+        try:
+            area_cm2 = _bundle_area_cm2(bundle)
+            if area_cm2 is None or area_cm2 <= 0:
+                raise ValueError("No se pudo leer un AREA valida de la metadata para convertir la corriente.")
+        except ValueError as exc:
+            current_density_var.set(old_state)
+            status_var.set(f"Error: {exc}")
+            return
+
+        factor = 1.0 / area_cm2 if new_state else area_cm2
+        suspend_events["value"] = True
+        try:
+            for var in (i_min_var, i_max_var):
+                value = _optional_float(var.get())
+                if value is not None:
+                    var.set(f"{value * factor:.6g}")
+        finally:
+            suspend_events["value"] = False
+
+        current_density_state["value"] = new_state
+        _plot()
+        status_var.set("Unidad de corriente actualizada.")
 
     def _reset():
         suspend_events["value"] = True
@@ -4785,6 +5339,8 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
             voltage_var.set(initial_state["voltage"])
             current_var.set(initial_state["current"])
             temperature_var.set(initial_state["temperature"])
+            current_density_var.set(initial_state["current_density"])
+            current_density_state["value"] = initial_state["current_density"]
             current_time_unit["value"] = initial_state["time_unit"]
             time_unit_var.set(initial_state["time_unit"])
 
@@ -4796,6 +5352,8 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
             t_max_var.set(initial_state["t_max"])
             v_min_var.set(initial_state["v_min"])
             v_max_var.set(initial_state["v_max"])
+            i_min_var.set(initial_state["i_min"])
+            i_max_var.set(initial_state["i_max"])
             temp_min_var.set(initial_state["temp_min"])
             temp_max_var.set(initial_state["temp_max"])
 
@@ -4815,6 +5373,63 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
 
         _plot()
         status_var.set("Valores restaurados.")
+
+    def _collect_report_plot_kwargs() -> dict[str, object]:
+        return {
+            "show_asc": bool(asc_var.get()),
+            "show_dsc": bool(dsc_var.get()),
+            "show_voltage": True,
+            "show_current": True,
+            "show_temperature": True,
+            "asc_marker": "^",
+            "dsc_marker": "v",
+            "voltage_linestyle": voltage_line_var.get(),
+            "current_linestyle": current_line_var.get(),
+            "temperature_linestyle": temperature_line_var.get(),
+            "use_current_density": bool(current_density_var.get()),
+            "time_unit": time_unit_var.get(),
+            "x_tick_count": int(x_tick_count_var.get()),
+            "y_tick_count": int(y_tick_count_var.get()),
+            "plot_title": plot_title_var.get(),
+            "show_title": bool(show_title_var.get()),
+            "title_fontsize": _positive_float(title_fontsize_var.get(), "TamaÃ±o del tÃ­tulo"),
+            "tick_fontsize": _positive_float(tick_fontsize_var.get(), "TamaÃ±o de ticks"),
+            "label_fontsize": _positive_float(label_fontsize_var.get(), "TamaÃ±o de etiquetas"),
+            "legend_fontsize": _positive_float(legend_fontsize_var.get(), "TamaÃ±o de leyenda"),
+            "marker_size": _positive_float(marker_size_var.get(), "TamaÃ±o de marcador"),
+            "line_width": _positive_float(line_width_var.get(), "Grosor de lÃ­nea"),
+            "hollow_markers": bool(hollow_markers_var.get()),
+            "point_fraction": 1.0,
+            **_collect_limits(),
+        }
+
+    def _export_report() -> None:
+        try:
+            initial_dir = Path(output_dir) if output_dir is not None else Path.cwd()
+            initial_dir.mkdir(parents=True, exist_ok=True)
+            default_name = f"PC_Series_by_time_Report_{_safe_filename_part(bundle.description)}_#{bundle.curve_id}.pdf"
+            path_text = filedialog.asksaveasfilename(
+                title="Guardar reporte PC Series by time",
+                initialdir=str(initial_dir),
+                initialfile=default_name,
+                defaultextension=".pdf",
+                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            )
+            if not path_text:
+                status_var.set("Exportacion de reporte cancelada.")
+                return
+
+            exported_path = export_pc_series_by_time_report_pdf(
+                bundle=bundle,
+                output_path=Path(path_text),
+                plot_kwargs=_collect_report_plot_kwargs(),
+            )
+        except Exception as exc:
+            status_var.set(f"Error al exportar reporte: {type(exc).__name__}: {exc}")
+            messagebox.showerror("PC Series by time Report", str(exc))
+            return
+
+        status_var.set(f"Reporte exportado: {exported_path}")
 
     ttk.Label(
         controls_frame,
@@ -4839,6 +5454,12 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
     ttk.Checkbutton(series_box, text="Voltaje", variable=voltage_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Corriente", variable=current_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Temperatura", variable=temperature_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
+    ttk.Checkbutton(
+        series_box,
+        text="Corriente en A/cm^2",
+        variable=current_density_var,
+        command=_on_current_density_toggle,
+    ).pack(anchor="w", padx=8, pady=2)
     ttk.Label(series_box, text="Unidad de tiempo").pack(anchor="w", padx=8, pady=(8, 2))
     time_unit_combo = ttk.Combobox(
         series_box,
@@ -4904,6 +5525,8 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
         ("t max", t_max_var),
         ("V min", v_min_var),
         ("V max", v_max_var),
+        ("I min", i_min_var),
+        ("I max", i_max_var),
         ("T min", temp_min_var),
         ("T max", temp_max_var),
     ]
@@ -4968,6 +5591,7 @@ def open_series_by_time_window(input_dir: Path, font_defaults: PlotFontDefaults 
 
     ttk.Button(buttons_frame, text="Restablecer", command=_reset).pack(side="left", padx=(0, 6))
     ttk.Button(buttons_frame, text="Autoescala", command=_autofit).pack(side="left")
+    ttk.Button(buttons_frame, text="Reporte PDF", command=_export_report).pack(side="left", padx=(6, 0))
 
     _plot()
 
