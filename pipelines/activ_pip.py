@@ -2358,6 +2358,7 @@ def run_pipeline(
     output_dir: Path,
     selected_options: list[str] | None = None,
     font_defaults: PlotFontDefaults | None = None,
+    language: str = "es",
 ) -> list[Path]:
     exported_files = export_folder(input_dir, output_dir)
     if not exported_files:

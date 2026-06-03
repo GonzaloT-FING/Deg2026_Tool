@@ -1308,6 +1308,7 @@ def run_pipeline(
     output_dir: Path,
     selected_options: list[str] | None = None,
     font_defaults: PlotFontDefaults | None = None,
+    language: str = "es",
 ) -> list[Path]:
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)

@@ -10,6 +10,7 @@ from pipelines.deg_pip import run_pipeline as run_deg_pipeline
 from pipelines.eis_pip import run_pipeline as run_eis_pipeline
 from pipelines.ocp_pip import run_pipeline as run_ocp_pipeline
 from pipelines.pol_cur_pip import run_pipeline as run_pc_pipeline
+from i18n import LANGUAGE_CODE_BY_LABEL, LANGUAGE_LABELS, translate
 from plot_defaults import DEFAULT_PLOT_FONT_DEFAULTS, PlotFontDefaults, parse_plot_font_defaults
 from ui_theme import THEME_LABELS, THEME_NAME_BY_LABEL, apply_theme
 
@@ -53,6 +54,7 @@ NOT_FOUND_MSG = {
 }
 
 THEME_LABEL_LIST = [THEME_LABELS[name] for name in ("light", "dark")]
+LANGUAGE_LABEL_LIST = [LANGUAGE_LABELS[name] for name in ("es", "en")]
 
 
 class GamryProtocolApp:
@@ -74,6 +76,7 @@ class GamryProtocolApp:
         self.selected_options: dict[str, list[str]] = {}
 
         self.theme_label_var = tk.StringVar(value=THEME_LABELS["light"])
+        self.language_label_var = tk.StringVar(value=LANGUAGE_LABELS["es"])
         self.input_dir_var = tk.StringVar(value=str(self.default_input_dir))
         self.output_dir_var = tk.StringVar(value=str(self.default_output_dir))
         self.pipeline_var = tk.StringVar(value=next(iter(PIPELINE_OPTIONS)))
@@ -143,6 +146,20 @@ class GamryProtocolApp:
         )
         self.theme_combo.grid(row=0, column=1, sticky="e")
         self.theme_combo.bind("<<ComboboxSelected>>", self._on_theme_changed)
+
+        ttk.Label(theme_panel, text=translate("language", "es"), style="PanelLabel.TLabel").grid(
+            row=1, column=0, sticky="w", padx=(0, 10), pady=(8, 0)
+        )
+        self.language_combo = ttk.Combobox(
+            theme_panel,
+            textvariable=self.language_label_var,
+            values=LANGUAGE_LABEL_LIST,
+            state="readonly",
+            width=12,
+            style="App.TCombobox",
+        )
+        self.language_combo.grid(row=1, column=1, sticky="e", pady=(8, 0))
+        self.language_combo.bind("<<ComboboxSelected>>", self._on_language_changed)
 
         content = ttk.Frame(main, style="App.TFrame")
         content.grid(row=1, column=0, sticky="nsew")
@@ -384,6 +401,20 @@ class GamryProtocolApp:
         self._apply_theme(theme_name)
         self.set_status(f"Theme activo: {selected_label}.")
 
+    def _current_language(self) -> str:
+        selected_label = self.language_label_var.get().strip()
+        return LANGUAGE_CODE_BY_LABEL.get(selected_label, "es")
+
+    def _on_language_changed(self, _event=None) -> None:
+        language = self._current_language()
+        self.set_status(
+            translate(
+                "language_status",
+                language,
+                language=self.language_label_var.get().strip(),
+            )
+        )
+
     def set_status(self, message: str) -> None:
         self.status_var.set(message)
 
@@ -391,6 +422,7 @@ class GamryProtocolApp:
         self.input_dir_var.set(str(self.default_input_dir))
         self.output_dir_var.set(str(self.default_output_dir))
         self.pipeline_var.set(next(iter(PIPELINE_OPTIONS)))
+        self.language_label_var.set(LANGUAGE_LABELS["es"])
         font_defaults = DEFAULT_PLOT_FONT_DEFAULTS.as_strings()
         self.plot_title_fontsize_var.set(font_defaults["title"])
         self.plot_tick_fontsize_var.set(font_defaults["tick"])
@@ -560,7 +592,13 @@ class GamryProtocolApp:
             self._close_options_window()
 
             try:
-                exported_files = runner(input_dir, output_dir, selected, font_defaults=plot_font_defaults)
+                exported_files = runner(
+                    input_dir,
+                    output_dir,
+                    selected,
+                    font_defaults=plot_font_defaults,
+                    language=self._current_language(),
+                )
                 if exported_files:
                     self.set_status(
                         f"{selected_pipeline} ejecutado: {len(exported_files)} archivo(s) .xlsx creado(s)."

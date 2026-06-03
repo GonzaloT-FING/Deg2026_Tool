@@ -36,6 +36,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
+from i18n import normalize_language, translate
 from plot_defaults import PlotFontDefaults, apply_x_tick_label_padding, make_legend_draggable, resolve_plot_font_defaults
 from ui_layout import create_resizable_plot_layout, create_scrollable_controls
 
@@ -85,6 +86,11 @@ PC_PLOT_COLORS = {
 SECONDS_PER_MINUTE = 60.0
 SECONDS_PER_HOUR = 3600.0
 TIME_UNIT_OPTIONS = ["s", "min", "h"]
+PC_LANGUAGE = "es"
+
+
+def _pc_language(language: str | None = None) -> str:
+    return normalize_language(language or PC_LANGUAGE)
 
 
 # ---------------------------------------------------------------------------
@@ -369,11 +375,24 @@ def _scaled_current(value: float, use_current_density: bool, area_cm2: float | N
     return value / area_cm2
 
 
+def _scaled_dvdi(value: float, use_current_density: bool, area_cm2: float | None) -> float:
+    if not use_current_density:
+        return value
+    if area_cm2 is None or area_cm2 <= 0:
+        raise ValueError("No se pudo leer un AREA valida de la metadata para convertir dV/dI.")
+    return value * area_cm2
+
+
+def _dvdi_axis_unit(use_current_density: bool) -> str:
+    return "V/(A/cm^2)" if use_current_density else "V/A"
+
+
 def compute_default_v_vs_i_limits(
     bundle: CurveBundle,
     use_current_density: bool = False,
 ) -> dict[str, str]:
     curve_data = build_curve_bundle_data(bundle)
+    area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
     area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
 
     asc_rows = (
@@ -397,6 +416,7 @@ def compute_default_v_vs_i_limits(
     x_min, x_max = _padded_limits(
         [_scaled_current(r["Corriente"], use_current_density, area_cm2) for r in rows]
     )
+    x_min = 0.0
     v_min, v_max = _padded_limits([r["Voltaje"] for r in rows])
 
     return {
@@ -500,8 +520,10 @@ def draw_v_vs_i_on_figure(
     line_width: float = 1.5,
     show_slope_guides: bool = False,
     indicator_current: float | None = None,
+    language: str | None = None,
 ) -> bool:
     fig.clear()
+    language = _pc_language(language)
 
     if not (show_asc or show_dsc):
         return False
@@ -630,7 +652,7 @@ def draw_v_vs_i_on_figure(
             ax_main.plot(
                 [point[0] for point in asc_points],
                 [point[1] for point in asc_points],
-                label="Asc V",
+                label=f"{translate('ascending', language)} {translate('voltage_short', language)}",
                 **_line_kwargs(
                     PC_PLOT_COLORS["asc_voltage"],
                     asc_marker_mpl,
@@ -641,7 +663,7 @@ def draw_v_vs_i_on_figure(
             ax_main.plot(
                 [point[0] for point in dsc_points],
                 [point[1] for point in dsc_points],
-                label="Dsc V",
+                label=f"{translate('descending', language)} {translate('voltage_short', language)}",
                 **_line_kwargs(
                     PC_PLOT_COLORS["dsc_voltage"],
                     dsc_marker_mpl,
@@ -650,7 +672,7 @@ def draw_v_vs_i_on_figure(
             )
         _draw_slope_guide(asc_points, PC_PLOT_COLORS["asc_voltage"])
         _draw_slope_guide(dsc_points, PC_PLOT_COLORS["dsc_voltage"])
-        ax_main.set_ylabel("Voltaje (V)", fontsize=label_fontsize)
+        ax_main.set_ylabel(f"{translate('voltage', language)} (V)", fontsize=label_fontsize)
 
     # Temperature on second axis if needed
     if show_temperature:
@@ -660,7 +682,7 @@ def draw_v_vs_i_on_figure(
             target_ax.plot(
                 [_scaled_current(r["Corriente"], use_current_density, area_cm2) for r in asc_rows],
                 [r["Temperatura"] for r in asc_rows],
-                label="Asc T",
+                label=f"{translate('ascending', language)} T",
                 **_line_kwargs(
                     PC_PLOT_COLORS["asc_temperature"],
                     asc_marker_mpl,
@@ -671,14 +693,14 @@ def draw_v_vs_i_on_figure(
             target_ax.plot(
                 [_scaled_current(r["Corriente"], use_current_density, area_cm2) for r in dsc_rows],
                 [r["Temperatura"] for r in dsc_rows],
-                label="Dsc T",
+                label=f"{translate('descending', language)} T",
                 **_line_kwargs(
                     PC_PLOT_COLORS["dsc_temperature"],
                     dsc_marker_mpl,
                     temp_ls_mpl,
                 ),
             )
-        target_ax.set_ylabel("Temperatura (°C)", fontsize=label_fontsize)
+        target_ax.set_ylabel(f"{translate('temperature', language)} (°C)", fontsize=label_fontsize)
 
     handles, labels = ax_main.get_legend_handles_labels()
     if ax_temp is not None:
@@ -691,13 +713,15 @@ def draw_v_vs_i_on_figure(
         return False
 
     default_title = (
-        f"V vs I - {bundle.description} #{bundle.curve_id} "
+        f"{translate('v_vs_i', language)} - {bundle.description} #{bundle.curve_id} "
         f"(punto step = {point_fraction:.2f})"
     )
     final_title = plot_title.strip() if plot_title.strip() else default_title
 
     ax_main.set_xlabel(
-        "Densidad de corriente (A/cm^2)" if use_current_density else "Corriente (A)",
+        f"{translate('current_density', language)} (A/cm^2)"
+        if use_current_density
+        else f"{translate('current', language)} (A)",
         fontsize=label_fontsize,
     )
     ax_main.set_title(final_title if show_title else "", fontsize=title_fontsize)
@@ -940,8 +964,10 @@ def compute_default_dv_di_limits(
     smoothing_algorithm: str = "Median filter",
     smoothing_window: int = 1,
     logarithmic_y: bool = True,
+    use_current_density: bool = False,
 ) -> dict[str, str]:
     curve_data = build_curve_bundle_data(bundle)
+    area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
 
     asc_rows = (
         build_dv_di_rows(
@@ -973,14 +999,23 @@ def compute_default_dv_di_limits(
             "dvdi_max": "",
         }
 
-    x_min, x_max = _padded_limits([r["Corriente"] for r in rows])
+    _x_min, x_max = _padded_limits([
+        _scaled_current(r["Corriente"], use_current_density, area_cm2)
+        for r in rows
+    ])
     if logarithmic_y:
-        dvdi_min, dvdi_max = _log_axis_limits([r["dVdI"] for r in rows])
+        dvdi_min, dvdi_max = _log_axis_limits([
+            _scaled_dvdi(r["dVdI"], use_current_density, area_cm2)
+            for r in rows
+        ])
     else:
-        dvdi_min, dvdi_max = _adaptive_linear_limits([r["dVdI"] for r in rows])
+        dvdi_min, dvdi_max = _adaptive_linear_limits([
+            _scaled_dvdi(r["dVdI"], use_current_density, area_cm2)
+            for r in rows
+        ])
 
     return {
-        "x_min": _format_limit_value(x_min),
+        "x_min": _format_limit_value(0.0),
         "x_max": _format_limit_value(x_max),
         "dvdi_min": _format_log_limit_value(dvdi_min) if logarithmic_y else _format_adaptive_limit_value(dvdi_min),
         "dvdi_max": _format_log_limit_value(dvdi_max) if logarithmic_y else _format_adaptive_limit_value(dvdi_max),
@@ -994,6 +1029,7 @@ def compute_autofit_dv_di_limits(
     smoothing_algorithm: str = "Median filter",
     smoothing_window: int = 1,
     logarithmic_y: bool = True,
+    use_current_density: bool = False,
     locked_x_min: float | None = None,
     locked_x_max: float | None = None,
     locked_dvdi_min: float | None = None,
@@ -1004,6 +1040,7 @@ def compute_autofit_dv_di_limits(
         raise ValueError("Debe seleccionar Ascendente y/o Descendente para usar Autoescala.")
 
     curve_data = build_curve_bundle_data(bundle)
+    area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
 
     asc_rows = (
         build_dv_di_rows(
@@ -1027,8 +1064,14 @@ def compute_autofit_dv_di_limits(
     )
 
     rows = _scale_compatible_dv_di_rows(asc_rows + dsc_rows, logarithmic_y=logarithmic_y)
-    filtered_rows: list[dict[str, float]] = []
+    display_rows = []
     for row in rows:
+        display_row = dict(row)
+        display_row["Corriente"] = _scaled_current(row["Corriente"], use_current_density, area_cm2)
+        display_row["dVdI"] = _scaled_dvdi(row["dVdI"], use_current_density, area_cm2)
+        display_rows.append(display_row)
+    filtered_rows: list[dict[str, float]] = []
+    for row in display_rows:
         if locked_x_min is not None and row["Corriente"] < locked_x_min:
             continue
         if locked_x_max is not None and row["Corriente"] > locked_x_max:
@@ -1053,7 +1096,7 @@ def compute_autofit_dv_di_limits(
 
     i_values = [r["Corriente"] for r in filtered_rows]
     if i_values:
-        out["x_min"] = _format_limit_value(_round_down_dec(min(i_values), decimals), decimals)
+        out["x_min"] = _format_limit_value(0.0, decimals)
         out["x_max"] = _format_limit_value(_round_up_dec(max(i_values), decimals), decimals)
 
     dvdi_values = [r["dVdI"] for r in filtered_rows]
@@ -1081,6 +1124,7 @@ def draw_dv_di_on_figure(
     smoothing_algorithm: str = "Median filter",
     smoothing_window: int = 1,
     logarithmic_y: bool = True,
+    use_current_density: bool = False,
     x_tick_count: int = 6,
     y_tick_count: int = 6,
     x_min: float | None = None,
@@ -1096,8 +1140,10 @@ def draw_dv_di_on_figure(
     marker_size: float = 6,
     hollow_markers: bool = True,
     line_width: float = 1.5,
+    language: str | None = None,
 ) -> bool:
     fig.clear()
+    language = _pc_language(language)
 
     if not (show_asc or show_dsc):
         return False
@@ -1106,6 +1152,7 @@ def draw_dv_di_on_figure(
     y_tick_count = max(2, int(y_tick_count))
 
     curve_data = build_curve_bundle_data(bundle)
+    area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
 
     asc_rows = (
         build_dv_di_rows(
@@ -1166,9 +1213,15 @@ def draw_dv_di_on_figure(
 
     if asc_rows and _series_visible(asc_marker, dvdi_linestyle):
         ax_main.plot(
-            [r["Corriente"] for r in asc_rows],
-            [r["dVdI"] for r in asc_rows],
-            label="dV/dI ascendente",
+            [
+                _scaled_current(r["Corriente"], use_current_density, area_cm2)
+                for r in asc_rows
+            ],
+            [
+                _scaled_dvdi(r["dVdI"], use_current_density, area_cm2)
+                for r in asc_rows
+            ],
+            label=f"dV/dI {translate('ascending', language).lower()}",
             **_line_kwargs(
                 PC_PLOT_COLORS["asc_voltage"],
                 asc_marker_mpl,
@@ -1178,9 +1231,15 @@ def draw_dv_di_on_figure(
 
     if dsc_rows and _series_visible(dsc_marker, dvdi_linestyle):
         ax_main.plot(
-            [r["Corriente"] for r in dsc_rows],
-            [r["dVdI"] for r in dsc_rows],
-            label="dV/dI descendente",
+            [
+                _scaled_current(r["Corriente"], use_current_density, area_cm2)
+                for r in dsc_rows
+            ],
+            [
+                _scaled_dvdi(r["dVdI"], use_current_density, area_cm2)
+                for r in dsc_rows
+            ],
+            label=f"dV/dI {translate('descending', language).lower()}",
             **_line_kwargs(
                 PC_PLOT_COLORS["dsc_voltage"],
                 dsc_marker_mpl,
@@ -1194,13 +1253,20 @@ def draw_dv_di_on_figure(
         return False
 
     default_title = (
-        f"dV/dI vs I - {bundle.description} #{bundle.curve_id} "
+        f"{translate('dv_di', language)} vs "
+        f"{translate('current_density', language) if use_current_density else translate('current', language)} "
+        f"- {bundle.description} #{bundle.curve_id} "
         f"(punto step = {point_fraction:.2f})"
     )
     final_title = plot_title.strip() if plot_title.strip() else default_title
 
-    ax_main.set_xlabel("Corriente (A)", fontsize=label_fontsize)
-    ax_main.set_ylabel("dV/dI (V/A)", fontsize=label_fontsize)
+    ax_main.set_xlabel(
+        f"{translate('current_density', language)} (A/cm^2)"
+        if use_current_density
+        else f"{translate('current', language)} (A)",
+        fontsize=label_fontsize,
+    )
+    ax_main.set_ylabel(f"{translate('dv_di', language)} ({_dvdi_axis_unit(use_current_density)})", fontsize=label_fontsize)
     ax_main.set_title(final_title if show_title else "", fontsize=title_fontsize)
     ax_main.grid(True)
     ax_main.tick_params(axis="both", labelsize=tick_fontsize)
@@ -1239,6 +1305,284 @@ def draw_dv_di_on_figure(
     fig.tight_layout()
     return True
 
+def _step_stability_direction_rows(
+    bundle: CurveBundle,
+    use_current_density: bool = True,
+) -> dict[str, list[dict[str, float]]]:
+    curve_data = build_curve_bundle_data(bundle)
+    area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
+    return {
+        "asc_rows": (
+            build_step_stability_rows(
+                curve_data["asc_rows"],
+                curve_data["asc_tol"],
+                use_current_density,
+                area_cm2,
+            )
+            if curve_data["asc_rows"] else []
+        ),
+        "dsc_rows": (
+            build_step_stability_rows(
+                curve_data["dsc_rows"],
+                curve_data["dsc_tol"],
+                use_current_density,
+                area_cm2,
+            )
+            if curve_data["dsc_rows"] else []
+        ),
+    }
+
+
+def compute_default_step_stability_limits(
+    bundle: CurveBundle,
+    use_current_density: bool = True,
+) -> dict[str, str]:
+    direction_rows = _step_stability_direction_rows(bundle, use_current_density=use_current_density)
+    dv_values = [row["DeltaV"] for rows in direction_rows.values() for row in rows]
+    rows = direction_rows["asc_rows"] + direction_rows["dsc_rows"]
+    if not rows:
+        return {
+            "x_min": "0",
+            "x_max": "",
+            "dv_min": "0",
+            "dv_max": "",
+            "dt_min": "0",
+            "dt_max": "",
+        }
+
+    _x_min, x_max = _padded_limits([row["Corriente"] for row in rows])
+    _dv_min, dv_max = _padded_limits([row["DeltaV"] for row in rows])
+    _dt_min, dt_max = _padded_limits([row["DeltaT"] for row in rows])
+
+    return {
+        "x_min": _format_limit_value(0.0),
+        "x_max": _format_limit_value(x_max),
+        "dv_min": _format_limit_value(_positive_min(dv_values) or 1e-6),
+        "dv_max": _format_limit_value(dv_max),
+        "dt_min": _format_limit_value(0.0),
+        "dt_max": _format_limit_value(dt_max),
+    }
+
+
+def compute_autofit_step_stability_limits(
+    bundle: CurveBundle,
+    show_asc: bool,
+    show_dsc: bool,
+    show_voltage_delta: bool,
+    show_temperature_delta: bool,
+    use_current_density: bool = True,
+    decimals: int = 1,
+) -> dict[str, str]:
+    if not (show_asc or show_dsc):
+        raise ValueError("Debe seleccionar Ascendente y/o Descendente para usar Autoescala.")
+    if not (show_voltage_delta or show_temperature_delta):
+        raise ValueError("Debe seleccionar al menos una magnitud para usar Autoescala.")
+
+    direction_rows = _step_stability_direction_rows(bundle, use_current_density=use_current_density)
+    rows: list[dict[str, float]] = []
+    if show_asc:
+        rows.extend(direction_rows["asc_rows"])
+    if show_dsc:
+        rows.extend(direction_rows["dsc_rows"])
+    if not rows:
+        raise ValueError("No hay datos validos para ajustar los ejes.")
+
+    out = {
+        "x_min": _format_limit_value(0.0, decimals),
+        "x_max": "",
+        "dv_min": "",
+        "dv_max": "",
+        "dt_min": "",
+        "dt_max": "",
+    }
+
+    current_values = [row["Corriente"] for row in rows]
+    if current_values:
+        out["x_max"] = _format_limit_value(_round_up_dec(max(current_values), decimals), decimals)
+
+    if show_voltage_delta:
+        delta_v_values = [row["DeltaV"] for row in rows]
+        if delta_v_values:
+            out["dv_min"] = _format_limit_value(0.0, decimals)
+            out["dv_max"] = _format_limit_value(_round_up_dec(max(delta_v_values), decimals), decimals)
+
+    if show_temperature_delta:
+        delta_t_values = [row["DeltaT"] for row in rows]
+        if delta_t_values:
+            out["dt_min"] = _format_limit_value(0.0, decimals)
+            out["dt_max"] = _format_limit_value(_round_up_dec(max(delta_t_values), decimals), decimals)
+
+    return out
+
+
+def draw_step_stability_on_figure(
+    fig: Figure,
+    bundle: CurveBundle,
+    show_asc: bool,
+    show_dsc: bool,
+    show_voltage_delta: bool,
+    show_temperature_delta: bool,
+    use_current_density: bool,
+    asc_marker: str,
+    dsc_marker: str,
+    voltage_linestyle: str,
+    temperature_linestyle: str,
+    x_tick_count: int = 6,
+    y_tick_count: int = 6,
+    x_min: float | None = None,
+    x_max: float | None = None,
+    dv_min: float | None = None,
+    dv_max: float | None = None,
+    dt_min: float | None = None,
+    dt_max: float | None = None,
+    plot_title: str = "",
+    show_title: bool = True,
+    title_fontsize: float = 14,
+    tick_fontsize: float = 10,
+    label_fontsize: float = 11,
+    legend_fontsize: float = 10,
+    marker_size: float = 6,
+    hollow_markers: bool = False,
+    line_width: float = 1.5,
+    language: str | None = None,
+) -> bool:
+    fig.clear()
+    language = _pc_language(language)
+
+    if not (show_asc or show_dsc):
+        return False
+    if not (show_voltage_delta or show_temperature_delta):
+        return False
+
+    direction_rows = _step_stability_direction_rows(bundle, use_current_density=use_current_density)
+    asc_rows = direction_rows["asc_rows"] if show_asc else []
+    dsc_rows = direction_rows["dsc_rows"] if show_dsc else []
+    if not asc_rows and not dsc_rows:
+        return False
+
+    ax_main = fig.add_subplot(111)
+    ax_temp = None
+    if show_voltage_delta and show_temperature_delta:
+        ax_temp = ax_main.twinx()
+
+    asc_marker_mpl = _mpl_marker(asc_marker)
+    dsc_marker_mpl = _mpl_marker(dsc_marker)
+    voltage_ls_mpl = _mpl_linestyle(voltage_linestyle)
+    temp_ls_mpl = _mpl_linestyle(temperature_linestyle)
+
+    def _series_visible(marker_value: str, line_value: str) -> bool:
+        return not (marker_value == "none" and line_value == "none")
+
+    def _line_kwargs(color: str, mpl_marker: str, mpl_linestyle: str) -> dict:
+        kwargs = {
+            "color": color,
+            "marker": mpl_marker,
+            "linestyle": mpl_linestyle,
+            "linewidth": line_width,
+            "markersize": marker_size,
+        }
+        if mpl_marker != "None":
+            kwargs["markeredgecolor"] = color
+            kwargs["markeredgewidth"] = 1.2
+            kwargs["markerfacecolor"] = "none" if hollow_markers and mpl_marker not in {"x", "+"} else color
+        return kwargs
+
+    def _plot_direction(rows: list[dict[str, float]], prefix_key: str, marker_text: str, mpl_marker: str) -> None:
+        if not rows:
+            return
+        prefix = translate(prefix_key, language)
+        x_values = [row["Corriente"] for row in rows]
+
+        if show_voltage_delta and _series_visible(marker_text, voltage_linestyle):
+            ax_main.plot(
+                x_values,
+                [row["DeltaV"] for row in rows],
+                label=f"{prefix} {translate('delta_voltage', language)}",
+                **_line_kwargs(
+                    PC_PLOT_COLORS["asc_voltage"] if prefix_key == "ascending" else PC_PLOT_COLORS["dsc_voltage"],
+                    mpl_marker,
+                    voltage_ls_mpl,
+                ),
+            )
+
+        if show_temperature_delta and _series_visible(marker_text, temperature_linestyle):
+            target_ax = ax_temp if ax_temp is not None else ax_main
+            target_ax.plot(
+                x_values,
+                [row["DeltaT"] for row in rows],
+                label=f"{prefix} {translate('delta_temperature', language)}",
+                **_line_kwargs(
+                    PC_PLOT_COLORS["asc_temperature"] if prefix_key == "ascending" else PC_PLOT_COLORS["dsc_temperature"],
+                    mpl_marker,
+                    temp_ls_mpl,
+                ),
+            )
+
+    _plot_direction(asc_rows, "ascending", asc_marker, asc_marker_mpl)
+    _plot_direction(dsc_rows, "descending", dsc_marker, dsc_marker_mpl)
+
+    handles, labels = ax_main.get_legend_handles_labels()
+    if ax_temp is not None:
+        h2, l2 = ax_temp.get_legend_handles_labels()
+        handles += h2
+        labels += l2
+    if not handles:
+        fig.clear()
+        return False
+
+    default_title = f"{translate('step_stability', language)} - {bundle.description} #{bundle.curve_id}"
+    final_title = plot_title.strip() if plot_title.strip() else default_title
+
+    ax_main.set_xlabel(
+        f"{translate('current_density', language)} (A/cm^2)"
+        if use_current_density
+        else f"{translate('current', language)} (A)",
+        fontsize=label_fontsize,
+    )
+    ax_main.set_title(final_title if show_title else "", fontsize=title_fontsize)
+    ax_main.grid(True)
+    ax_main.tick_params(axis="both", labelsize=tick_fontsize)
+    apply_x_tick_label_padding(ax_main, tick_fontsize)
+    ax_main.xaxis.set_major_locator(MaxNLocator(nbins=max(2, int(x_tick_count))))
+    ax_main.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+
+    if x_min is not None or x_max is not None:
+        ax_main.set_xlim(left=x_min, right=x_max)
+        apply_x_edge_ticks(ax_main, x_min, x_max, x_tick_count)
+
+    if show_voltage_delta:
+        ax_main.set_ylabel(f"{translate('delta_voltage', language)} (V)", fontsize=label_fontsize)
+        if dv_min is not None or dv_max is not None:
+            ax_main.set_ylim(bottom=dv_min, top=dv_max)
+            ax_main.yaxis.set_major_locator(LinearLocator(max(2, int(y_tick_count))))
+        else:
+            ax_main.yaxis.set_major_locator(MaxNLocator(nbins=max(2, int(y_tick_count))))
+        ax_main.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    elif show_temperature_delta:
+        ax_main.set_ylabel(f"{translate('delta_temperature', language)} (C)", fontsize=label_fontsize)
+        if dt_min is not None or dt_max is not None:
+            ax_main.set_ylim(bottom=dt_min, top=dt_max)
+            ax_main.yaxis.set_major_locator(LinearLocator(max(2, int(y_tick_count))))
+        else:
+            ax_main.yaxis.set_major_locator(MaxNLocator(nbins=max(2, int(y_tick_count))))
+        ax_main.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+
+    if ax_temp is not None:
+        ax_temp.tick_params(axis="y", labelsize=tick_fontsize)
+        ax_temp.set_ylabel(f"{translate('delta_temperature', language)} (C)", fontsize=label_fontsize)
+        if dt_min is not None or dt_max is not None:
+            ax_temp.set_ylim(bottom=dt_min, top=dt_max)
+            ax_temp.yaxis.set_major_locator(LinearLocator(max(2, int(y_tick_count))))
+            ax_temp.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+        else:
+            temp_values = [row["DeltaT"] for row in asc_rows + dsc_rows]
+            apply_secondary_axis_scaling(ax_temp, temp_values, max(2, int(y_tick_count)))
+
+    make_legend_draggable(ax_main.legend(handles, labels, fontsize=legend_fontsize, loc="best"))
+    fig.tight_layout()
+    return True
+
+
 def draw_series_by_time_on_figure(
     fig: Figure,
     bundle: CurveBundle,
@@ -1273,8 +1617,10 @@ def draw_series_by_time_on_figure(
     marker_size: float = 6,
     line_width: float = 1.5,
     hollow_markers: bool = False,
+    language: str = "es",
 ) -> bool:
     fig.clear()
+    language = normalize_language(language)
 
     if not (show_asc or show_dsc):
         return False
@@ -1326,8 +1672,6 @@ def draw_series_by_time_on_figure(
             else:
                 ax_temp = ax_main
 
-    asc_marker_mpl = "None"
-    dsc_marker_mpl = "None"
     voltage_ls_mpl = _mpl_linestyle(voltage_linestyle)
     current_ls_mpl = _mpl_linestyle(current_linestyle)
     temp_ls_mpl = _mpl_linestyle(temperature_linestyle)
@@ -1351,7 +1695,7 @@ def draw_series_by_time_on_figure(
 
         return kwargs
 
-    def _plot_direction(rows, prefix: str, marker_value: str, mpl_marker: str):
+    def _plot_rows(rows):
         if not rows:
             return
 
@@ -1361,10 +1705,10 @@ def draw_series_by_time_on_figure(
             ax_main.plot(
                 x_vals,
                 [r["Voltaje"] for r in rows],
-                label=f"{prefix} V",
+                label=translate("voltage", language),
                 **_line_kwargs(
-                    PC_PLOT_COLORS["asc_voltage"] if prefix == "Asc" else PC_PLOT_COLORS["dsc_voltage"],
-                    mpl_marker,
+                    PC_PLOT_COLORS["asc_voltage"],
+                    "None",
                     voltage_ls_mpl,
                 ),
             )
@@ -1373,10 +1717,10 @@ def draw_series_by_time_on_figure(
             ax_current.plot(
                 x_vals,
                 [_scaled_current(r["Corriente"], use_current_density, area_cm2) for r in rows],
-                label=f"{prefix} I",
+                label=translate("current", language),
                 **_line_kwargs(
-                    PC_PLOT_COLORS["asc_current"] if prefix == "Asc" else PC_PLOT_COLORS["dsc_current"],
-                    mpl_marker,
+                    PC_PLOT_COLORS["asc_current"],
+                    "None",
                     current_ls_mpl,
                 ),
             )
@@ -1385,16 +1729,26 @@ def draw_series_by_time_on_figure(
             ax_temp.plot(
                 x_vals,
                 [r["Temperatura"] for r in rows],
-                label=f"{prefix} T",
+                label=translate("temperature", language),
                 **_line_kwargs(
-                    PC_PLOT_COLORS["asc_temperature"] if prefix == "Asc" else PC_PLOT_COLORS["dsc_temperature"],
-                    mpl_marker,
+                    PC_PLOT_COLORS["asc_temperature"],
+                    "None",
                     temp_ls_mpl,
                 ),
             )
 
-    _plot_direction(asc_rows, "Asc", asc_marker, asc_marker_mpl)
-    _plot_direction(dsc_rows, "Dsc", dsc_marker, dsc_marker_mpl)
+    _plot_rows(asc_rows + dsc_rows)
+
+    if asc_rows and dsc_rows:
+        transition_time = plot_data["t_asc_end"] / _time_unit_scale(time_unit)
+        ax_main.axvline(
+            transition_time,
+            color="#5b677a",
+            linestyle=":",
+            linewidth=max(1.0, line_width),
+            alpha=0.9,
+            label=translate("ascending_finish_marker", language),
+        )
 
     handles, labels = ax_main.get_legend_handles_labels()
     for extra_ax in (ax_current, ax_temp):
@@ -1404,7 +1758,11 @@ def draw_series_by_time_on_figure(
             labels += l2
 
     if ax_current is ax_main:
-        current_label = "Densidad de corriente (A/cm^2)" if use_current_density else "Corriente (A)"
+        current_label = (
+            f"{translate('current_density', language)} (A/cm^2)"
+            if use_current_density
+            else f"{translate('current', language)} (A)"
+        )
         ax_main.set_ylabel(current_label, fontsize=label_fontsize)
         current_values = [
             _scaled_current(r["Corriente"], use_current_density, area_cm2)
@@ -1416,10 +1774,10 @@ def draw_series_by_time_on_figure(
         fig.clear()
         return False
 
-    default_title = f"Series by time - {bundle.description} #{bundle.curve_id}"
+    default_title = f"{translate('series_by_time', language)} - {bundle.description} #{bundle.curve_id}"
     final_title = plot_title.strip() if plot_title.strip() else default_title
 
-    ax_main.set_xlabel(f"Tiempo ({time_unit})", fontsize=label_fontsize)
+    ax_main.set_xlabel(f"{translate('time', language)} ({time_unit})", fontsize=label_fontsize)
     ax_main.set_title(final_title if show_title else "", fontsize=title_fontsize)
     ax_main.grid(True)
     ax_main.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
@@ -1434,7 +1792,7 @@ def draw_series_by_time_on_figure(
 
     # Voltage axis
     if show_voltage:
-        ax_main.set_ylabel("Voltaje (V)", fontsize=label_fontsize)
+        ax_main.set_ylabel(f"{translate('voltage', language)} (V)", fontsize=label_fontsize)
         if v_min is not None or v_max is not None:
             ax_main.set_ylim(bottom=v_min, top=v_max)
             ax_main.yaxis.set_major_locator(LinearLocator(y_tick_count))
@@ -1444,7 +1802,11 @@ def draw_series_by_time_on_figure(
     else:
         # Main axis is being used by current or temperature
         if ax_current is ax_main:
-            current_label = "Densidad de corriente (A/cm^2)" if use_current_density else "Corriente (A)"
+            current_label = (
+                f"{translate('current_density', language)} (A/cm^2)"
+                if use_current_density
+                else f"{translate('current', language)} (A)"
+            )
             ax_main.set_ylabel(current_label, fontsize=label_fontsize)
             current_values = [
                 _scaled_current(r["Corriente"], use_current_density, area_cm2)
@@ -1452,7 +1814,7 @@ def draw_series_by_time_on_figure(
             ]
             apply_current_axis_scaling(ax_main, current_values, y_tick_count, i_min, i_max)
         elif ax_temp is ax_main:
-            ax_main.set_ylabel("Temperatura (°C)", fontsize=label_fontsize)
+            ax_main.set_ylabel(f"{translate('temperature', language)} (°C)", fontsize=label_fontsize)
             temp_values = [r["Temperatura"] for r in asc_rows] + [r["Temperatura"] for r in dsc_rows]
             if temp_min is not None or temp_max is not None:
                 current_lo, current_hi = ax_main.get_ylim()
@@ -1467,7 +1829,11 @@ def draw_series_by_time_on_figure(
 
     if ax_current is not None and ax_current is not ax_main:
         ax_current.tick_params(axis="y", labelsize=tick_fontsize)
-        current_label = "Densidad de corriente (A/cm^2)" if use_current_density else "Corriente (A)"
+        current_label = (
+            f"{translate('current_density', language)} (A/cm^2)"
+            if use_current_density
+            else f"{translate('current', language)} (A)"
+        )
         ax_current.set_ylabel(current_label, fontsize=label_fontsize)
         current_values = [
             _scaled_current(r["Corriente"], use_current_density, area_cm2)
@@ -1477,7 +1843,7 @@ def draw_series_by_time_on_figure(
 
     if ax_temp is not None and ax_temp is not ax_main:
         ax_temp.tick_params(axis="y", labelsize=tick_fontsize)
-        ax_temp.set_ylabel("Temperatura (°C)", fontsize=label_fontsize)
+        ax_temp.set_ylabel(f"{translate('temperature', language)} (°C)", fontsize=label_fontsize)
         temp_values = [r["Temperatura"] for r in asc_rows] + [r["Temperatura"] for r in dsc_rows]
         if temp_min is not None or temp_max is not None:
             current_lo, current_hi = ax_temp.get_ylim()
@@ -1494,7 +1860,64 @@ def draw_series_by_time_on_figure(
     if show_voltage and show_current and show_temperature:
         fig.subplots_adjust(right=0.80)
 
-    make_legend_draggable(ax_main.legend(handles, labels, fontsize=legend_fontsize))
+    def _best_legend_loc() -> str:
+        candidate_boxes = {
+            "upper right": (0.70, 0.72, 0.98, 0.96),
+            "upper left": (0.02, 0.72, 0.30, 0.96),
+            "lower right": (0.70, 0.04, 0.98, 0.28),
+            "lower left": (0.02, 0.04, 0.30, 0.28),
+            "center right": (0.70, 0.38, 0.98, 0.62),
+            "center left": (0.02, 0.38, 0.30, 0.62),
+        }
+        axes_to_scan = [
+            axis
+            for axis in (ax_main, ax_current, ax_temp)
+            if axis is not None
+        ]
+        best_loc = "best"
+        best_score: tuple[int, float] | None = None
+
+        for loc, (x0, y0, x1, y1) in candidate_boxes.items():
+            overlap_count = 0
+            nearest_distance = 1.0
+            box_cx = (x0 + x1) / 2.0
+            box_cy = (y0 + y1) / 2.0
+
+            for axis in axes_to_scan:
+                for line in axis.get_lines():
+                    label = str(line.get_label() or "")
+                    if label.startswith("_"):
+                        continue
+                    for x_value, y_value in zip(
+                        line.get_xdata(orig=False),
+                        line.get_ydata(orig=False),
+                    ):
+                        try:
+                            display_xy = axis.transData.transform((float(x_value), float(y_value)))
+                            axes_xy = ax_main.transAxes.inverted().transform(display_xy)
+                        except (TypeError, ValueError):
+                            continue
+
+                        point_x = float(axes_xy[0])
+                        point_y = float(axes_xy[1])
+                        if not (0.0 <= point_x <= 1.0 and 0.0 <= point_y <= 1.0):
+                            continue
+
+                        if x0 <= point_x <= x1 and y0 <= point_y <= y1:
+                            overlap_count += 1
+                        nearest_distance = min(
+                            nearest_distance,
+                            ((point_x - box_cx) ** 2 + (point_y - box_cy) ** 2) ** 0.5,
+                        )
+
+            score = (overlap_count, -nearest_distance)
+            if best_score is None or score < best_score:
+                best_score = score
+                best_loc = loc
+
+        return best_loc
+
+    make_legend_draggable(ax_main.legend(handles, labels, fontsize=legend_fontsize, loc=_best_legend_loc()))
     fig.tight_layout()
     return True
 
@@ -1831,6 +2254,7 @@ def build_series_by_time_plot_data(bundle: CurveBundle, time_unit: str = "s") ->
     raw_dsc_rows = curve_data["dsc_rows"]
 
     t_asc_end = max((r["time"] for r in raw_asc_rows), default=0.0)
+    dsc_time_offset = t_asc_end if raw_asc_rows else 0.0
 
     asc_rows = []
     for row in raw_asc_rows:
@@ -1841,13 +2265,14 @@ def build_series_by_time_plot_data(bundle: CurveBundle, time_unit: str = "s") ->
     dsc_rows = []
     for row in raw_dsc_rows:
         new_row = dict(row)
-        new_row["plot_time"] = (t_asc_end - row["time"]) / time_scale
+        new_row["plot_time"] = (dsc_time_offset + row["time"]) / time_scale
         dsc_rows.append(new_row)
 
     return {
         "asc_rows": asc_rows,
         "dsc_rows": dsc_rows,
         "t_asc_end": t_asc_end,
+        "t_total": max((r["plot_time"] for r in asc_rows + dsc_rows), default=0.0),
     }
 
 
@@ -1873,7 +2298,8 @@ def compute_default_series_by_time_limits(
             "temp_max": "",
         }
 
-    t_min, t_max = _padded_limits([r["plot_time"] for r in rows])
+    t_values = [r["plot_time"] for r in rows]
+    t_max = _round_up_dec(max(t_values), time_decimals) if t_values else None
     v_min, v_max = _padded_limits([r["Voltaje"] for r in rows])
     i_min, i_max = _padded_limits([
         _scaled_current(r["Corriente"], use_current_density, area_cm2)
@@ -1882,7 +2308,7 @@ def compute_default_series_by_time_limits(
     temp_min, temp_max = _padded_limits([r["Temperatura"] for r in rows])
 
     return {
-        "t_min": _format_limit_value(t_min, time_decimals),
+        "t_min": _format_limit_value(0.0, time_decimals),
         "t_max": _format_limit_value(t_max, time_decimals),
         "v_min": _format_limit_value(v_min),
         "v_max": _format_limit_value(v_max),
@@ -1935,7 +2361,7 @@ def compute_autofit_series_by_time_limits(
     t_values = [r["plot_time"] for r in rows]
     if t_values:
         decimals = _time_unit_decimals(time_unit)
-        out["t_min"] = _format_limit_value(_round_down_dec(min(t_values), decimals), decimals)
+        out["t_min"] = _format_limit_value(0.0, decimals)
         out["t_max"] = _format_limit_value(_round_up_dec(max(t_values), decimals), decimals)
 
     if show_voltage:
@@ -2040,6 +2466,43 @@ def select_fractional_point_per_step(
         selected_rows.append(selected)
 
     return selected_rows
+
+
+def build_step_stability_rows(
+    rows: list[dict[str, float]],
+    current_tolerance: float,
+    use_current_density: bool = False,
+    area_cm2: float | None = None,
+) -> list[dict[str, float]]:
+    stability_rows: list[dict[str, float]] = []
+    steps = split_rows_into_steps(rows, current_tolerance)
+
+    for step_number, step_rows in enumerate(steps, start=1):
+        if not step_rows:
+            continue
+
+        currents = [row["Corriente"] for row in step_rows]
+        voltages = [row["Voltaje"] for row in step_rows]
+        temperatures = [row["Temperatura"] for row in step_rows]
+
+        avg_current = sum(currents) / len(currents)
+        stability_rows.append(
+            {
+                "Step": float(step_number),
+                "Corriente": _scaled_current(avg_current, use_current_density, area_cm2),
+                "DeltaV": max(voltages) - min(voltages),
+                "DeltaT": max(temperatures) - min(temperatures),
+            }
+        )
+
+    return stability_rows
+
+
+def _positive_min(values: list[float]) -> float | None:
+    positives = [value for value in values if value > 0]
+    if not positives:
+        return None
+    return min(positives)
 
 
 def _selected_v_vs_i_rows(
@@ -2190,7 +2653,9 @@ def _pc_report_linear_points(
 def build_pc_report_metadata(
     bundle: CurveBundle,
     use_current_density: bool = False,
+    language: str = "es",
 ) -> list[tuple[str, str, str]]:
+    language = normalize_language(language)
     reference_files = bundle.asc_files + bundle.dsc_files
     if not reference_files:
         raise ValueError("No se encontraron archivos Asc ni Dsc para generar el reporte.")
@@ -2224,18 +2689,18 @@ def build_pc_report_metadata(
         sweep_rate_unit = "A/cm^2/s"
 
     return [
-        ("Curve", f"{bundle.description} #{bundle.curve_id}", ""),
-        ("Technique", first_parsed.meta_values.get("TITLE", ""), ""),
-        ("Date", first_parsed.meta_values.get("DATE", ""), ""),
-        ("Time", first_parsed.meta_values.get("TIME", ""), ""),
-        ("Current range", current_range_text, current_unit),
-        ("Step duration", _format_report_value(step_duration), "s"),
-        ("Current step", _format_report_value(current_step), current_step_unit),
-        ("Sweeping rate", _format_report_value(sweep_rate), sweep_rate_unit),
-        ("Sampling time", _format_report_value(sample_time), "s"),
-        ("Area", _format_report_value(area), "cm^2"),
-        ("Asc files", str(len(bundle.asc_files)), ""),
-        ("Dsc files", str(len(bundle.dsc_files)), ""),
+        (translate("curve", language), f"{bundle.description} #{bundle.curve_id}", ""),
+        (translate("technique", language), first_parsed.meta_values.get("TITLE", ""), ""),
+        (translate("date", language), first_parsed.meta_values.get("DATE", ""), ""),
+        (translate("start_time", language), first_parsed.meta_values.get("TIME", ""), ""),
+        (translate("current_range", language), current_range_text, current_unit),
+        (translate("step_duration", language), _format_report_value(step_duration), "s"),
+        (translate("current_step", language), _format_report_value(current_step), current_step_unit),
+        (translate("sweeping_rate", language), _format_report_value(sweep_rate), sweep_rate_unit),
+        (translate("sampling_time", language), _format_report_value(sample_time), "s"),
+        (translate("area", language), _format_report_value(area), "cm^2"),
+        (translate("asc_files", language), str(len(bundle.asc_files)), ""),
+        (translate("dsc_files", language), str(len(bundle.dsc_files)), ""),
     ]
 
 
@@ -2245,65 +2710,37 @@ def build_pc_report_indicators(
     use_current_density: bool = False,
     high_current_fraction: float = 0.90,
     linear_start_fraction: float = 0.20,
+    language: str = "es",
+    time_unit: str = "s",
 ) -> list[tuple[str, str, str]]:
+    language = normalize_language(language)
     curve_data = build_curve_bundle_data(bundle)
-    area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
-
-    asc_points = _pc_report_direction_points(
-        curve_data["asc_rows"],
-        curve_data["asc_tol"],
-        point_fraction,
-        use_current_density,
-        area_cm2,
-    ) if curve_data["asc_rows"] else []
-    dsc_points = _pc_report_direction_points(
-        curve_data["dsc_rows"],
-        curve_data["dsc_tol"],
-        point_fraction,
-        use_current_density,
-        area_cm2,
-    ) if curve_data["dsc_rows"] else []
-
-    all_points = asc_points + dsc_points
-    current_unit = "A/cm^2" if use_current_density else "A"
-    slope_unit = "V/(A/cm^2)" if use_current_density else "V/A"
     rows: list[tuple[str, str, str]] = []
 
-    if all_points:
-        currents = [point[0] for point in all_points]
-        current_min = min(currents)
-        current_max = max(currents)
-        current_span = current_max - current_min
-        high_current = current_min + high_current_fraction * current_span
-        linear_threshold = current_min + linear_start_fraction * current_span
-        rows.append(("High current target", _format_report_value(high_current), current_unit))
-        rows.append(("Linear fit starts at", _format_report_value(linear_threshold), current_unit))
-    else:
-        high_current = None
-        linear_threshold = None
-
-    for label, points in (("Asc", asc_points), ("Dsc", dsc_points)):
-        if high_current is None:
-            high_slope = None
-        else:
-            high_slope = _slope_at_current_from_points(points, high_current) if points else None
-        rows.append((f"High current dV/dI ({label})", _format_report_value(high_slope), slope_unit))
-
-        linear_points = _pc_report_linear_points(points, linear_threshold) if linear_threshold is not None else []
-        fit = _linear_fit(linear_points)
-        rows.append((
-            f"Onset Voltage ({label})",
-            _format_report_value(fit["intercept"] if fit is not None else None),
-            "V",
-        ))
-        rows.append((
-            f"Onset fit R2 ({label})",
-            _format_report_value(fit["r2"] if fit is not None else None),
-            "",
-        ))
-
     raw_rows = curve_data["asc_rows"] + curve_data["dsc_rows"]
+    series_data = build_series_by_time_plot_data(bundle, time_unit=time_unit)
+    time_values = [
+        row["plot_time"]
+        for row in series_data["asc_rows"] + series_data["dsc_rows"]
+    ]
+    transition_time = (
+        series_data["t_asc_end"] / _time_unit_scale(time_unit)
+        if series_data["asc_rows"] and series_data["dsc_rows"]
+        else None
+    )
+    voltage_values = [row["Voltaje"] for row in raw_rows]
     temp_values = [row["Temperatura"] for row in raw_rows]
+
+    if time_values:
+        total_time = max(time_values) - min(time_values)
+    else:
+        total_time = None
+
+    if voltage_values:
+        voltage_range = max(voltage_values) - min(voltage_values)
+    else:
+        voltage_range = None
+
     if temp_values:
         avg_temp = sum(temp_values) / len(temp_values)
         max_delta_t = max(temp_values) - min(temp_values)
@@ -2311,8 +2748,124 @@ def build_pc_report_indicators(
         avg_temp = None
         max_delta_t = None
 
-    rows.append(("Average temperature", _format_report_value(avg_temp), "C"))
-    rows.append(("Maximum Delta T", _format_report_value(max_delta_t), "C"))
+    rows.append((translate("ascending_finish_time", language), _format_report_value(transition_time), time_unit))
+    rows.append((translate("total_time", language), _format_report_value(total_time), time_unit))
+    rows.append((translate("voltage_range", language), _format_report_value(voltage_range), "V"))
+    rows.append((translate("average_temperature", language), _format_report_value(avg_temp), "C"))
+    rows.append((translate("maximum_delta_t", language), _format_report_value(max_delta_t), "C"))
+    return rows
+
+
+def _dvdi_value_at_current(points: list[tuple[float, float]], target_current: float) -> float | None:
+    if not points:
+        return None
+    if len(points) == 1:
+        return points[0][1]
+
+    sorted_points = sorted(points, key=lambda item: item[0])
+    if target_current <= sorted_points[0][0]:
+        left, right = sorted_points[0], sorted_points[1]
+    elif target_current >= sorted_points[-1][0]:
+        left, right = sorted_points[-2], sorted_points[-1]
+    else:
+        left = sorted_points[0]
+        right = sorted_points[-1]
+        for idx in range(len(sorted_points) - 1):
+            candidate_left = sorted_points[idx]
+            candidate_right = sorted_points[idx + 1]
+            if candidate_left[0] <= target_current <= candidate_right[0]:
+                left, right = candidate_left, candidate_right
+                break
+
+    dx = right[0] - left[0]
+    if abs(dx) <= 1e-12:
+        return left[1]
+    return left[1] + ((target_current - left[0]) / dx) * (right[1] - left[1])
+
+
+def build_pc_dv_di_report_indicators(
+    bundle: CurveBundle,
+    point_fraction: float = 1.0,
+    smoothing_algorithm: str = "Median filter",
+    smoothing_window: int = 1,
+    use_current_density: bool = True,
+    high_current_fraction: float = 0.90,
+    language: str | None = None,
+) -> list[tuple[str, str, str]]:
+    language = _pc_language(language)
+    curve_data = build_curve_bundle_data(bundle)
+    area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
+
+    def _direction_points(rows: list[dict[str, float]], tolerance: float) -> list[tuple[float, float]]:
+        derivative_rows = build_dv_di_rows(
+            rows,
+            tolerance,
+            point_fraction,
+            smoothing_algorithm=smoothing_algorithm,
+            smoothing_window=smoothing_window,
+        )
+        return [
+            (
+                _scaled_current(row["Corriente"], use_current_density, area_cm2),
+                _scaled_dvdi(row["dVdI"], use_current_density, area_cm2),
+            )
+            for row in derivative_rows
+        ]
+
+    asc_points = (
+        _direction_points(curve_data["asc_rows"], curve_data["asc_tol"])
+        if curve_data["asc_rows"] else []
+    )
+    dsc_points = (
+        _direction_points(curve_data["dsc_rows"], curve_data["dsc_tol"])
+        if curve_data["dsc_rows"] else []
+    )
+    all_points = asc_points + dsc_points
+
+    current_unit = "A/cm^2" if use_current_density else "A"
+    dvdi_unit = _dvdi_axis_unit(use_current_density)
+    rows: list[tuple[str, str, str]] = []
+
+    if all_points:
+        currents = [point[0] for point in all_points]
+        current_min = min(currents)
+        current_max = max(currents)
+        high_current = current_min + high_current_fraction * (current_max - current_min)
+        rows.append((translate("high_current_target", language), _format_report_value(high_current), current_unit))
+    else:
+        high_current = None
+
+    for direction_key, points in (
+        ("ascending", asc_points),
+        ("descending", dsc_points),
+    ):
+        direction_label = translate(direction_key, language)
+        high_value = (
+            _dvdi_value_at_current(points, high_current)
+            if high_current is not None else None
+        )
+        rows.append((
+            translate("high_current_dvdi", language, direction=direction_label),
+            _format_report_value(high_value),
+            dvdi_unit,
+        ))
+
+        if points:
+            max_current, max_dvdi = max(points, key=lambda item: item[1])
+        else:
+            max_current = None
+            max_dvdi = None
+        rows.append((
+            translate("maximum_dvdi", language, direction=direction_label),
+            _format_report_value(max_dvdi),
+            dvdi_unit,
+        ))
+        rows.append((
+            translate("maximum_dvdi_current", language, direction=direction_label),
+            _format_report_value(max_current),
+            current_unit,
+        ))
+
     return rows
 
 
@@ -2331,10 +2884,14 @@ def draw_temperature_vs_current_on_figure(
     marker_size: float = 6,
     line_width: float = 1.5,
     hollow_markers: bool = False,
+    language: str = "es",
 ) -> bool:
     fig.clear()
+    language = normalize_language(language)
     curve_data = build_curve_bundle_data(bundle)
     area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
+    x_values: list[float] = []
+    temp_values: list[float] = []
 
     asc_rows = (
         select_fractional_point_per_step(curve_data["asc_rows"], curve_data["asc_tol"], point_fraction)
@@ -2352,9 +2909,16 @@ def draw_temperature_vs_current_on_figure(
     def _plot_rows(rows: list[dict[str, float]], label: str, color: str, marker: str) -> None:
         if not rows:
             return
+        row_x_values = [
+            _scaled_current(row["Corriente"], use_current_density, area_cm2)
+            for row in rows
+        ]
+        row_temp_values = [row["Temperatura"] for row in rows]
+        x_values.extend(row_x_values)
+        temp_values.extend(row_temp_values)
         ax.plot(
-            [_scaled_current(row["Corriente"], use_current_density, area_cm2) for row in rows],
-            [row["Temperatura"] for row in rows],
+            row_x_values,
+            row_temp_values,
             color=color,
             marker=marker,
             linestyle="-",
@@ -2366,8 +2930,9 @@ def draw_temperature_vs_current_on_figure(
             label=label,
         )
 
-    _plot_rows(asc_rows, "Asc T", PC_PLOT_COLORS["asc_temperature"], "^")
-    _plot_rows(dsc_rows, "Dsc T", PC_PLOT_COLORS["dsc_temperature"], "v")
+    language = _pc_language()
+    _plot_rows(asc_rows, f"{translate('ascending', language)} T", PC_PLOT_COLORS["asc_temperature"], "^")
+    _plot_rows(dsc_rows, f"{translate('descending', language)} T", PC_PLOT_COLORS["dsc_temperature"], "v")
 
     handles, labels = ax.get_legend_handles_labels()
     if not handles:
@@ -2375,16 +2940,42 @@ def draw_temperature_vs_current_on_figure(
         return False
 
     ax.set_xlabel(
-        "Densidad de corriente (A/cm^2)" if use_current_density else "Corriente (A)",
+        f"{translate('current_density', language)} (A/cm^2)"
+        if use_current_density
+        else f"{translate('current', language)} (A)",
         fontsize=label_fontsize,
     )
-    ax.set_ylabel("Temperatura (C)", fontsize=label_fontsize)
-    ax.set_title(f"Temperatura vs corriente - {bundle.description} #{bundle.curve_id}", fontsize=title_fontsize)
+    ax.set_ylabel(f"{translate('temperature', language)} (C)", fontsize=label_fontsize)
+    ax.set_title(
+        f"{translate('temperature', language)} vs {translate('current', language).lower()} - "
+        f"{bundle.description} #{bundle.curve_id}",
+        fontsize=title_fontsize,
+    )
     ax.grid(True)
     ax.tick_params(axis="both", labelsize=tick_fontsize)
     apply_x_tick_label_padding(ax, tick_fontsize)
-    ax.xaxis.set_major_locator(MaxNLocator(nbins=max(2, int(x_tick_count))))
-    ax.yaxis.set_major_locator(MaxNLocator(nbins=max(2, int(y_tick_count))))
+    x_tick_count = max(2, int(x_tick_count))
+    y_tick_count = max(2, int(y_tick_count))
+
+    if x_values:
+        x_hi = _round_up_dec(max(x_values), 1)
+        if x_hi <= 0.0:
+            x_hi = 1.0
+        ax.set_xlim(0.0, x_hi)
+        ax.xaxis.set_major_locator(LinearLocator(x_tick_count))
+    else:
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
+
+    if temp_values:
+        y_lo = floor(min(temp_values))
+        y_hi = ceil(max(temp_values))
+        if y_hi <= y_lo:
+            y_hi = y_lo + 1
+        ax.set_ylim(y_lo, y_hi)
+        ax.yaxis.set_major_locator(LinearLocator(y_tick_count))
+    else:
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=y_tick_count))
+
     ax.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
     ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
     make_legend_draggable(ax.legend(handles, labels, fontsize=legend_fontsize))
@@ -2397,6 +2988,7 @@ def _add_report_table(
     title: str,
     rows: list[tuple[str, str, str]],
     bbox: list[float],
+    language: str = "es",
 ) -> None:
     ax.text(
         bbox[0],
@@ -2410,7 +3002,11 @@ def _add_report_table(
     )
     table = ax.table(
         cellText=[[name, value, unit] for name, value, unit in rows],
-        colLabels=["Name", "Value", "Unit"],
+        colLabels=[
+            translate("name", language),
+            translate("value", language),
+            translate("unit", language),
+        ],
         cellLoc="left",
         colLoc="left",
         bbox=bbox,
@@ -2439,12 +3035,19 @@ def export_pc_curve_report_pdf(
     plot_kwargs = dict(plot_kwargs)
     point_fraction = float(plot_kwargs.get("point_fraction", 1.0))
     use_current_density = bool(plot_kwargs.get("use_current_density", False))
+    language = _pc_language(str(plot_kwargs.pop("language", "")))
 
-    metadata_rows = build_pc_report_metadata(bundle, use_current_density=use_current_density)
+    metadata_rows = build_pc_report_metadata(
+        bundle,
+        use_current_density=use_current_density,
+        language=language,
+    )
     indicator_rows = build_pc_report_indicators(
         bundle,
         point_fraction=point_fraction,
         use_current_density=use_current_density,
+        language=language,
+        time_unit=str(plot_kwargs.get("time_unit", "s")),
     )
 
     with PdfPages(output_path) as pdf:
@@ -2479,7 +3082,11 @@ def export_pc_curve_report_pdf(
         table_fig.text(
             0.05,
             0.965,
-            f"PC Report - {bundle.description} #{bundle.curve_id}",
+            translate(
+                "pc_report_title",
+                language,
+                curve=f"{bundle.description} #{bundle.curve_id}",
+            ),
             fontsize=18,
             fontweight="bold",
             ha="left",
@@ -2488,14 +3095,14 @@ def export_pc_curve_report_pdf(
         table_fig.text(
             0.05,
             0.935,
-            "Polarization curve metadata and indicators",
+            translate("pc_report_subtitle", language),
             fontsize=10,
             ha="left",
             va="top",
             color="#4a5568",
         )
-        _add_report_table(ax, "Metadata", metadata_rows, [0.05, 0.53, 0.90, 0.34])
-        _add_report_table(ax, "Indicators", indicator_rows, [0.05, 0.08, 0.90, 0.36])
+        _add_report_table(ax, translate("metadata", language), metadata_rows, [0.05, 0.53, 0.90, 0.34], language=language)
+        _add_report_table(ax, translate("indicators", language), indicator_rows, [0.05, 0.08, 0.90, 0.36], language=language)
         pdf.savefig(table_fig, bbox_inches="tight")
 
     return output_path
@@ -2521,12 +3128,19 @@ def export_pc_series_by_time_report_pdf(
     )
     point_fraction = float(plot_kwargs.pop("point_fraction", 1.0))
     use_current_density = bool(plot_kwargs.get("use_current_density", True))
+    language = normalize_language(str(plot_kwargs.get("language", "es")))
 
-    metadata_rows = build_pc_report_metadata(bundle, use_current_density=use_current_density)
+    metadata_rows = build_pc_report_metadata(
+        bundle,
+        use_current_density=use_current_density,
+        language=language,
+    )
     indicator_rows = build_pc_report_indicators(
         bundle,
         point_fraction=point_fraction,
         use_current_density=use_current_density,
+        language=language,
+        time_unit=str(plot_kwargs.get("time_unit", "s")),
     )
 
     with PdfPages(output_path) as pdf:
@@ -2542,7 +3156,11 @@ def export_pc_series_by_time_report_pdf(
         table_fig.text(
             0.05,
             0.965,
-            f"PC Series by time Report - {bundle.description} #{bundle.curve_id}",
+            translate(
+                "pc_series_report_title",
+                language,
+                curve=f"{bundle.description} #{bundle.curve_id}",
+            ),
             fontsize=18,
             fontweight="bold",
             ha="left",
@@ -2551,14 +3169,83 @@ def export_pc_series_by_time_report_pdf(
         table_fig.text(
             0.05,
             0.935,
-            "Shared PC curve metadata and indicators",
+            translate("pc_series_report_subtitle", language),
             fontsize=10,
             ha="left",
             va="top",
             color="#4a5568",
         )
-        _add_report_table(ax, "Metadata", metadata_rows, [0.05, 0.53, 0.90, 0.34])
-        _add_report_table(ax, "Indicators", indicator_rows, [0.05, 0.08, 0.90, 0.36])
+        _add_report_table(ax, translate("metadata", language), metadata_rows, [0.05, 0.53, 0.90, 0.34], language=language)
+        _add_report_table(ax, translate("indicators", language), indicator_rows, [0.05, 0.08, 0.90, 0.36], language=language)
+        pdf.savefig(table_fig, bbox_inches="tight")
+
+    return output_path
+
+
+def export_pc_dv_di_report_pdf(
+    bundle: CurveBundle,
+    output_path: Path,
+    *,
+    plot_kwargs: dict[str, object],
+) -> Path:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    plot_kwargs = dict(plot_kwargs)
+    language = _pc_language(str(plot_kwargs.get("language", "")))
+    point_fraction = float(plot_kwargs.get("point_fraction", 1.0))
+    use_current_density = bool(plot_kwargs.get("use_current_density", True))
+    smoothing_algorithm = str(plot_kwargs.get("smoothing_algorithm", "Median filter"))
+    smoothing_window = int(plot_kwargs.get("smoothing_window", 1))
+
+    metadata_rows = build_pc_report_metadata(
+        bundle,
+        use_current_density=use_current_density,
+        language=language,
+    )
+    indicator_rows = build_pc_dv_di_report_indicators(
+        bundle,
+        point_fraction=point_fraction,
+        smoothing_algorithm=smoothing_algorithm,
+        smoothing_window=smoothing_window,
+        use_current_density=use_current_density,
+        language=language,
+    )
+
+    with PdfPages(output_path) as pdf:
+        plot_fig = Figure(figsize=(9.5, 6.2), dpi=150)
+        has_plot = draw_dv_di_on_figure(plot_fig, bundle=bundle, **plot_kwargs)
+        if not has_plot:
+            raise ValueError("No hay datos suficientes para generar el grafico del reporte.")
+        pdf.savefig(plot_fig, bbox_inches="tight")
+
+        table_fig = Figure(figsize=(8.5, 11.0), dpi=150)
+        ax = table_fig.add_subplot(111)
+        ax.axis("off")
+        table_fig.text(
+            0.05,
+            0.965,
+            translate(
+                "pc_dvdi_report_title",
+                language,
+                curve=f"{bundle.description} #{bundle.curve_id}",
+            ),
+            fontsize=18,
+            fontweight="bold",
+            ha="left",
+            va="top",
+        )
+        table_fig.text(
+            0.05,
+            0.935,
+            translate("pc_dvdi_report_subtitle", language),
+            fontsize=10,
+            ha="left",
+            va="top",
+            color="#4a5568",
+        )
+        _add_report_table(ax, translate("metadata", language), metadata_rows, [0.05, 0.53, 0.90, 0.34], language=language)
+        _add_report_table(ax, translate("indicators", language), indicator_rows, [0.05, 0.08, 0.90, 0.36], language=language)
         pdf.savefig(table_fig, bbox_inches="tight")
 
     return output_path
@@ -2946,6 +3633,7 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
                 line_width=_positive_float(line_width_var.get(), "Grosor de línea"),
                 show_slope_guides=show_slope_guides_var.get(),
                 indicator_current=indicator_current_var.get(),
+                language=language,
                 **_collect_limits(),
             )
 
@@ -3046,6 +3734,60 @@ def _open_v_vs_i_window_single(input_dir: Path, font_defaults: PlotFontDefaults 
 
         _plot()
         status_var.set("Valores restaurados.")
+
+    def _collect_report_plot_kwargs() -> dict[str, object]:
+        return {
+            "show_asc": bool(asc_var.get()),
+            "show_dsc": bool(dsc_var.get()),
+            "point_fraction": float(point_fraction_var.get()),
+            **_smoothing_config(),
+            **_axis_mode_config(),
+            "use_current_density": bool(current_density_var.get()),
+            "asc_marker": asc_marker_var.get(),
+            "dsc_marker": dsc_marker_var.get(),
+            "dvdi_linestyle": dvdi_line_var.get(),
+            "x_tick_count": int(x_tick_count_var.get()),
+            "y_tick_count": int(y_tick_count_var.get()),
+            "plot_title": plot_title_var.get(),
+            "show_title": bool(show_title_var.get()),
+            "title_fontsize": _positive_float(title_fontsize_var.get(), "Tamaño del título"),
+            "tick_fontsize": _positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
+            "label_fontsize": _positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
+            "legend_fontsize": _positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
+            "marker_size": _positive_float(marker_size_var.get(), "Tamaño de marcador"),
+            "hollow_markers": bool(hollow_markers_var.get()),
+            "line_width": _positive_float(line_width_var.get(), "Grosor de línea"),
+            "language": language,
+            **_collect_limits(),
+        }
+
+    def _export_report() -> None:
+        try:
+            initial_dir = Path(output_dir) if output_dir is not None else Path.cwd()
+            initial_dir.mkdir(parents=True, exist_ok=True)
+            default_name = f"PC_dVdI_Report_{_safe_filename_part(bundle.description)}_#{bundle.curve_id}.pdf"
+            path_text = filedialog.asksaveasfilename(
+                title="Guardar reporte PC dV/dI",
+                initialdir=str(initial_dir),
+                initialfile=default_name,
+                defaultextension=".pdf",
+                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            )
+            if not path_text:
+                status_var.set("Exportacion de reporte cancelada.")
+                return
+
+            exported_path = export_pc_dv_di_report_pdf(
+                bundle=bundle,
+                output_path=Path(path_text),
+                plot_kwargs=_collect_report_plot_kwargs(),
+            )
+        except Exception as exc:
+            status_var.set(f"Error al exportar reporte: {type(exc).__name__}: {exc}")
+            messagebox.showerror("PC dV/dI Report", str(exc))
+            return
+
+        status_var.set(f"Reporte exportado: {exported_path}")
 
     asc_marker_combo.bind("<<ComboboxSelected>>", _schedule_plot)
     dsc_marker_combo.bind("<<ComboboxSelected>>", _schedule_plot)
@@ -3218,7 +3960,9 @@ def _build_v_vs_i_tab(
     source_contexts: dict[str, dict[str, object]],
     font_defaults: PlotFontDefaults,
     output_dir: Path | None = None,
+    language: str = "es",
 ) -> dict[str, object]:
+    language = normalize_language(language)
     tab_title = f"Etapa {bundle.curve_id} - {bundle.description}"
     default_limits = compute_default_v_vs_i_limits(bundle, use_current_density=True)
 
@@ -3574,6 +4318,7 @@ def _build_v_vs_i_tab(
             "line_width": _positive_float(line_width_var.get(), "Grosor de lÃ­nea"),
             "show_slope_guides": bool(show_slope_guides_var.get()),
             "indicator_current": float(indicator_current_var.get()),
+            "language": language,
             **_collect_limits(),
         }
 
@@ -4291,11 +5036,15 @@ def open_v_vs_i_window(
     input_dir: Path,
     font_defaults: PlotFontDefaults | None = None,
     output_dir: Path | None = None,
+    language: str = "es",
 ) -> None:
     bundles = discover_curve_bundles(Path(input_dir))
     if not bundles:
         raise ValueError("No se encontraron curvas de polarizaciÃ³n vÃ¡lidas.")
 
+    global PC_LANGUAGE
+    PC_LANGUAGE = _pc_language(language)
+    language = PC_LANGUAGE
     font_defaults = resolve_plot_font_defaults(font_defaults)
     font_default_values = font_defaults.as_strings()
 
@@ -4327,6 +5076,7 @@ def open_v_vs_i_window(
             source_contexts,
             font_defaults,
             output_dir=output_dir,
+            language=language,
         )
         source_contexts[str(context["tab_title"])] = context
 
@@ -4341,11 +5091,17 @@ def open_v_vs_i_window(
     win.protocol("WM_DELETE_WINDOW", _on_close)
 
 
-def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
+def open_dv_di_window(
+    input_dir: Path,
+    font_defaults: PlotFontDefaults | None = None,
+    output_dir: Path | None = None,
+    language: str = "es",
+) -> None:
     bundles = discover_curve_bundles(Path(input_dir))
     if not bundles:
         raise ValueError("No se encontraron curvas de polarización válidas.")
 
+    language = _pc_language(language)
     font_defaults = resolve_plot_font_defaults(font_defaults)
     font_default_values = font_defaults.as_strings()
     bundle = bundles[0]
@@ -4354,6 +5110,7 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
         smoothing_algorithm="Median filter",
         smoothing_window=1,
         logarithmic_y=True,
+        use_current_density=True,
     )
 
     win = tk.Toplevel()
@@ -4390,6 +5147,7 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
 
     asc_var = tk.BooleanVar(value=True)
     dsc_var = tk.BooleanVar(value=True)
+    current_density_var = tk.BooleanVar(value=True)
     point_fraction_var = tk.DoubleVar(value=1.0)
 
     x_min_var = tk.StringVar(value=default_limits["x_min"])
@@ -4417,6 +5175,7 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     initial_state = {
         "asc": True,
         "dsc": True,
+        "current_density": True,
         "fraction": 1.0,
         "x_min": default_limits["x_min"],
         "x_max": default_limits["x_max"],
@@ -4447,6 +5206,7 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
 
     plot_job = {"id": None}
     suspend_events = {"value": False}
+    current_density_state = {"value": True}
     limit_entries: dict[str, ttk.Entry] = {}
 
     def _schedule_plot(*_args):
@@ -4616,6 +5376,38 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
         for key, entry in limit_entries.items():
             entry.state(["disabled"] if states[key] else ["!disabled"])
 
+    def _on_current_density_toggle() -> None:
+        new_state = current_density_var.get()
+        old_state = current_density_state["value"]
+        if new_state == old_state:
+            return
+
+        area_cm2 = _bundle_area_cm2(bundle)
+        if area_cm2 is None or area_cm2 <= 0:
+            current_density_var.set(old_state)
+            status_var.set("Error: no se pudo leer un AREA valida para convertir la corriente.")
+            return
+
+        current_factor = 1.0 / area_cm2 if new_state else area_cm2
+        dvdi_factor = area_cm2 if new_state else 1.0 / area_cm2
+
+        suspend_events["value"] = True
+        try:
+            for variable in (x_min_var, x_max_var):
+                value = _optional_float(variable.get())
+                if value is not None:
+                    variable.set(f"{value * current_factor:.6g}")
+            for variable in (dvdi_min_var, dvdi_max_var):
+                value = _optional_float(variable.get())
+                if value is not None:
+                    variable.set(f"{value * dvdi_factor:.6g}")
+        finally:
+            suspend_events["value"] = False
+
+        current_density_state["value"] = new_state
+        _plot()
+        status_var.set("Unidad del eje x actualizada.")
+
     def _plot():
         plot_job["id"] = None
 
@@ -4628,6 +5420,7 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
                 point_fraction=point_fraction_var.get(),
                 **_smoothing_config(),
                 **_axis_mode_config(),
+                use_current_density=current_density_var.get(),
                 asc_marker=asc_marker_var.get(),
                 dsc_marker=dsc_marker_var.get(),
                 dvdi_linestyle=dvdi_line_var.get(),
@@ -4642,6 +5435,7 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
                 marker_size=_positive_float(marker_size_var.get(), "Tamaño de marcador"),
                 hollow_markers=hollow_markers_var.get(),
                 line_width=_positive_float(line_width_var.get(), "Grosor de línea"),
+                language=language,
                 **_collect_limits(),
             )
         except ValueError as exc:
@@ -4676,6 +5470,7 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
                 point_fraction=point_fraction_var.get(),
                 **_smoothing_config(),
                 **_axis_mode_config(),
+                use_current_density=current_density_var.get(),
                 locked_x_min=_optional_float(x_min_var.get()) if x_min_lock_var.get() else None,
                 locked_x_max=_optional_float(x_max_var.get()) if x_max_lock_var.get() else None,
                 locked_dvdi_min=_optional_float(dvdi_min_var.get()) if dvdi_min_lock_var.get() else None,
@@ -4706,6 +5501,7 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
         try:
             asc_var.set(initial_state["asc"])
             dsc_var.set(initial_state["dsc"])
+            current_density_var.set(initial_state["current_density"])
             logarithmic_y_var.set(initial_state["logarithmic_y"])
             smoothing_algorithm_var.set(initial_state["smoothing_algorithm"])
             smoothing_window_var.set(initial_state["smoothing_window"])
@@ -4732,6 +5528,7 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
             x_max_lock_var.set(initial_state["x_max_lock"])
             dvdi_min_lock_var.set(initial_state["dvdi_min_lock"])
             dvdi_max_lock_var.set(initial_state["dvdi_max_lock"])
+            current_density_state["value"] = initial_state["current_density"]
             _apply_lock_states()
             _update_point_label()
         finally:
@@ -4743,6 +5540,60 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     asc_marker_combo.bind("<<ComboboxSelected>>", _schedule_plot)
     dsc_marker_combo.bind("<<ComboboxSelected>>", _schedule_plot)
     dvdi_line_combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    def _collect_report_plot_kwargs() -> dict[str, object]:
+        return {
+            "show_asc": bool(asc_var.get()),
+            "show_dsc": bool(dsc_var.get()),
+            "point_fraction": float(point_fraction_var.get()),
+            **_smoothing_config(),
+            **_axis_mode_config(),
+            "use_current_density": bool(current_density_var.get()),
+            "asc_marker": asc_marker_var.get(),
+            "dsc_marker": dsc_marker_var.get(),
+            "dvdi_linestyle": dvdi_line_var.get(),
+            "x_tick_count": int(x_tick_count_var.get()),
+            "y_tick_count": int(y_tick_count_var.get()),
+            "plot_title": plot_title_var.get(),
+            "show_title": bool(show_title_var.get()),
+            "title_fontsize": _positive_float(title_fontsize_var.get(), "Tamaño del título"),
+            "tick_fontsize": _positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
+            "label_fontsize": _positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
+            "legend_fontsize": _positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
+            "marker_size": _positive_float(marker_size_var.get(), "Tamaño de marcador"),
+            "hollow_markers": bool(hollow_markers_var.get()),
+            "line_width": _positive_float(line_width_var.get(), "Grosor de línea"),
+            "language": language,
+            **_collect_limits(),
+        }
+
+    def _export_report() -> None:
+        try:
+            initial_dir = Path(output_dir) if output_dir is not None else Path.cwd()
+            initial_dir.mkdir(parents=True, exist_ok=True)
+            default_name = f"PC_dVdI_Report_{_safe_filename_part(bundle.description)}_#{bundle.curve_id}.pdf"
+            path_text = filedialog.asksaveasfilename(
+                title="Guardar reporte PC dV/dI",
+                initialdir=str(initial_dir),
+                initialfile=default_name,
+                defaultextension=".pdf",
+                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            )
+            if not path_text:
+                status_var.set("Exportacion de reporte cancelada.")
+                return
+
+            exported_path = export_pc_dv_di_report_pdf(
+                bundle=bundle,
+                output_path=Path(path_text),
+                plot_kwargs=_collect_report_plot_kwargs(),
+            )
+        except Exception as exc:
+            status_var.set(f"Error al exportar reporte: {type(exc).__name__}: {exc}")
+            messagebox.showerror("PC dV/dI Report", str(exc))
+            return
+
+        status_var.set(f"Reporte exportado: {exported_path}")
+
     smoothing_algo_combo.bind("<<ComboboxSelected>>", _update_smoothing_ui)
     for widget in (
         title_entry,
@@ -4772,6 +5623,12 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     ttk.Checkbutton(series_box, text="Descendente", variable=dsc_var, command=_schedule_plot).pack(
         anchor="w", padx=8, pady=2
     )
+    ttk.Checkbutton(
+        series_box,
+        text="x-axis A/cm^2",
+        variable=current_density_var,
+        command=_on_current_density_toggle,
+    ).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Eje y logarítmico", variable=logarithmic_y_var, command=_schedule_plot).pack(
         anchor="w", padx=8, pady=2
     )
@@ -4840,6 +5697,7 @@ def open_dv_di_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
 
     ttk.Button(buttons_frame, text="Restablecer", command=_reset).pack(side="left", padx=(0, 6))
     ttk.Button(buttons_frame, text="Autoescala", command=_autofit).pack(side="left")
+    ttk.Button(buttons_frame, text="Reporte PDF", command=_export_report).pack(side="left", padx=(6, 0))
 
     point_scale.bind("<ButtonRelease-1>", _on_scale_release)
     point_scale.bind("<B1-Motion>", _on_scale_move)
@@ -5000,6 +5858,499 @@ def export_folder(input_dir: Path, output_dir: Path) -> list[Path]:
 
     return exported_files
 
+
+_draw_step_stability_on_figure_linear = draw_step_stability_on_figure
+
+
+def draw_step_stability_on_figure(*args, voltage_log_scale: bool = True, **kwargs) -> bool:
+    has_plot = _draw_step_stability_on_figure_linear(*args, **kwargs)
+    if not has_plot or not voltage_log_scale:
+        return has_plot
+
+    show_delta_voltage = bool(kwargs.get("show_delta_voltage", True))
+    if not show_delta_voltage:
+        return has_plot
+
+    fig = kwargs.get("fig")
+    if fig is None and args:
+        fig = args[0]
+    bundle = kwargs.get("bundle")
+    if bundle is None and len(args) > 1:
+        bundle = args[1]
+    if fig is None or bundle is None or not fig.axes:
+        return has_plot
+
+    use_current_density = bool(kwargs.get("use_current_density", True))
+    step_rows = _step_stability_direction_rows(bundle, use_current_density=use_current_density)
+    selected_values: list[float] = []
+    if bool(kwargs.get("show_asc", True)):
+        selected_values.extend(row["DeltaV"] for row in step_rows["asc"])
+    if bool(kwargs.get("show_dsc", True)):
+        selected_values.extend(row["DeltaV"] for row in step_rows["dsc"])
+
+    positive_values = [value for value in selected_values if value > 0]
+    if not positive_values:
+        return has_plot
+
+    voltage_axis = fig.axes[0]
+    data_min = min(positive_values)
+    data_max = max(positive_values)
+    requested_min = kwargs.get("dv_min")
+    requested_max = kwargs.get("dv_max")
+
+    bottom = requested_min if isinstance(requested_min, (int, float)) and requested_min > 0 else data_min / 1.25
+    top = requested_max if isinstance(requested_max, (int, float)) and requested_max > bottom else data_max * 1.25
+    if bottom <= 0:
+        bottom = data_min
+    if top <= bottom:
+        bottom = data_min / 1.25
+        top = data_max * 1.25
+    if top <= bottom:
+        top = bottom * 10.0
+
+    voltage_axis.set_yscale("log")
+    voltage_axis.set_ylim(bottom, top)
+    fig.tight_layout()
+    return has_plot
+
+
+def open_step_stability_window(
+    input_dir: Path,
+    font_defaults: PlotFontDefaults | None = None,
+    output_dir: Path | None = None,
+    language: str = "es",
+    *,
+    parent: tk.Misc | None = None,
+    bundle: CurveBundle | None = None,
+) -> None:
+    language = _pc_language(language)
+
+    if bundle is None:
+        bundles = discover_curve_bundles(Path(input_dir))
+        if not bundles:
+            raise ValueError("No se encontraron curvas de polarizacion validas.")
+    else:
+        bundles = [bundle]
+
+    font_defaults = resolve_plot_font_defaults(font_defaults)
+    font_default_values = font_defaults.as_strings()
+
+    if parent is None and len(bundles) > 1:
+        root = tk._default_root
+        created_root = False
+        if root is None:
+            root = tk.Tk()
+            root.withdraw()
+            created_root = True
+
+        win = tk.Toplevel(root)
+        win.title("PC - Step Stability")
+        win.geometry("1320x820")
+        win.configure(
+            bg=ttk.Style(win).lookup("App.TFrame", "background")
+            or ttk.Style(win).lookup("TFrame", "background")
+        )
+
+        notebook = ttk.Notebook(win)
+        notebook.pack(fill="both", expand=True, padx=8, pady=8)
+
+        for tab_bundle in bundles:
+            tab_title = f"Etapa {tab_bundle.curve_id} - {tab_bundle.description}"
+            tab = ttk.Frame(notebook)
+            notebook.add(tab, text=tab_title[:28] + ("..." if len(tab_title) > 28 else ""))
+            open_step_stability_window(
+                input_dir,
+                font_defaults=font_defaults,
+                output_dir=output_dir,
+                language=language,
+                parent=tab,
+                bundle=tab_bundle,
+            )
+
+        def _on_close() -> None:
+            win.destroy()
+            if created_root:
+                root.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+        return
+
+    bundle = bundles[0]
+    default_limits = compute_default_step_stability_limits(bundle, use_current_density=True)
+
+    if parent is None:
+        win = tk.Toplevel()
+        win.title(f"PC - Step Stability - {bundle.description} #{bundle.curve_id}")
+        win.geometry("1200x720")
+    else:
+        win = parent
+
+    controls_host, plot_outer = create_resizable_plot_layout(win, sidebar_width=320)
+    controls_frame = _build_scrollable_controls(controls_host)
+
+    toolbar_frame = ttk.Frame(plot_outer)
+    toolbar_frame.pack(side="top", fill="x")
+
+    canvas_frame = ttk.Frame(plot_outer)
+    canvas_frame.pack(side="top", fill="both", expand=True)
+
+    fig = Figure(figsize=(9, 5.5), dpi=100)
+    canvas = FigureCanvasTkAgg(fig, master=canvas_frame)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    toolbar = NavigationToolbar2Tk(canvas, toolbar_frame, pack_toolbar=False)
+    toolbar.update()
+    toolbar.pack(side="left", fill="x")
+
+    status_var = tk.StringVar(value="Listo.")
+    asc_var = tk.BooleanVar(value=True)
+    dsc_var = tk.BooleanVar(value=True)
+    voltage_delta_var = tk.BooleanVar(value=True)
+    temperature_delta_var = tk.BooleanVar(value=True)
+    current_density_var = tk.BooleanVar(value=True)
+    current_density_state = {"value": True}
+
+    asc_marker_var = tk.StringVar(value="^")
+    dsc_marker_var = tk.StringVar(value="v")
+    voltage_line_var = tk.StringVar(value="-")
+    temperature_line_var = tk.StringVar(value="--")
+    marker_size_var = tk.StringVar(value="6")
+    line_width_var = tk.StringVar(value="1.5")
+    hollow_markers_var = tk.BooleanVar(value=False)
+
+    x_min_var = tk.StringVar(value=default_limits["x_min"])
+    x_max_var = tk.StringVar(value=default_limits["x_max"])
+    dv_min_var = tk.StringVar(value=default_limits["dv_min"])
+    dv_max_var = tk.StringVar(value=default_limits["dv_max"])
+    dt_min_var = tk.StringVar(value=default_limits["dt_min"])
+    dt_max_var = tk.StringVar(value=default_limits["dt_max"])
+    x_tick_count_var = tk.IntVar(value=6)
+    y_tick_count_var = tk.IntVar(value=6)
+
+    plot_title_var = tk.StringVar(value="")
+    show_title_var = tk.BooleanVar(value=True)
+    title_fontsize_var = tk.StringVar(value=font_default_values["title"])
+    tick_fontsize_var = tk.StringVar(value=font_default_values["tick"])
+    label_fontsize_var = tk.StringVar(value=font_default_values["label"])
+    legend_fontsize_var = tk.StringVar(value=font_default_values["legend"])
+
+    initial_state = {
+        "asc": True,
+        "dsc": True,
+        "voltage_delta": True,
+        "temperature_delta": True,
+        "current_density": True,
+        "asc_marker": "^",
+        "dsc_marker": "v",
+        "voltage_line": "-",
+        "temperature_line": "--",
+        "marker_size": "6",
+        "line_width": "1.5",
+        "hollow_markers": False,
+        "x_min": default_limits["x_min"],
+        "x_max": default_limits["x_max"],
+        "dv_min": default_limits["dv_min"],
+        "dv_max": default_limits["dv_max"],
+        "dt_min": default_limits["dt_min"],
+        "dt_max": default_limits["dt_max"],
+        "x_tick_count": 6,
+        "y_tick_count": 6,
+        "plot_title": "",
+        "show_title": True,
+        "title_fontsize": font_default_values["title"],
+        "tick_fontsize": font_default_values["tick"],
+        "label_fontsize": font_default_values["label"],
+        "legend_fontsize": font_default_values["legend"],
+    }
+
+    plot_job = {"id": None}
+    suspend_events = {"value": False}
+
+    def _positive_float(text: str, name: str) -> float:
+        value = text.strip().replace(",", ".")
+        if not value:
+            raise ValueError(f"{name} no puede estar vacio.")
+        number = float(value)
+        if number <= 0:
+            raise ValueError(f"{name} debe ser mayor que 0.")
+        return number
+
+    def _collect_limits() -> dict[str, float | None]:
+        return {
+            "x_min": _optional_float(x_min_var.get()),
+            "x_max": _optional_float(x_max_var.get()),
+            "dv_min": _optional_float(dv_min_var.get()),
+            "dv_max": _optional_float(dv_max_var.get()),
+            "dt_min": _optional_float(dt_min_var.get()),
+            "dt_max": _optional_float(dt_max_var.get()),
+        }
+
+    def _schedule_plot(*_args) -> None:
+        if suspend_events["value"]:
+            return
+        if plot_job["id"] is not None:
+            win.after_cancel(plot_job["id"])
+        plot_job["id"] = win.after(20, _plot)
+
+    def _plot() -> None:
+        plot_job["id"] = None
+        try:
+            has_plot = draw_step_stability_on_figure(
+                fig=fig,
+                bundle=bundle,
+                show_asc=asc_var.get(),
+                show_dsc=dsc_var.get(),
+                show_voltage_delta=voltage_delta_var.get(),
+                show_temperature_delta=temperature_delta_var.get(),
+                use_current_density=current_density_var.get(),
+                asc_marker=asc_marker_var.get(),
+                dsc_marker=dsc_marker_var.get(),
+                voltage_linestyle=voltage_line_var.get(),
+                temperature_linestyle=temperature_line_var.get(),
+                x_tick_count=x_tick_count_var.get(),
+                y_tick_count=y_tick_count_var.get(),
+                plot_title=plot_title_var.get(),
+                show_title=show_title_var.get(),
+                title_fontsize=_positive_float(title_fontsize_var.get(), "Tamaño del titulo"),
+                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
+                label_fontsize=_positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
+                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
+                marker_size=_positive_float(marker_size_var.get(), "Tamaño de marcador"),
+                hollow_markers=hollow_markers_var.get(),
+                line_width=_positive_float(line_width_var.get(), "Grosor de linea"),
+                language=language,
+                **_collect_limits(),
+            )
+        except ValueError as exc:
+            status_var.set(f"Error: {exc}")
+            return
+
+        if not has_plot:
+            fig.clear()
+            canvas.draw_idle()
+            status_var.set("No se muestra grafico: seleccione al menos una direccion y una magnitud.")
+            return
+
+        canvas.draw_idle()
+        status_var.set("Grafico actualizado.")
+
+    def _autofit() -> None:
+        try:
+            fitted = compute_autofit_step_stability_limits(
+                bundle=bundle,
+                show_asc=asc_var.get(),
+                show_dsc=dsc_var.get(),
+                show_voltage_delta=voltage_delta_var.get(),
+                show_temperature_delta=temperature_delta_var.get(),
+                use_current_density=current_density_var.get(),
+            )
+        except ValueError as exc:
+            status_var.set(f"Error: {exc}")
+            return
+
+        suspend_events["value"] = True
+        try:
+            x_min_var.set(fitted["x_min"])
+            x_max_var.set(fitted["x_max"])
+            if fitted["dv_min"] != "" or fitted["dv_max"] != "":
+                dv_min_var.set(fitted["dv_min"])
+                dv_max_var.set(fitted["dv_max"])
+            if fitted["dt_min"] != "" or fitted["dt_max"] != "":
+                dt_min_var.set(fitted["dt_min"])
+                dt_max_var.set(fitted["dt_max"])
+        finally:
+            suspend_events["value"] = False
+
+        _plot()
+        status_var.set("Autoescala aplicada.")
+
+    def _on_current_density_toggle() -> None:
+        new_state = current_density_var.get()
+        old_state = current_density_state["value"]
+        if new_state == old_state:
+            return
+
+        area_cm2 = _bundle_area_cm2(bundle)
+        if area_cm2 is None or area_cm2 <= 0:
+            current_density_var.set(old_state)
+            status_var.set("Error: no se pudo leer un AREA valida para convertir la corriente.")
+            return
+
+        factor = 1.0 / area_cm2 if new_state else area_cm2
+        suspend_events["value"] = True
+        try:
+            for variable in (x_min_var, x_max_var):
+                value = _optional_float(variable.get())
+                if value is not None:
+                    variable.set(f"{value * factor:.6g}")
+        finally:
+            suspend_events["value"] = False
+
+        current_density_state["value"] = new_state
+        _plot()
+        status_var.set("Unidad del eje x actualizada.")
+
+    def _reset() -> None:
+        suspend_events["value"] = True
+        try:
+            asc_var.set(initial_state["asc"])
+            dsc_var.set(initial_state["dsc"])
+            voltage_delta_var.set(initial_state["voltage_delta"])
+            temperature_delta_var.set(initial_state["temperature_delta"])
+            current_density_var.set(initial_state["current_density"])
+            current_density_state["value"] = initial_state["current_density"]
+            asc_marker_var.set(initial_state["asc_marker"])
+            dsc_marker_var.set(initial_state["dsc_marker"])
+            voltage_line_var.set(initial_state["voltage_line"])
+            temperature_line_var.set(initial_state["temperature_line"])
+            marker_size_var.set(initial_state["marker_size"])
+            line_width_var.set(initial_state["line_width"])
+            hollow_markers_var.set(initial_state["hollow_markers"])
+            x_min_var.set(initial_state["x_min"])
+            x_max_var.set(initial_state["x_max"])
+            dv_min_var.set(initial_state["dv_min"])
+            dv_max_var.set(initial_state["dv_max"])
+            dt_min_var.set(initial_state["dt_min"])
+            dt_max_var.set(initial_state["dt_max"])
+            x_tick_count_var.set(initial_state["x_tick_count"])
+            y_tick_count_var.set(initial_state["y_tick_count"])
+            plot_title_var.set(initial_state["plot_title"])
+            show_title_var.set(initial_state["show_title"])
+            title_fontsize_var.set(initial_state["title_fontsize"])
+            tick_fontsize_var.set(initial_state["tick_fontsize"])
+            label_fontsize_var.set(initial_state["label_fontsize"])
+            legend_fontsize_var.set(initial_state["legend_fontsize"])
+        finally:
+            suspend_events["value"] = False
+
+        _plot()
+        status_var.set("Valores restaurados.")
+
+    ttk.Label(
+        controls_frame,
+        text=f"Curva detectada:\nEtapa {bundle.curve_id} - {bundle.description}",
+        justify="left",
+    ).pack(anchor="w", pady=(0, 10))
+
+    series_box = ttk.LabelFrame(controls_frame, text="Series")
+    series_box.pack(fill="x", pady=5)
+    for text, variable, command in (
+        ("Ascendente", asc_var, _schedule_plot),
+        ("Descendente", dsc_var, _schedule_plot),
+        ("Delta V", voltage_delta_var, _schedule_plot),
+        ("Delta T", temperature_delta_var, _schedule_plot),
+        ("x-axis A/cm^2", current_density_var, _on_current_density_toggle),
+    ):
+        ttk.Checkbutton(series_box, text=text, variable=variable, command=command).pack(anchor="w", padx=8, pady=2)
+
+    style_box = ttk.LabelFrame(controls_frame, text="Estilo")
+    style_box.pack(fill="x", pady=5)
+    style_specs = [
+        ("Marcador ascendente", asc_marker_var, MARKER_OPTIONS),
+        ("Marcador descendente", dsc_marker_var, MARKER_OPTIONS),
+        ("Linea de Delta V", voltage_line_var, LINESTYLE_OPTIONS),
+        ("Linea de Delta T", temperature_line_var, LINESTYLE_OPTIONS),
+    ]
+    for row_idx, (label, variable, values) in enumerate(style_specs):
+        ttk.Label(style_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        combo = ttk.Combobox(style_box, textvariable=variable, values=values, state="readonly", width=10)
+        combo.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    for row_idx, (label, variable, start, stop, step) in enumerate(
+        (
+            ("Tamaño de marcador", marker_size_var, 0.0, 20.0, 0.5),
+            ("Grosor de linea", line_width_var, 0.0, 10.0, 0.1),
+        ),
+        start=len(style_specs),
+    ):
+        ttk.Label(style_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        spin = ttk.Spinbox(style_box, from_=start, to=stop, increment=step, textvariable=variable, width=10)
+        spin.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        spin.bind("<Return>", _schedule_plot)
+        spin.bind("<KP_Enter>", _schedule_plot)
+        spin.bind("<FocusOut>", _schedule_plot)
+        spin.configure(command=_schedule_plot)
+    ttk.Checkbutton(
+        style_box,
+        text="Marcadores vacios",
+        variable=hollow_markers_var,
+        command=_schedule_plot,
+    ).grid(row=len(style_specs) + 2, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+
+    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamaños")
+    text_box.pack(fill="x", pady=5)
+    text_specs = [
+        ("Titulo", plot_title_var, None),
+        ("Tamaño del titulo", title_fontsize_var, (6.0, 50.0, 0.5)),
+        ("Tamaño de ticks", tick_fontsize_var, (6.0, 40.0, 0.5)),
+        ("Tamaño de etiquetas", label_fontsize_var, (6.0, 40.0, 0.5)),
+        ("Tamaño de leyenda", legend_fontsize_var, (6.0, 40.0, 0.5)),
+    ]
+    for row_idx, (label, variable, spin_cfg) in enumerate(text_specs):
+        ttk.Label(text_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        if spin_cfg is None:
+            widget = ttk.Entry(text_box, textvariable=variable, width=28)
+        else:
+            widget = ttk.Spinbox(
+                text_box,
+                from_=spin_cfg[0],
+                to=spin_cfg[1],
+                increment=spin_cfg[2],
+                textvariable=variable,
+                width=10,
+            )
+        widget.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        widget.bind("<Return>", _schedule_plot)
+        widget.bind("<KP_Enter>", _schedule_plot)
+        widget.bind("<FocusOut>", _schedule_plot)
+        try:
+            widget.configure(command=_schedule_plot)
+        except Exception:
+            pass
+    ttk.Checkbutton(text_box, text="Mostrar titulo", variable=show_title_var, command=_schedule_plot).grid(
+        row=len(text_specs), column=0, columnspan=2, sticky="w", padx=8, pady=3
+    )
+
+    limits_box = ttk.LabelFrame(controls_frame, text="Limites de ejes")
+    limits_box.pack(fill="x", pady=5)
+    limit_specs = [
+        ("I min", x_min_var),
+        ("I max", x_max_var),
+        ("Delta V min", dv_min_var),
+        ("Delta V max", dv_max_var),
+        ("Delta T min", dt_min_var),
+        ("Delta T max", dt_max_var),
+    ]
+    for row_idx, (label, variable) in enumerate(limit_specs):
+        ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        entry = ttk.Entry(limits_box, textvariable=variable, width=12)
+        entry.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        entry.bind("<Return>", _schedule_plot)
+        entry.bind("<KP_Enter>", _schedule_plot)
+        entry.bind("<FocusOut>", _schedule_plot)
+    for row_idx, (label, variable) in enumerate((("x-Ticks", x_tick_count_var), ("y-Ticks", y_tick_count_var)), start=len(limit_specs)):
+        ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        spin = tk.Spinbox(limits_box, from_=2, to=10, textvariable=variable, width=8)
+        spin.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        spin.bind("<Return>", _schedule_plot)
+        spin.bind("<FocusOut>", _schedule_plot)
+        spin.config(command=_schedule_plot)
+
+    ttk.Label(controls_frame, textvariable=status_var, wraplength=280, justify="left").pack(
+        anchor="w",
+        fill="x",
+        pady=(10, 10),
+    )
+
+    buttons = ttk.Frame(controls_frame)
+    buttons.pack(fill="x", pady=(5, 0))
+    ttk.Button(buttons, text="Restablecer", command=_reset).pack(side="left", padx=(0, 6))
+    ttk.Button(buttons, text="Autoescala", command=_autofit).pack(side="left")
+
+    _plot()
+
+
 def _show_pc_stub(title: str) -> None:
     messagebox.showinfo("PC", f"{title} aún no está implementado.")
 
@@ -5009,7 +6360,10 @@ def run_pipeline(
     output_dir: Path,
     selected_options: list[str] | None = None,
     font_defaults: PlotFontDefaults | None = None,
+    language: str = "es",
 ) -> list[Path]:
+    global PC_LANGUAGE
+    PC_LANGUAGE = _pc_language(language)
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
 
@@ -5020,16 +6374,36 @@ def run_pipeline(
     chosen = set(selected_options or [])
 
     if "V vs I" in chosen:
-        open_v_vs_i_window(input_dir, font_defaults=font_defaults, output_dir=output_dir)
+        open_v_vs_i_window(
+            input_dir,
+            font_defaults=font_defaults,
+            output_dir=output_dir,
+            language=language,
+        )
 
     if "Series by time" in chosen:
-        open_series_by_time_window(input_dir, font_defaults=font_defaults, output_dir=output_dir)
+        open_series_by_time_window(
+            input_dir,
+            font_defaults=font_defaults,
+            output_dir=output_dir,
+            language=language,
+        )
 
     if "dV/dI" in chosen:
-        open_dv_di_window(input_dir, font_defaults=font_defaults)
+        open_dv_di_window(
+            input_dir,
+            font_defaults=font_defaults,
+            output_dir=output_dir,
+            language=language,
+        )
 
     if "Step Stability" in chosen:
-        _show_pc_stub("Step Stability")
+        open_step_stability_window(
+            input_dir,
+            font_defaults=font_defaults,
+            output_dir=output_dir,
+            language=language,
+        )
 
     return exported_files
 
@@ -5039,19 +6413,76 @@ def open_series_by_time_window(
     input_dir: Path,
     font_defaults: PlotFontDefaults | None = None,
     output_dir: Path | None = None,
+    language: str = "es",
+    *,
+    parent: tk.Misc | None = None,
+    bundle: CurveBundle | None = None,
 ) -> None:
-    bundles = discover_curve_bundles(Path(input_dir))
-    if not bundles:
-        raise ValueError("No se encontraron curvas de polarización válidas.")
+    language = normalize_language(language)
+    if bundle is None:
+        bundles = discover_curve_bundles(Path(input_dir))
+        if not bundles:
+            raise ValueError("No se encontraron curvas de polarización válidas.")
+    else:
+        bundles = [bundle]
 
     font_defaults = resolve_plot_font_defaults(font_defaults)
     font_default_values = font_defaults.as_strings()
-    bundle = bundles[0]
-    default_limits = compute_default_series_by_time_limits(bundle, time_unit="s", use_current_density=True)
 
-    win = tk.Toplevel()
-    win.title(f"PC - Series by time - {bundle.description} #{bundle.curve_id}")
-    win.geometry("1200x720")
+    if parent is None and len(bundles) > 1:
+        root = tk._default_root
+        created_root = False
+        if root is None:
+            root = tk.Tk()
+            root.withdraw()
+            created_root = True
+
+        win = tk.Toplevel(root)
+        win.title("PC - Series by time")
+        win.geometry("1320x820")
+        win.configure(
+            bg=ttk.Style(win).lookup("App.TFrame", "background")
+            or ttk.Style(win).lookup("TFrame", "background")
+        )
+
+        notebook = ttk.Notebook(win)
+        notebook.pack(fill="both", expand=True, padx=8, pady=8)
+
+        for tab_bundle in bundles:
+            tab_title = f"Etapa {tab_bundle.curve_id} - {tab_bundle.description}"
+            tab = ttk.Frame(notebook)
+            notebook.add(tab, text=tab_title[:28] + ("..." if len(tab_title) > 28 else ""))
+            open_series_by_time_window(
+                input_dir,
+                font_defaults=font_defaults,
+                output_dir=output_dir,
+                language=language,
+                parent=tab,
+                bundle=tab_bundle,
+            )
+
+        def _on_close() -> None:
+            win.destroy()
+            if created_root:
+                root.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+        return
+
+    bundle = bundles[0]
+    default_time_unit = "min"
+    default_limits = compute_default_series_by_time_limits(
+        bundle,
+        time_unit=default_time_unit,
+        use_current_density=True,
+    )
+
+    if parent is None:
+        win = tk.Toplevel()
+        win.title(f"PC - Series by time - {bundle.description} #{bundle.curve_id}")
+        win.geometry("1200x720")
+    else:
+        win = parent
 
     controls_host, plot_outer = create_resizable_plot_layout(win, sidebar_width=320)
     controls_frame = _build_scrollable_controls(controls_host)
@@ -5084,7 +6515,7 @@ def open_series_by_time_window(
     current_var = tk.BooleanVar(value=True)
     temperature_var = tk.BooleanVar(value=True)
     current_density_var = tk.BooleanVar(value=True)
-    time_unit_var = tk.StringVar(value="s")
+    time_unit_var = tk.StringVar(value=default_time_unit)
 
     t_min_var = tk.StringVar(value=default_limits["t_min"])
     t_max_var = tk.StringVar(value=default_limits["t_max"])
@@ -5115,7 +6546,7 @@ def open_series_by_time_window(
         "current": True,
         "temperature": True,
         "current_density": True,
-        "time_unit": "s",
+        "time_unit": default_time_unit,
         "t_min": default_limits["t_min"],
         "t_max": default_limits["t_max"],
         "v_min": default_limits["v_min"],
@@ -5210,6 +6641,7 @@ def open_series_by_time_window(
                 marker_size=_positive_float(marker_size_var.get(), "Tamaño de marcador"),
                 line_width=_positive_float(line_width_var.get(), "Grosor de línea"),
                 hollow_markers=hollow_markers_var.get(),
+                language=language,
                 **_collect_limits(),
             )
         except ValueError as exc:
@@ -5399,6 +6831,7 @@ def open_series_by_time_window(
             "marker_size": _positive_float(marker_size_var.get(), "TamaÃ±o de marcador"),
             "line_width": _positive_float(line_width_var.get(), "Grosor de lÃ­nea"),
             "hollow_markers": bool(hollow_markers_var.get()),
+            "language": language,
             "point_fraction": 1.0,
             **_collect_limits(),
         }
@@ -5449,8 +6882,6 @@ def open_series_by_time_window(
     limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
     limits_box.pack(fill="x", pady=5)
 
-    ttk.Checkbutton(series_box, text="Ascendente", variable=asc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
-    ttk.Checkbutton(series_box, text="Descendente", variable=dsc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Voltaje", variable=voltage_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Corriente", variable=current_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Temperatura", variable=temperature_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
@@ -5502,22 +6933,12 @@ def open_series_by_time_window(
     legend_size_entry = ttk.Spinbox(text_box, from_=6.0, to=40.0, increment=0.5, textvariable=legend_fontsize_var, width=10)
     legend_size_entry.grid(row=4, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Tamaño de marcador").grid(row=5, column=0, sticky="w", padx=8, pady=3)
-    marker_size_entry = ttk.Spinbox(text_box, from_=0.0, to=20.0, increment=0.5, textvariable=marker_size_var, width=10)
-    marker_size_entry.grid(row=5, column=1, sticky="w", padx=8, pady=3)
-
-    ttk.Label(text_box, text="Grosor de línea").grid(row=6, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text="Grosor de línea").grid(row=5, column=0, sticky="w", padx=8, pady=3)
     line_width_entry = ttk.Spinbox(text_box, from_=0.0, to=10.0, increment=0.1, textvariable=line_width_var, width=10)
-    line_width_entry.grid(row=6, column=1, sticky="w", padx=8, pady=3)
+    line_width_entry.grid(row=5, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Checkbutton(
-        text_box,
-        text="Marcadores vacíos",
-        variable=hollow_markers_var,
-        command=_schedule_plot,
-    ).grid(row=7, column=0, columnspan=2, sticky="w", padx=8, pady=4)
     ttk.Checkbutton(text_box, text="Mostrar titulo", variable=show_title_var, command=_schedule_plot).grid(
-        row=8, column=0, columnspan=2, sticky="w", padx=8, pady=3
+        row=6, column=0, columnspan=2, sticky="w", padx=8, pady=3
     )
 
     limit_specs = [
@@ -5563,7 +6984,6 @@ def open_series_by_time_window(
         tick_size_entry,
         label_size_entry,
         legend_size_entry,
-        marker_size_entry,
         line_width_entry,
     ):
         widget.bind("<Return>", _schedule_plot)
@@ -5574,7 +6994,6 @@ def open_series_by_time_window(
         tick_size_entry,
         label_size_entry,
         legend_size_entry,
-        marker_size_entry,
         line_width_entry,
     ):
         spin.configure(command=_schedule_plot)
