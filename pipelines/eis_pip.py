@@ -29,15 +29,16 @@ import math
 
 from matplotlib.figure import Figure
 from matplotlib.text import Annotation
-from matplotlib.ticker import LinearLocator, LogLocator, MaxNLocator, StrMethodFormatter
+from matplotlib.ticker import FixedLocator, LinearLocator, LogLocator, MaxNLocator, StrMethodFormatter
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 import tkinter.messagebox as mb
 import tkinter as tk
-from tkinter import ttk, colorchooser
+from tkinter import ttk, colorchooser, filedialog
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.backends.backend_pdf import PdfPages
 
 from plot_defaults import (
     PlotFontDefaults,
@@ -47,6 +48,14 @@ from plot_defaults import (
     resolve_plot_font_defaults,
 )
 from ui_layout import create_resizable_plot_layout, create_scrollable_controls
+from i18n import normalize_language, translate
+
+
+EIS_LANGUAGE = "es"
+
+
+def _eis_language(language: str | None = None) -> str:
+    return normalize_language(language or EIS_LANGUAGE)
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +442,420 @@ def _triplet_series(
 
     return xs, ys, fs
 
+def _fmt_freq_hz(v: float) -> str:
+    av = abs(v)
+    if av >= 1e6:
+        return f"{v/1e6:.3g} MHz"
+    if av >= 1e3:
+        return f"{v/1e3:.3g} kHz"
+    return f"{v:.3g} Hz"
+
+
+def _is_zero_voltage_measurement(parsed: ParsedDTA, voltage_label: str | None = None) -> bool:
+    if voltage_label == "0V":
+        return True
+    vdc = to_float(parsed.meta_values.get("VDC", ""))
+    return vdc is not None and abs(vdc) <= 1e-12
+
+
+def _nyquist_y0_intercept(x_values: list[float], y_values: list[float]) -> float | None:
+    points = [
+        (float(x), float(y))
+        for x, y in zip(x_values, y_values)
+        if x is not None and y is not None
+    ]
+    if not points:
+        return None
+
+    exact = [x for x, y in points if abs(y) <= 1e-12]
+    if exact:
+        return exact[0]
+
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if abs(y1 - y0) <= 1e-18:
+            continue
+        if (y0 < 0 < y1) or (y1 < 0 < y0):
+            return x0 + ((0.0 - y0) * (x1 - x0) / (y1 - y0))
+
+    closest = sorted(points, key=lambda item: abs(item[1]))[:2]
+    if len(closest) < 2:
+        return closest[0][0] if closest else None
+    (x0, y0), (x1, y1) = closest
+    if abs(y1 - y0) <= 1e-18:
+        return x0
+    return x0 + ((0.0 - y0) * (x1 - x0) / (y1 - y0))
+
+
+def _nyquist_analysis(
+    x_values: list[float],
+    y_values: list[float],
+    freqs: list[float],
+) -> dict[str, float | None]:
+    if not x_values or not y_values:
+        return {
+            "y0_intercept_x": None,
+            "max_y": None,
+            "max_y_x": None,
+            "max_y_frequency": None,
+        }
+
+    max_index = max(range(len(y_values)), key=lambda idx: y_values[idx])
+    return {
+        "y0_intercept_x": _nyquist_y0_intercept(x_values, y_values),
+        "max_y": y_values[max_index],
+        "max_y_x": x_values[max_index],
+        "max_y_frequency": freqs[max_index] if max_index < len(freqs) else None,
+    }
+
+
+def _apply_nyquist_limits(
+    ax,
+    x_values: list[float],
+    y_values: list[float],
+    *,
+    current_associated: bool = False,
+    zero_voltage: bool = False,
+    nbins: int = 6,
+) -> None:
+    if not x_values or not y_values:
+        return
+
+    x_min, x_max = min(x_values), max(x_values)
+    y_min, y_max = min(y_values), max(y_values)
+
+    if x_min == x_max:
+        pad = abs(x_min) * 0.1 + 1.0
+        x_min -= pad
+        x_max += pad
+    if y_min == y_max:
+        pad = abs(y_min) * 0.1 + 1.0
+        y_min -= pad
+        y_max += pad
+
+    x_span = x_max - x_min
+    y_span = y_max - y_min
+    x_pad = 0.05 * x_span
+    y_pad = 0.05 * y_span
+
+    if zero_voltage:
+        min_horizontal_span = max(y_span * 0.85, abs((x_min + x_max) / 2.0) * 0.08, x_span)
+        if min_horizontal_span > x_span:
+            center = (x_min + x_max) / 2.0
+            half_span = min_horizontal_span / 2.0
+            x_min = center - half_span
+            x_max = center + half_span
+            x_span = x_max - x_min
+            x_pad = 0.08 * x_span
+
+    y_low = y_min - y_pad
+    y_high = y_max + y_pad
+    if current_associated:
+        y_low = 0.0
+        if y_high <= y_low:
+            y_high = max(1.0, y_max * 1.1)
+
+    ax.set_xlim(x_min - x_pad, x_max + x_pad)
+    ax.set_ylim(y_low, y_high)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=max(3 if zero_voltage else 2, int(nbins))))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=max(2, int(nbins)), symmetric=not current_associated))
+    ax.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+
+
+def _annotate_nyquist_max_y(
+    ax,
+    x_values: list[float],
+    y_values: list[float],
+    freqs: list[float],
+    *,
+    fontsize: float | None = None,
+) -> None:
+    if not x_values or not y_values:
+        return
+    max_index = max(range(len(y_values)), key=lambda idx: y_values[idx])
+    if max_index >= len(freqs):
+        return
+    ax.annotate(
+        _fmt_freq_hz(float(freqs[max_index])),
+        xy=(x_values[max_index], y_values[max_index]),
+        xytext=(6, 6),
+        textcoords="offset points",
+        fontsize=fontsize,
+        bbox=dict(boxstyle="round,pad=0.15", fc="white", alpha=0.7),
+    )
+
+
+def build_nyquist_indicator_rows(parsed: ParsedDTA) -> list[tuple[str, float | str, str]]:
+    language = _eis_language()
+    x_values, z_imag_values, freqs = _triplet_series(parsed, "Zreal", "Zimag", "Freq")
+    if not x_values or not z_imag_values:
+        return []
+
+    y_values = [-value for value in z_imag_values]
+    analysis = _nyquist_analysis(x_values, y_values, freqs)
+    zreal_unit = _impedance_unit(parsed, "Zreal")
+    zimag_unit = _impedance_unit(parsed, "Zimag")
+    freq_unit = _column_unit(parsed, "Freq") or "Hz"
+
+    def _fmt_sig(value: float | None, sig: int = 3) -> str:
+        if value is None:
+            return ""
+        return f"{value:.{sig}g}"
+
+    return [
+        (
+            translate("y0_intersection", language),
+            _fmt_sig(analysis["y0_intercept_x"], 3),
+            zreal_unit,
+        ),
+        (
+            translate("maximum_negative_zimag", language),
+            analysis["max_y"] if analysis["max_y"] is not None else "",
+            zimag_unit,
+        ),
+        (
+            translate("frequency_at_maximum_negative_zimag", language),
+            analysis["max_y_frequency"] if analysis["max_y_frequency"] is not None else "",
+            freq_unit,
+        ),
+    ]
+
+
+def _localized_meta_label(label: str, language: str | None = None) -> str:
+    language = _eis_language(language)
+    normalized = label.strip().lower()
+    mapping = {
+        "técnica": "technique",
+        "tecnica": "technique",
+        "fecha": "date",
+        "hora": "start_time",
+        "frecuencia inicial": "frequency",
+        "frecuencia final": "frequency",
+        "área": "area",
+        "area": "area",
+    }
+    key = mapping.get(normalized)
+    if key == "frequency":
+        if "inicial" in normalized:
+            return f"{translate('frequency', language)} inicial" if language == "es" else "Initial frequency"
+        return f"{translate('frequency', language)} final" if language == "es" else "Final frequency"
+    if key:
+        return translate(key, language)
+    if normalized == "amplitud":
+        return "Amplitud" if language == "es" else "Amplitude"
+    if normalized == "puntos por década":
+        return "Puntos por decada" if language == "es" else "Points per decade"
+    return label
+
+
+def _safe_filename_part(text: str) -> str:
+    cleaned = re.sub(r"[^\w.-]+", "_", text.strip(), flags=re.UNICODE)
+    cleaned = cleaned.strip("._")
+    return cleaned or "EIS"
+
+
+def _copy_line_style(src_line, dst_line) -> None:
+    dst_line.set_color(src_line.get_color())
+    dst_line.set_linestyle(src_line.get_linestyle())
+    dst_line.set_marker(src_line.get_marker())
+    dst_line.set_linewidth(src_line.get_linewidth())
+    dst_line.set_markersize(src_line.get_markersize())
+    try:
+        dst_line.set_markerfacecolor(src_line.get_markerfacecolor())
+    except Exception:
+        pass
+    try:
+        dst_line.set_markeredgecolor(src_line.get_markeredgecolor())
+    except Exception:
+        pass
+    try:
+        dst_line.set_alpha(src_line.get_alpha())
+    except Exception:
+        pass
+
+
+def _add_eis_report_table(
+    ax,
+    title: str,
+    rows: list[tuple[str, object, str]],
+    bbox: list[float],
+    language: str | None = None,
+) -> None:
+    language = _eis_language(language)
+    ax.text(
+        bbox[0],
+        bbox[1] + bbox[3] + 0.025,
+        title,
+        fontsize=13,
+        fontweight="bold",
+        ha="left",
+        va="bottom",
+        transform=ax.transAxes,
+    )
+    table = ax.table(
+        cellText=[[name, value, unit] for name, value, unit in rows],
+        colLabels=[
+            translate("name", language),
+            translate("value", language),
+            translate("unit", language),
+        ],
+        cellLoc="left",
+        colLoc="left",
+        bbox=bbox,
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8.6)
+    for (row_idx, _col_idx), cell in table.get_celld().items():
+        cell.set_edgecolor("#b8c0c8")
+        cell.set_linewidth(0.5)
+        if row_idx == 0:
+            cell.set_facecolor("#edf2f7")
+            cell.set_text_props(weight="bold")
+        else:
+            cell.set_facecolor("white")
+
+
+def _report_nice_step(raw_step: float) -> float:
+    if raw_step <= 0:
+        return 1.0
+    exponent = math.floor(math.log10(raw_step))
+    fraction = raw_step / (10 ** exponent)
+    if fraction <= 1:
+        nice_fraction = 1
+    elif fraction <= 2:
+        nice_fraction = 2
+    elif fraction <= 5:
+        nice_fraction = 5
+    else:
+        nice_fraction = 10
+    return nice_fraction * (10 ** exponent)
+
+
+def _report_snap_linear_limits(
+    vmin: float,
+    vmax: float,
+    nbins: int = 6,
+    *,
+    include_zero_tick: bool = False,
+) -> tuple[float, float]:
+    if vmax < vmin:
+        vmin, vmax = vmax, vmin
+    if vmin == vmax:
+        pad = 1.0 if vmin == 0 else abs(vmin) * 0.1
+        vmin -= pad
+        vmax += pad
+    if include_zero_tick:
+        vmin = min(vmin, 0.0)
+        vmax = max(vmax, 0.0)
+
+    span = vmax - vmin
+    step = _report_nice_step(span / max(1, nbins - 1))
+    lo = math.floor(vmin / step) * step
+    hi = math.ceil(vmax / step) * step
+    if include_zero_tick:
+        lo = min(lo, 0.0)
+        hi = max(hi, 0.0)
+    if hi <= lo:
+        hi = lo + step
+    return float(lo), float(hi)
+
+
+def _report_ticks_including_zero(vmin: float, vmax: float, nbins: int = 6) -> list[float]:
+    if vmax < vmin:
+        vmin, vmax = vmax, vmin
+    step = _report_nice_step((vmax - vmin) / max(1, nbins - 1))
+    first = math.floor(vmin / step) * step
+    last = math.ceil(vmax / step) * step
+    ticks: list[float] = []
+    value = first
+    guard = 0
+    while value <= last + step * 0.5 and guard < 100:
+        ticks.append(0.0 if abs(value) <= step * 1e-9 else float(value))
+        value += step
+        guard += 1
+    if not any(abs(tick) <= step * 1e-9 for tick in ticks):
+        ticks.append(0.0)
+        ticks.sort()
+    return ticks
+
+
+def _set_report_axis_limits_on_ticks(ax, xlim: tuple[float, float], ylim: tuple[float, float], nbins: int = 6) -> None:
+    x0, x1 = _report_snap_linear_limits(xlim[0], xlim[1], nbins=nbins)
+    y0, y1 = _report_snap_linear_limits(ylim[0], ylim[1], nbins=nbins, include_zero_tick=True)
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(y0, y1)
+    ax.xaxis.set_major_locator(LinearLocator(max(2, int(nbins))))
+    ax.yaxis.set_major_locator(FixedLocator(_report_ticks_including_zero(y0, y1, nbins=nbins)))
+    ax.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+
+
+def export_nyquist_report_pdf(fig: Figure, output_path: Path) -> Path:
+    language = _eis_language()
+    parsed = getattr(fig, "_eis_parsed", None)
+    if parsed is None:
+        raise ValueError("No se encontro metadata asociada a este grafico Nyquist.")
+    if not fig.axes or not fig.axes[0].lines:
+        raise ValueError("No hay datos Nyquist para exportar.")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    source_ax = fig.axes[0]
+    source_line = source_ax.lines[0]
+    x_values = [float(value) for value in source_line.get_xdata(orig=False)]
+    y_values = [float(value) for value in source_line.get_ydata(orig=False)]
+    freqs = list(getattr(source_line, "_eis_freq", []))
+
+    metadata_rows: list[tuple[str, object, str]] = []
+    for key, label in META_FIELDS:
+        metadata_rows.append((
+            _localized_meta_label(label, language),
+            parsed.meta_values.get(key, ""),
+            parsed.meta_units.get(key, ""),
+        ))
+    indicator_rows = build_nyquist_indicator_rows(parsed)
+
+    with PdfPages(output_path) as pdf:
+        plot_fig = Figure(figsize=(9.5, 6.2), dpi=150)
+        plot_ax = plot_fig.add_subplot(111)
+        (plot_line,) = plot_ax.plot(x_values, y_values, label=source_line.get_label())
+        _copy_line_style(source_line, plot_line)
+        plot_ax.set_title(source_ax.get_title())
+        plot_ax.set_xlabel(source_ax.get_xlabel())
+        plot_ax.set_ylabel(source_ax.get_ylabel())
+        plot_ax.grid(True)
+        _set_report_axis_limits_on_ticks(plot_ax, source_ax.get_xlim(), source_ax.get_ylim(), nbins=6)
+        plot_ax.set_aspect("equal", adjustable="box")
+        _annotate_nyquist_max_y(
+            plot_ax,
+            x_values,
+            y_values,
+            [float(freq) for freq in freqs] if freqs else [],
+            fontsize=10,
+        )
+        plot_fig.tight_layout()
+        pdf.savefig(plot_fig, bbox_inches="tight")
+
+        table_fig = Figure(figsize=(8.5, 11.0), dpi=150)
+        table_ax = table_fig.add_subplot(111)
+        table_ax.axis("off")
+        table_fig.text(
+            0.05,
+            0.965,
+            translate("eis_nyquist_report_title", language, curve=source_ax.get_title()),
+            fontsize=18,
+            fontweight="bold",
+            ha="left",
+            va="top",
+        )
+        _add_eis_report_table(table_ax, translate("metadata", language), metadata_rows, [0.05, 0.53, 0.90, 0.34], language=language)
+        _add_eis_report_table(table_ax, translate("nyquist_indicators", language), indicator_rows, [0.05, 0.18, 0.90, 0.22], language=language)
+        pdf.savefig(table_fig, bbox_inches="tight")
+
+    return output_path
+
+
 def _technique_name(parsed: ParsedDTA) -> str:
     return parsed.meta_values.get("TITLE", "").strip() or "Potentiostatic EIS"
 
@@ -502,6 +925,7 @@ def _extract_characterization_label(
     *,
     current_label: str | None,
     voltage_label: str | None,
+    language: str | None = None,
 ) -> str | None:
     if current_label is not None or voltage_label != "0V":
         return None
@@ -510,13 +934,19 @@ def _extract_characterization_label(
     if match is None:
         return None
 
+    language = _eis_language(language)
     return {
-        "2": "Pre-char",
-        "3": "Post-char",
+        "2": translate("pre_char", language),
+        "3": translate("post_char", language),
     }.get(match.group(1))
 
 
-def _build_eis_display_name(path: Path, parsed: ParsedDTA) -> tuple[str, int | None, str | None, str | None, float | None]:
+def _build_eis_display_name(
+    path: Path,
+    parsed: ParsedDTA,
+    language: str | None = None,
+) -> tuple[str, int | None, str | None, str | None, float | None]:
+    language = _eis_language(language)
     stem = path.stem
     stage_number = _extract_stage_number(stem)
     current_label, current_value = _extract_current_label(stem)
@@ -525,18 +955,19 @@ def _build_eis_display_name(path: Path, parsed: ParsedDTA) -> tuple[str, int | N
         stem,
         current_label=current_label,
         voltage_label=voltage_label,
+        language=language,
     )
 
     parts: list[str] = []
     if current_label:
         if stage_number is not None:
-            parts.append(f"Etapa {stage_number}")
+            parts.append(f"{translate('stage', language)} {stage_number}")
         parts.append(current_label)
         if voltage_label:
             parts.append(voltage_label)
     elif characterization_label:
         if stage_number is not None:
-            parts.append(f"Etapa {stage_number}")
+            parts.append(f"{translate('stage', language)} {stage_number}")
         if voltage_label:
             parts.append(voltage_label)
         parts.append(characterization_label)
@@ -594,11 +1025,16 @@ def _assign_stage_visual_defaults(entries: list[EISPlotEntry]) -> None:
         entry.default_marker = None
 
 
-def _collect_eis_plot_entries(dta_files: list[Path]) -> list[EISPlotEntry]:
+def _collect_eis_plot_entries(dta_files: list[Path], language: str | None = None) -> list[EISPlotEntry]:
+    language = _eis_language(language)
     entries: list[EISPlotEntry] = []
     for dta_file in dta_files:
         parsed = parse_gamry_dta(dta_file)
-        display_name, stage_number, current_label, voltage_label, current_value = _build_eis_display_name(dta_file, parsed)
+        display_name, stage_number, current_label, voltage_label, current_value = _build_eis_display_name(
+            dta_file,
+            parsed,
+            language=language,
+        )
         entries.append(
             EISPlotEntry(
                 path=dta_file,
@@ -625,24 +1061,29 @@ def _collect_eis_plot_entries(dta_files: list[Path]) -> list[EISPlotEntry]:
     return entries
 
 
-def _build_pre_stabilization_display_name(path: Path) -> tuple[str, int | None, str | None, float | None]:
+def _build_pre_stabilization_display_name(path: Path, language: str | None = None) -> tuple[str, int | None, str | None, float | None]:
+    language = _eis_language(language)
     stage_number = _extract_stage_number(path.stem)
     current_label, current_value = _extract_current_label(path.stem)
 
     parts: list[str] = []
     if stage_number is not None:
-        parts.append(f"Etapa {stage_number}")
+        parts.append(f"{translate('stage', language)} {stage_number}")
     if current_label:
         parts.append(current_label)
 
     return (" - ".join(parts) if parts else path.stem, stage_number, current_label, current_value)
 
 
-def _collect_pre_stabilization_entries(dta_files: list[Path]) -> list[EISPlotEntry]:
+def _collect_pre_stabilization_entries(dta_files: list[Path], language: str | None = None) -> list[EISPlotEntry]:
+    language = _eis_language(language)
     entries: list[EISPlotEntry] = []
     for dta_file in dta_files:
         parsed = parse_gamry_curve_dta(dta_file)
-        display_name, stage_number, current_label, current_value = _build_pre_stabilization_display_name(dta_file)
+        display_name, stage_number, current_label, current_value = _build_pre_stabilization_display_name(
+            dta_file,
+            language=language,
+        )
         entries.append(
             EISPlotEntry(
                 path=dta_file,
@@ -678,10 +1119,12 @@ def export_to_xlsx(
     meta_fields: list[tuple[str, str]] | None = None,
     data_map: dict[str, str] | None = None,
     numeric_meta_keys: set[str] | None = None,
+    language: str | None = None,
 ) -> None:
     """Create one .xlsx with Metadata + Data sheets."""
     meta_fields = META_FIELDS if meta_fields is None else meta_fields
     data_map = DATA_MAP if data_map is None else data_map
+    language = _eis_language(language)
     if numeric_meta_keys is None:
         numeric_meta_keys = {"VDC", "FREQINIT", "FREQFINAL", "PTSPERDEC", "VAC", "AREA"}
 
@@ -703,7 +1146,7 @@ def export_to_xlsx(
         raw_value = parsed.meta_values.get(key, "")
         raw_unit = parsed.meta_units.get(key, "")
 
-        ws_meta.cell(row=row_idx, column=1, value=label)
+        ws_meta.cell(row=row_idx, column=1, value=_localized_meta_label(label, language))
 
         if key in numeric_meta_keys:
             num = to_float(raw_value)
@@ -712,6 +1155,22 @@ def export_to_xlsx(
             ws_meta.cell(row=row_idx, column=2, value=raw_value)
 
         ws_meta.cell(row=row_idx, column=3, value=raw_unit)
+
+    nyquist_indicator_rows = build_nyquist_indicator_rows(parsed)
+    if nyquist_indicator_rows:
+        section_row = len(meta_fields) + 3
+        ws_meta.cell(row=section_row, column=1, value=translate("nyquist_indicators", language))
+        ws_meta.cell(row=section_row, column=1).font = Font(bold=True)
+        header_row = section_row + 1
+        ws_meta.cell(row=header_row, column=1, value=translate("name", language))
+        ws_meta.cell(row=header_row, column=2, value=translate("value", language))
+        ws_meta.cell(row=header_row, column=3, value=translate("unit", language))
+        for col_num in range(1, 4):
+            ws_meta.cell(row=header_row, column=col_num).font = Font(bold=True)
+        for row_idx, (label, value, unit) in enumerate(nyquist_indicator_rows, start=header_row + 1):
+            ws_meta.cell(row=row_idx, column=1, value=label)
+            ws_meta.cell(row=row_idx, column=2, value=value)
+            ws_meta.cell(row=row_idx, column=3, value=unit)
 
     # ---------------- Data sheet -------------------------------------------
     col_idx = {name: idx for idx, name in enumerate(parsed.header)}
@@ -780,8 +1239,12 @@ def fig_nyquist(
     plot_title: str | None = None,
     line_color: str | None = None,
     marker_style: str | None = None,
+    current_value: float | None = None,
+    voltage_label: str | None = None,
+    annotate_max_imaginary: bool = False,
     font_defaults: PlotFontDefaults | None = None,
 ) -> Figure | None:
+    language = _eis_language()
     x, y, f = _triplet_series(parsed, "Zreal", "Zimag", "Freq")
     if not x or not y or not f:
         return None
@@ -803,8 +1266,16 @@ def fig_nyquist(
     (line,) = ax.plot(x, y_plot, **line_kwargs)
     line._eis_freq = f  # attach frequency array (same index as points)
 
+    current_associated = current_value is not None
+    zero_voltage = (not current_associated) and _is_zero_voltage_measurement(parsed, voltage_label)
+    _apply_nyquist_limits(
+        ax,
+        x,
+        y_plot,
+        current_associated=current_associated,
+        zero_voltage=zero_voltage,
+    )
     ax.set_aspect("equal", adjustable="box")
-    ax.margins(0.05)
 
     x_unit = _impedance_unit(parsed, "Zreal")
     y_unit = _impedance_unit(parsed, "Zimag")
@@ -812,6 +1283,16 @@ def fig_nyquist(
     ax.set_xlabel(f"Zreal ({x_unit})" if x_unit else "Zreal")
     ax.set_ylabel(f"-Zimag ({y_unit})" if y_unit else "-Zimag")
     ax.grid(True)
+    nyquist_analysis = _nyquist_analysis(x, y_plot, f)
+    fig._eis_parsed = parsed
+    fig._eis_current_associated_nyquist = current_associated
+    fig._eis_zero_voltage_nyquist = zero_voltage
+    fig._eis_nyquist_analysis = nyquist_analysis
+    line._eis_current_associated_nyquist = current_associated
+    line._eis_zero_voltage_nyquist = zero_voltage
+    line._eis_nyquist_analysis = nyquist_analysis
+    if annotate_max_imaginary:
+        _annotate_nyquist_max_y(ax, x, y_plot, f)
 
     apply_plot_font_defaults(fig, font_defaults)
     fig.tight_layout()
@@ -824,6 +1305,7 @@ def fig_bode(
     marker_style: str | None = None,
     font_defaults: PlotFontDefaults | None = None,
 ) -> Figure | None:
+    language = _eis_language()
     freq_unit = _column_unit(parsed, "Freq")
     zmod_unit = _column_unit(parsed, "Zmod")
     zphz_unit = _column_unit(parsed, "Zphz")
@@ -871,7 +1353,7 @@ def fig_bode(
         ax_phz.set_ylabel(f"Zphz ({zphz_unit})" if zphz_unit else "Zphz")
 
     ax_mod.set_title(plot_title or f"{_technique_name(parsed)} - Bode")
-    ax_mod.set_xlabel(f"Frecuencia ({freq_unit})" if freq_unit else "Frecuencia")
+    ax_mod.set_xlabel(f"{translate('frequency', language)} ({freq_unit})" if freq_unit else translate("frequency", language))
     ax_mod.grid(True, which="both")
 
     fig._bode_plot = True
@@ -955,6 +1437,7 @@ def fig_series_vs_pt(
     plot_title: str | None = None,
     font_defaults: PlotFontDefaults | None = None,
 ) -> Figure | None:
+    language = _eis_language()
     fig = _new_figure()
     axI = fig.add_subplot(111)
 
@@ -1019,7 +1502,7 @@ def fig_series_vs_pt(
         if key == "I":
             ln._eis_abs_ydata = tuple(y)
             ln._eis_abs_label = lab
-            ln._eis_density_label = "Densidad de corriente (A/cm^2)"
+            ln._eis_density_label = f"{translate('current_density', language)} (A/cm^2)"
         lines[key] = ln
         ylabels[key] = lab
 
@@ -1063,6 +1546,7 @@ def fig_pre_stabilization(
     *,
     font_defaults: PlotFontDefaults | None = None,
 ) -> Figure | None:
+    language = _eis_language()
     parsed = entry.parsed
     fig = _new_figure()
     axV = fig.add_subplot(111)
@@ -1081,7 +1565,7 @@ def fig_pre_stabilization(
     lines: dict[str, object] = {}
 
     time_unit = _column_unit(parsed, "T")
-    axV.set_xlabel(f"Tiempo ({time_unit})" if time_unit else "Tiempo")
+    axV.set_xlabel(f"{translate('time', language)} ({time_unit})" if time_unit else translate("time", language))
     axV.grid(True)
     axI.grid(False)
     axT.grid(False)
@@ -1105,9 +1589,9 @@ def fig_pre_stabilization(
         lines[key] = ln
         ax.set_ylabel(series_label)
 
-    _add_series("V", "Vf", "Voltaje", axV, "#1f77b4")
-    _add_series("I", "Im", "Corriente", axI, "#2f9e44")
-    _add_series("T", "Temp", "Temperatura", axT, "#c40000")
+    _add_series("V", "Vf", translate("voltage", language), axV, "#1f77b4")
+    _add_series("I", "Im", translate("current", language), axI, "#2f9e44")
+    _add_series("T", "Temp", translate("temperature", language), axT, "#c40000")
 
     if not lines:
         return None
@@ -1143,6 +1627,8 @@ def build_figures(
             plot_title=base_name,
             line_color=entry.nyquist_color,
             marker_style=entry.default_marker,
+            current_value=entry.current_value,
+            voltage_label=entry.voltage_label,
             font_defaults=font_defaults,
         )
         if f is not None:
@@ -2154,7 +2640,7 @@ def show_figures_tk(
 
                 if new_state:
                     y_values = [float(y) / area_cm2 for y in absolute_values]
-                    label = getattr(ln, "_eis_density_label", "Densidad de corriente (A/cm^2)")
+                    label = getattr(ln, "_eis_density_label", f"{translate('current_density', _eis_language())} (A/cm^2)")
                 else:
                     y_values = [float(y) for y in absolute_values]
                     label = getattr(ln, "_eis_abs_label", "Idc")
@@ -2723,6 +3209,20 @@ def show_figures_tk(
                 x0, x1 = min(xdata), max(xdata)
                 y0, y1 = min(ydata), max(ydata)
 
+            if is_nyquist:
+                _apply_nyquist_limits(
+                    ax,
+                    xdata,
+                    ydata,
+                    current_associated=bool(getattr(fig, "_eis_current_associated_nyquist", False)),
+                    zero_voltage=bool(getattr(fig, "_eis_zero_voltage_nyquist", False)),
+                    nbins=tick_count,
+                )
+                ax.set_aspect("equal", adjustable="box")
+                canvas.draw_idle()
+                _update_limit_entries()
+                return
+
             if ax.get_xscale() == "log":
                 ax.set_xlim(x0, x1)
             else:
@@ -2736,7 +3236,7 @@ def show_figures_tk(
                     y0,
                     y1,
                     nbins=tick_count,
-                    force_zero_floor=is_nyquist,
+                    force_zero_floor=bool(getattr(fig, "_eis_current_associated_nyquist", False)),
                 )
                 ax.set_ylim(y0, y1)
 
@@ -2963,6 +3463,24 @@ def show_figures_tk(
             apply_fonts()
             apply_title_text()
 
+        def export_nyquist_report() -> None:
+            language = _eis_language()
+            try:
+                default_name = f"EIS_Nyquist_Report_{_safe_filename_part(ax.get_title() or tab_title)}.pdf"
+                path_text = filedialog.asksaveasfilename(
+                    title=translate("save_eis_nyquist_report", language),
+                    initialfile=default_name,
+                    defaultextension=".pdf",
+                    filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+                )
+                if not path_text:
+                    return
+                exported_path = export_nyquist_report_pdf(fig, Path(path_text))
+            except Exception as exc:
+                mb.showerror("EIS Nyquist Report", str(exc))
+                return
+            mb.showinfo("EIS Nyquist Report", f"{translate('report_exported', language)}:\n{exported_path}")
+
         def pick_color():
             if line is None:
                 return
@@ -3036,6 +3554,17 @@ def show_figures_tk(
         btns_axes.grid(row=next_row + 1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Button(btns_axes, text="Autoescala", command=autoscale_axes).pack(side="left", expand=True, fill="x", padx=(0, 6))
         ttk.Button(btns_axes, text="Restablecer", command=reset_axes).pack(side="left", expand=True, fill="x")
+        if is_nyquist:
+            ttk.Button(
+                btns_axes,
+                text="Reporte PDF" if _eis_language() == "es" else "PDF Report",
+                command=export_nyquist_report,
+            ).pack(
+                side="left",
+                expand=True,
+                fill="x",
+                padx=(6, 0),
+            )
         tick_count_spin.configure(command=autoscale_axes)
         tick_count_spin.bind("<Return>", lambda ev: autoscale_axes())
         tick_count_spin.bind("<FocusOut>", lambda ev: autoscale_axes())
@@ -4292,7 +4821,14 @@ def show_figures_tk(
             pad_y = 0.05 * dy
 
             axc.set_xlim(x0 - pad_x, x1 + pad_x)
-            axc.set_ylim(y0 - pad_y, y1 + pad_y)
+            current_only = all(
+                bool(getattr(ln, "_eis_current_associated_nyquist", False))
+                for ln in comp_lines.values()
+            )
+            if current_only:
+                axc.set_ylim(0.0, y1 + pad_y)
+            else:
+                axc.set_ylim(y0 - pad_y, y1 + pad_y)
             axc.set_aspect("equal", adjustable="box")
 
             _apply_plot_settings(redraw=False)
@@ -4317,6 +4853,13 @@ def show_figures_tk(
                 freqs = getattr(src_line, "_eis_freq", None)
                 if freqs is not None:
                     ln._eis_freq = freqs  # type: ignore[attr-defined]
+                for attr_name in (
+                    "_eis_current_associated_nyquist",
+                    "_eis_zero_voltage_nyquist",
+                    "_eis_nyquist_analysis",
+                ):
+                    if hasattr(src_line, attr_name):
+                        setattr(ln, attr_name, getattr(src_line, attr_name))
 
                 comp_lines[key] = ln
                 _apply_comp_labels_from_source(key, ln)   # NEW
@@ -5074,7 +5617,9 @@ def export_folder(
     output_dir: Path,
     *,
     include_pre_stabilization: bool = False,
+    language: str | None = None,
 ) -> list[Path]:
+    language = _eis_language(language)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dta_files = find_eis_files(input_dir)
@@ -5087,7 +5632,7 @@ def export_folder(
     for dta_file in dta_files:
         parsed = parse_gamry_dta(dta_file)
         xlsx_path = output_dir / f"{dta_file.stem}.xlsx"
-        export_to_xlsx(parsed, xlsx_path)
+        export_to_xlsx(parsed, xlsx_path, language=language)
         exported_xlsx.append(xlsx_path)
 
     for dta_file in pre_stabilization_files:
@@ -5099,6 +5644,7 @@ def export_folder(
             meta_fields=PRE_STAB_META_FIELDS,
             data_map=PRE_STAB_DATA_MAP,
             numeric_meta_keys={"ISTEP1", "TSTEP1", "SAMPLETIME", "AREA"},
+            language=language,
         )
         exported_xlsx.append(xlsx_path)
 
@@ -5111,6 +5657,8 @@ def run_pipeline(
     font_defaults: PlotFontDefaults | None = None,
     language: str = "es",
 ) -> list[Path]:
+    global EIS_LANGUAGE
+    EIS_LANGUAGE = _eis_language(language)
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
 
@@ -5121,6 +5669,7 @@ def run_pipeline(
         input_dir,
         output_dir,
         include_pre_stabilization=wants_pre_stabilization,
+        language=EIS_LANGUAGE,
     )
 
     if not exported_xlsx:
@@ -5131,7 +5680,7 @@ def run_pipeline(
 
     dta_files = find_eis_files(input_dir)
     pre_stabilization_files = find_pre_stabilization_files(input_dir) if wants_pre_stabilization else []
-    plot_entries = _collect_eis_plot_entries(dta_files)
+    plot_entries = _collect_eis_plot_entries(dta_files, language=EIS_LANGUAGE)
 
     option_order = [
         "Nyquist plot",
@@ -5154,7 +5703,7 @@ def run_pipeline(
 
         option_figs: list[tuple[str, Figure]] = []
         if _wants_pre_stabilization([option]):
-            pre_entries = _collect_pre_stabilization_entries(pre_stabilization_files)
+            pre_entries = _collect_pre_stabilization_entries(pre_stabilization_files, language=EIS_LANGUAGE)
             for entry in pre_entries:
                 fig = fig_pre_stabilization(entry, font_defaults=font_defaults)
                 if fig is not None:

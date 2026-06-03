@@ -2869,6 +2869,54 @@ def build_pc_dv_di_report_indicators(
     return rows
 
 
+def build_pc_step_stability_report_indicators(
+    bundle: CurveBundle,
+    use_current_density: bool = True,
+    language: str | None = None,
+) -> list[tuple[str, str, str]]:
+    language = _pc_language(language)
+    direction_rows = _step_stability_direction_rows(bundle, use_current_density=use_current_density)
+    current_unit = "A/cm^2" if use_current_density else "A"
+    rows: list[tuple[str, str, str]] = []
+
+    for direction_key, data_key in (
+        ("ascending", "asc_rows"),
+        ("descending", "dsc_rows"),
+    ):
+        direction_label = translate(direction_key, language)
+        step_rows = direction_rows.get(data_key, [])
+
+        if step_rows:
+            max_delta_v_row = max(step_rows, key=lambda row: row["DeltaV"])
+            max_delta_t_row = max(step_rows, key=lambda row: row["DeltaT"])
+        else:
+            max_delta_v_row = None
+            max_delta_t_row = None
+
+        rows.append((
+            translate("maximum_step_delta_voltage", language, direction=direction_label),
+            _format_report_value(max_delta_v_row["DeltaV"] if max_delta_v_row else None),
+            "V",
+        ))
+        rows.append((
+            translate("maximum_step_delta_voltage_current", language, direction=direction_label),
+            _format_report_value(max_delta_v_row["Corriente"] if max_delta_v_row else None),
+            current_unit,
+        ))
+        rows.append((
+            translate("maximum_step_delta_temperature", language, direction=direction_label),
+            _format_report_value(max_delta_t_row["DeltaT"] if max_delta_t_row else None),
+            "C",
+        ))
+        rows.append((
+            translate("maximum_step_delta_temperature_current", language, direction=direction_label),
+            _format_report_value(max_delta_t_row["Corriente"] if max_delta_t_row else None),
+            current_unit,
+        ))
+
+    return rows
+
+
 def draw_temperature_vs_current_on_figure(
     fig: Figure,
     bundle: CurveBundle,
@@ -3239,6 +3287,96 @@ def export_pc_dv_di_report_pdf(
             0.05,
             0.935,
             translate("pc_dvdi_report_subtitle", language),
+            fontsize=10,
+            ha="left",
+            va="top",
+            color="#4a5568",
+        )
+        _add_report_table(ax, translate("metadata", language), metadata_rows, [0.05, 0.53, 0.90, 0.34], language=language)
+        _add_report_table(ax, translate("indicators", language), indicator_rows, [0.05, 0.08, 0.90, 0.36], language=language)
+        pdf.savefig(table_fig, bbox_inches="tight")
+
+    return output_path
+
+
+def export_pc_step_stability_report_pdf(
+    bundle: CurveBundle,
+    output_path: Path,
+    *,
+    plot_kwargs: dict[str, object],
+) -> Path:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    plot_kwargs = dict(plot_kwargs)
+    language = _pc_language(str(plot_kwargs.get("language", "")))
+    use_current_density = bool(plot_kwargs.get("use_current_density", True))
+
+    metadata_rows = build_pc_report_metadata(
+        bundle,
+        use_current_density=use_current_density,
+        language=language,
+    )
+    indicator_rows = build_pc_step_stability_report_indicators(
+        bundle,
+        use_current_density=use_current_density,
+        language=language,
+    )
+
+    with PdfPages(output_path) as pdf:
+        voltage_kwargs = dict(plot_kwargs)
+        voltage_kwargs.update(
+            {
+                "show_voltage_delta": True,
+                "show_temperature_delta": False,
+                "plot_title": translate("voltage_step_range", language),
+            }
+        )
+        voltage_fig = Figure(figsize=(9.5, 6.2), dpi=150)
+        has_voltage_plot = draw_step_stability_on_figure(voltage_fig, bundle=bundle, **voltage_kwargs)
+        if not has_voltage_plot:
+            raise ValueError("No hay datos suficientes para generar el grafico de voltaje del reporte.")
+        pdf.savefig(voltage_fig, bbox_inches="tight")
+
+        temperature_kwargs = dict(plot_kwargs)
+        temperature_kwargs.update(
+            {
+                "show_voltage_delta": False,
+                "show_temperature_delta": True,
+                "plot_title": translate("temperature_step_range", language),
+                "dv_min": None,
+                "dv_max": None,
+            }
+        )
+        temperature_fig = Figure(figsize=(9.5, 6.2), dpi=150)
+        has_temperature_plot = draw_step_stability_on_figure(
+            temperature_fig,
+            bundle=bundle,
+            **temperature_kwargs,
+        )
+        if has_temperature_plot:
+            pdf.savefig(temperature_fig, bbox_inches="tight")
+
+        table_fig = Figure(figsize=(8.5, 11.0), dpi=150)
+        ax = table_fig.add_subplot(111)
+        ax.axis("off")
+        table_fig.text(
+            0.05,
+            0.965,
+            translate(
+                "pc_step_stability_report_title",
+                language,
+                curve=f"{bundle.description} #{bundle.curve_id}",
+            ),
+            fontsize=18,
+            fontweight="bold",
+            ha="left",
+            va="top",
+        )
+        table_fig.text(
+            0.05,
+            0.935,
+            translate("pc_step_stability_report_subtitle", language),
             fontsize=10,
             ha="left",
             va="top",
@@ -5867,7 +6005,7 @@ def draw_step_stability_on_figure(*args, voltage_log_scale: bool = True, **kwarg
     if not has_plot or not voltage_log_scale:
         return has_plot
 
-    show_delta_voltage = bool(kwargs.get("show_delta_voltage", True))
+    show_delta_voltage = bool(kwargs.get("show_voltage_delta", kwargs.get("show_delta_voltage", True)))
     if not show_delta_voltage:
         return has_plot
 
@@ -5883,16 +6021,30 @@ def draw_step_stability_on_figure(*args, voltage_log_scale: bool = True, **kwarg
     use_current_density = bool(kwargs.get("use_current_density", True))
     step_rows = _step_stability_direction_rows(bundle, use_current_density=use_current_density)
     selected_values: list[float] = []
-    if bool(kwargs.get("show_asc", True)):
-        selected_values.extend(row["DeltaV"] for row in step_rows["asc"])
-    if bool(kwargs.get("show_dsc", True)):
-        selected_values.extend(row["DeltaV"] for row in step_rows["dsc"])
+    if isinstance(step_rows, dict):
+        row_groups = step_rows.items()
+    else:
+        row_groups = [("all", step_rows)]
+    for direction, rows in row_groups:
+        direction_name = str(direction).lower()
+        is_ascending = direction_name.startswith("asc")
+        is_descending = direction_name.startswith("dsc") or direction_name.startswith("desc")
+        if is_ascending and not bool(kwargs.get("show_asc", True)):
+            continue
+        if is_descending and not bool(kwargs.get("show_dsc", True)):
+            continue
+        selected_values.extend(row["DeltaV"] for row in rows if "DeltaV" in row)
 
     positive_values = [value for value in selected_values if value > 0]
     if not positive_values:
         return has_plot
 
     voltage_axis = fig.axes[0]
+    for axis in fig.axes:
+        ylabel = axis.get_ylabel().lower()
+        if "delta v" in ylabel or "voltage" in ylabel or "voltaje" in ylabel:
+            voltage_axis = axis
+            break
     data_min = min(positive_values)
     data_max = max(positive_values)
     requested_min = kwargs.get("dv_min")
@@ -6227,6 +6379,60 @@ def open_step_stability_window(
         _plot()
         status_var.set("Valores restaurados.")
 
+    def _collect_report_plot_kwargs() -> dict[str, object]:
+        return {
+            "show_asc": bool(asc_var.get()),
+            "show_dsc": bool(dsc_var.get()),
+            "show_voltage_delta": True,
+            "show_temperature_delta": True,
+            "use_current_density": bool(current_density_var.get()),
+            "asc_marker": asc_marker_var.get(),
+            "dsc_marker": dsc_marker_var.get(),
+            "voltage_linestyle": voltage_line_var.get(),
+            "temperature_linestyle": temperature_line_var.get(),
+            "x_tick_count": int(x_tick_count_var.get()),
+            "y_tick_count": int(y_tick_count_var.get()),
+            "plot_title": plot_title_var.get(),
+            "show_title": bool(show_title_var.get()),
+            "title_fontsize": _positive_float(title_fontsize_var.get(), "Tamaño del titulo"),
+            "tick_fontsize": _positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
+            "label_fontsize": _positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
+            "legend_fontsize": _positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
+            "marker_size": _positive_float(marker_size_var.get(), "Tamaño de marcador"),
+            "hollow_markers": bool(hollow_markers_var.get()),
+            "line_width": _positive_float(line_width_var.get(), "Grosor de linea"),
+            "language": language,
+            **_collect_limits(),
+        }
+
+    def _export_report() -> None:
+        try:
+            initial_dir = Path(output_dir) if output_dir is not None else Path.cwd()
+            initial_dir.mkdir(parents=True, exist_ok=True)
+            default_name = f"PC_Step_Stability_Report_{_safe_filename_part(bundle.description)}_#{bundle.curve_id}.pdf"
+            path_text = filedialog.asksaveasfilename(
+                title="Guardar reporte PC Step Stability",
+                initialdir=str(initial_dir),
+                initialfile=default_name,
+                defaultextension=".pdf",
+                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            )
+            if not path_text:
+                status_var.set("Exportacion de reporte cancelada.")
+                return
+
+            exported_path = export_pc_step_stability_report_pdf(
+                bundle=bundle,
+                output_path=Path(path_text),
+                plot_kwargs=_collect_report_plot_kwargs(),
+            )
+        except Exception as exc:
+            status_var.set(f"Error al exportar reporte: {type(exc).__name__}: {exc}")
+            messagebox.showerror("PC Step Stability Report", str(exc))
+            return
+
+        status_var.set(f"Reporte exportado: {exported_path}")
+
     ttk.Label(
         controls_frame,
         text=f"Curva detectada:\nEtapa {bundle.curve_id} - {bundle.description}",
@@ -6347,6 +6553,7 @@ def open_step_stability_window(
     buttons.pack(fill="x", pady=(5, 0))
     ttk.Button(buttons, text="Restablecer", command=_reset).pack(side="left", padx=(0, 6))
     ttk.Button(buttons, text="Autoescala", command=_autofit).pack(side="left")
+    ttk.Button(buttons, text="Reporte PDF", command=_export_report).pack(side="left", padx=(6, 0))
 
     _plot()
 
