@@ -8,10 +8,12 @@ import re
 from statistics import median
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.ticker import MaxNLocator, StrMethodFormatter
 
 from openpyxl import Workbook
@@ -25,6 +27,7 @@ from plot_defaults import (
     resolve_plot_font_defaults,
 )
 from ui_layout import create_resizable_plot_layout
+from i18n import normalize_language, translate
 
 from pipelines.activ_pip import (
     ACTIV_CYCLE_GRADIENTS,
@@ -46,6 +49,8 @@ from pipelines.activ_pip import (
     apply_temperature_axis_scaling,
     apply_x_edge_ticks,
 )
+
+CV_LANGUAGE = "es"
 
 
 META_FIELDS = [
@@ -72,6 +77,10 @@ DATA_EXPORT = [
 
 CV_FILE_RE = re.compile(r"^Voltametria_ciclica(?:_.+)?\.DTA$", re.IGNORECASE)
 CV_STAGE_RE = re.compile(r"#(\d+)(?!.*#\d+)", re.IGNORECASE)
+
+
+def _cv_language(language: str | None = None) -> str:
+    return normalize_language(language or CV_LANGUAGE)
 
 
 @dataclass
@@ -136,6 +145,51 @@ def to_float(val: str) -> float | None:
         return float(s)
     except ValueError:
         return None
+
+
+def _metadata_area_cm2(parsed: ParsedDTA) -> float | None:
+    area = to_float(parsed.meta_values.get("AREA", ""))
+    if area is None or area <= 0:
+        return None
+    return area
+
+
+def _current_density_values(rows: list[dict[str, float]], area_cm2: float | None) -> list[float]:
+    if area_cm2 is None or area_cm2 <= 0:
+        return [row["Corriente"] for row in rows]
+    return [row["Corriente"] / area_cm2 for row in rows]
+
+
+def _current_density_axis_label(language: str | None = None) -> str:
+    return f"{translate('current_density', _cv_language(language))} (A/cm^2)"
+
+
+def _current_magnitude_axis_label(parsed: ParsedDTA, language: str | None = None) -> str:
+    if _metadata_area_cm2(parsed) is None:
+        return f"{translate('current', _cv_language(language))} (A)"
+    return _current_density_axis_label(language)
+
+
+def _current_limit_decimals(values: list[float]) -> int:
+    finite_values = [abs(value) for value in values if value is not None]
+    if not finite_values:
+        return 1
+    max_abs = max(finite_values)
+    if max_abs >= 1:
+        return 1
+    if max_abs >= 0.1:
+        return 2
+    if max_abs >= 0.01:
+        return 3
+    if max_abs >= 0.001:
+        return 4
+    return 6
+
+
+def _format_current_limit_value(value: float | None, decimals: int) -> str:
+    if value is None:
+        return ""
+    return f"{value:.{decimals}f}"
 
 
 def _drop_leading_blank(parts: list[str]) -> list[str]:
@@ -568,6 +622,7 @@ def build_visible_cycle_i_vs_v_data(
 def compute_default_i_vs_v_limits(dataset: CVDataset) -> dict[str, str]:
     plot_data = build_visible_cycle_i_vs_v_data(dataset, {segment.key for segment in dataset.segments})
     rows = [row for cycle in plot_data["cycles"] for row in cycle["rows"]]
+    area_cm2 = _metadata_area_cm2(dataset.parsed)
 
     if not rows:
         return {
@@ -580,14 +635,16 @@ def compute_default_i_vs_v_limits(dataset: CVDataset) -> dict[str, str]:
         }
 
     v_min, v_max = _padded_limits([row["Voltaje"] for row in rows])
-    i_min, i_max = _padded_limits([row["Corriente"] for row in rows])
+    i_values = _current_density_values(rows, area_cm2)
+    i_decimals = _current_limit_decimals(i_values)
+    i_min, i_max = _padded_limits(i_values, decimals=i_decimals)
     temp_min, temp_max = _padded_limits([row["Temperatura"] for row in rows])
 
     return {
         "v_min": _format_limit_value(v_min),
         "v_max": _format_limit_value(v_max),
-        "i_min": _format_limit_value(i_min),
-        "i_max": _format_limit_value(i_max),
+        "i_min": _format_current_limit_value(i_min, i_decimals),
+        "i_max": _format_current_limit_value(i_max, i_decimals),
         "temp_min": _format_limit_value(temp_min),
         "temp_max": _format_limit_value(temp_max),
     }
@@ -606,6 +663,7 @@ def compute_autofit_i_vs_v_limits(
 
     plot_data = build_visible_cycle_i_vs_v_data(dataset, visible_segment_keys=visible_segment_keys)
     rows = [row for cycle in plot_data["cycles"] for row in cycle["rows"]]
+    area_cm2 = _metadata_area_cm2(dataset.parsed)
     if not rows:
         raise ValueError("No hay datos validos para ajustar los ejes.")
 
@@ -624,10 +682,11 @@ def compute_autofit_i_vs_v_limits(
         out["v_max"] = _format_limit_value(_round_up_dec(max(v_values)), 1)
 
     if show_current:
-        i_values = [row["Corriente"] for row in rows]
+        i_values = _current_density_values(rows, area_cm2)
         if i_values:
-            out["i_min"] = _format_limit_value(_round_down_dec(min(i_values)), 1)
-            out["i_max"] = _format_limit_value(_round_up_dec(max(i_values)), 1)
+            i_decimals = _current_limit_decimals(i_values)
+            out["i_min"] = _format_current_limit_value(_round_down_dec(min(i_values), i_decimals), i_decimals)
+            out["i_max"] = _format_current_limit_value(_round_up_dec(max(i_values), i_decimals), i_decimals)
 
     if show_temperature:
         temp_values = [row["Temperatura"] for row in rows]
@@ -716,7 +775,9 @@ def draw_i_vs_v_on_figure(
     legend_scale: float = 1.0,
     color_axes_by_magnitude: bool = False,
     line_width: float = 1.5,
+    language: str | None = None,
 ) -> bool:
+    language = _cv_language(language)
     fig.clear()
 
     if not visible_segment_keys:
@@ -730,6 +791,7 @@ def draw_i_vs_v_on_figure(
         return False
 
     cycle_ids = [cycle_data["cycle"] for cycle_data in visible_cycles]
+    area_cm2 = _metadata_area_cm2(dataset.parsed)
     x_tick_count = max(2, int(x_tick_count))
     y_tick_count = max(2, int(y_tick_count))
 
@@ -759,7 +821,7 @@ def draw_i_vs_v_on_figure(
         if show_current and current_ls != "None":
             ax_main.plot(
                 x_vals,
-                [row["Corriente"] for row in grouped_rows],
+                _current_density_values(grouped_rows, area_cm2),
                 color=current_color,
                 linestyle=current_ls,
                 linewidth=line_width,
@@ -780,10 +842,10 @@ def draw_i_vs_v_on_figure(
         fig.clear()
         return False
 
-    default_title = f"I vs V - CV {_dataset_stage_label(dataset)}"
+    default_title = f"j vs V - CV {_dataset_stage_label(dataset)}"
     final_title = plot_title.strip() if plot_title.strip() else default_title
 
-    ax_main.set_xlabel("Voltaje (V)", fontsize=label_fontsize)
+    ax_main.set_xlabel(f"{translate('voltage', language)} (V)", fontsize=label_fontsize)
     ax_main.set_title(final_title if show_title else "", fontsize=title_fontsize)
     ax_main.grid(True)
     ax_main.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
@@ -796,8 +858,11 @@ def draw_i_vs_v_on_figure(
         apply_x_edge_ticks(ax_main, v_min, v_max, x_tick_count)
 
     if show_current:
-        current_values = [row["Corriente"] for cycle_data in visible_cycles for row in cycle_data["rows"]]
-        ax_main.set_ylabel("Corriente (A)", fontsize=label_fontsize)
+        current_values = _current_density_values(
+            [row for cycle_data in visible_cycles for row in cycle_data["rows"]],
+            area_cm2,
+        )
+        ax_main.set_ylabel(_current_magnitude_axis_label(dataset.parsed, language), fontsize=label_fontsize)
         apply_current_axis_scaling(ax_main, current_values, y_tick_count, i_min, i_max)
         if color_axes_by_magnitude:
             ax_main.yaxis.label.set_color(axis_colors["current"])
@@ -861,10 +926,188 @@ def draw_i_vs_v_on_figure(
     return True
 
 
+def _add_cv_report_table(
+    ax,
+    title: str,
+    rows: list[tuple[str, object, str]],
+    bbox: list[float],
+    language: str | None = None,
+) -> None:
+    language = _cv_language(language)
+    ax.text(
+        bbox[0],
+        bbox[1] + bbox[3] + 0.025,
+        title,
+        fontsize=13,
+        fontweight="bold",
+        ha="left",
+        va="bottom",
+        transform=ax.transAxes,
+    )
+    table = ax.table(
+        cellText=[[name, value, unit] for name, value, unit in rows],
+        colLabels=[
+            translate("name", language),
+            translate("value", language),
+            translate("unit", language),
+        ],
+        cellLoc="left",
+        colLoc="left",
+        bbox=bbox,
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8.6)
+    for (row_idx, _col_idx), cell in table.get_celld().items():
+        cell.set_edgecolor("#b8c0c8")
+        cell.set_linewidth(0.5)
+        if row_idx == 0:
+            cell.set_facecolor("#edf2f7")
+            cell.set_text_props(weight="bold")
+        else:
+            cell.set_facecolor("white")
+
+
+def _build_cv_report_indicator_rows(
+    dataset: CVDataset,
+    visible_segment_keys: set[str],
+    language: str | None = None,
+) -> list[tuple[str, object, str]]:
+    language = _cv_language(language)
+    plot_data = build_visible_cycle_i_vs_v_data(dataset, visible_segment_keys)
+    report_cycles = [
+        cycle_data for cycle_data in plot_data["cycles"]
+        if int(cycle_data["cycle"]) >= 2
+    ]
+    rows = [row for cycle_data in report_cycles for row in cycle_data["rows"]]
+    if not rows:
+        return []
+
+    temp_values = [row["Temperatura"] for row in rows]
+    cycle_delta_t = []
+    for cycle_data in report_cycles:
+        cycle_temp_values = [row["Temperatura"] for row in cycle_data["rows"]]
+        if cycle_temp_values:
+            cycle_delta_t.append(max(cycle_temp_values) - min(cycle_temp_values))
+
+    def _fmt_sig(value: float | None, sig: int = 6) -> str:
+        if value is None:
+            return ""
+        return f"{value:.{sig}g}"
+
+    return [
+        (
+            translate("average_temperature_report_cycles", language),
+            _fmt_sig(sum(temp_values) / len(temp_values)),
+            "deg C",
+        ),
+        (
+            translate("maximum_cycle_delta_temperature", language),
+            _fmt_sig(max(cycle_delta_t) if cycle_delta_t else None),
+            "deg C",
+        ),
+    ]
+
+
+def export_i_vs_v_report_pdf(
+    dataset: CVDataset,
+    output_path: Path,
+    *,
+    visible_segment_keys: set[str],
+    x_tick_count: int = 6,
+    y_tick_count: int = 6,
+    v_min: float | None = None,
+    v_max: float | None = None,
+    i_min: float | None = None,
+    i_max: float | None = None,
+    plot_title: str = "",
+    show_title: bool = True,
+    title_fontsize: float = 14,
+    tick_fontsize: float = 10,
+    label_fontsize: float = 11,
+    legend_fontsize: float = 10,
+    legend_scale: float = 1.0,
+    line_width: float = 1.5,
+    language: str | None = None,
+) -> Path:
+    language = _cv_language(language)
+    report_segment_keys = {
+        segment.key
+        for segment in dataset.segments
+        if segment.key in visible_segment_keys and segment.cycle >= 2
+    }
+    if not report_segment_keys:
+        raise ValueError("No hay ciclos validos para exportar el reporte CV.")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    source_title = plot_title.strip() if plot_title.strip() else f"j vs V - CV {_dataset_stage_label(dataset)}"
+    metadata_rows = _build_metadata_rows(dataset.parsed)
+    indicator_rows = _build_cv_report_indicator_rows(dataset, report_segment_keys, language=language)
+    report_limits = compute_autofit_i_vs_v_limits(
+        dataset=dataset,
+        visible_segment_keys=report_segment_keys,
+        show_current=True,
+        show_temperature=False,
+    )
+
+    with PdfPages(output_path) as pdf:
+        plot_fig = Figure(figsize=(9.5, 6.2), dpi=150)
+        FigureCanvasAgg(plot_fig)
+        has_plot = draw_i_vs_v_on_figure(
+            fig=plot_fig,
+            dataset=dataset,
+            visible_segment_keys=report_segment_keys,
+            show_current=True,
+            show_temperature=False,
+            current_linestyle="-",
+            temperature_linestyle="none",
+            color_axes_by_magnitude=False,
+            x_tick_count=x_tick_count,
+            y_tick_count=y_tick_count,
+            v_min=_optional_float(report_limits["v_min"]),
+            v_max=_optional_float(report_limits["v_max"]),
+            i_min=_optional_float(report_limits["i_min"]),
+            i_max=_optional_float(report_limits["i_max"]),
+            temp_min=None,
+            temp_max=None,
+            plot_title=source_title,
+            show_title=show_title,
+            title_fontsize=title_fontsize,
+            tick_fontsize=tick_fontsize,
+            label_fontsize=label_fontsize,
+            legend_fontsize=legend_fontsize,
+            legend_scale=legend_scale,
+            line_width=line_width,
+            language=language,
+        )
+        if not has_plot:
+            raise ValueError("No hay datos validos para exportar el reporte CV.")
+        pdf.savefig(plot_fig, bbox_inches="tight")
+
+        table_fig = Figure(figsize=(8.5, 11.0), dpi=150)
+        table_ax = table_fig.add_subplot(111)
+        table_ax.axis("off")
+        table_fig.text(
+            0.05,
+            0.965,
+            translate("cv_i_vs_v_report_title", language, curve=source_title),
+            fontsize=18,
+            fontweight="bold",
+            ha="left",
+            va="top",
+        )
+        _add_cv_report_table(table_ax, translate("metadata", language), metadata_rows, [0.05, 0.53, 0.90, 0.34], language=language)
+        _add_cv_report_table(table_ax, translate("cv_indicators", language), indicator_rows, [0.05, 0.32, 0.90, 0.12], language=language)
+        pdf.savefig(table_fig, bbox_inches="tight")
+
+    return output_path
+
+
 def _build_i_vs_v_tab(
     notebook: ttk.Notebook,
     dataset: CVDataset,
     font_default_values: dict[str, str],
+    language: str | None = None,
 ) -> None:
     default_limits = compute_default_i_vs_v_limits(dataset)
     cycle_ids = [cycle_number for cycle_number in range(1, len(dataset.cycle_rows) + 1)]
@@ -1005,6 +1248,7 @@ def _build_i_vs_v_tab(
                 legend_fontsize=_positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
                 legend_scale=_positive_float(legend_scale_var.get(), "Escala del gradiente"),
                 line_width=_positive_float(line_width_var.get(), "Grosor de línea"),
+                language=language,
                 **_collect_limits(),
             )
         except ValueError as exc:
@@ -1049,6 +1293,43 @@ def _build_i_vs_v_tab(
 
         _plot()
         status_var.set("Autoescala aplicada.")
+
+    def _export_report() -> None:
+        language_code = _cv_language(language)
+        try:
+            default_name = f"CV_j_vs_V_Report_{dataset.path.stem}.pdf"
+            path_text = filedialog.asksaveasfilename(
+                title=translate("save_cv_i_vs_v_report", language_code),
+                initialfile=default_name,
+                defaultextension=".pdf",
+                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            )
+            if not path_text:
+                return
+            exported_path = export_i_vs_v_report_pdf(
+                dataset,
+                Path(path_text),
+                visible_segment_keys=_visible_segment_keys(),
+                x_tick_count=x_tick_count_var.get(),
+                y_tick_count=y_tick_count_var.get(),
+                v_min=_optional_float(v_min_var.get()),
+                v_max=_optional_float(v_max_var.get()),
+                i_min=_optional_float(i_min_var.get()),
+                i_max=_optional_float(i_max_var.get()),
+                plot_title=plot_title_var.get(),
+                show_title=show_title_var.get(),
+                title_fontsize=_positive_float(title_fontsize_var.get(), "Tamaño del título"),
+                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
+                label_fontsize=_positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
+                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
+                legend_scale=_positive_float(legend_scale_var.get(), "Escala del gradiente"),
+                line_width=_positive_float(line_width_var.get(), "Grosor de línea"),
+                language=language_code,
+            )
+        except Exception as exc:
+            messagebox.showerror("CV Report", str(exc))
+            return
+        messagebox.showinfo("CV Report", f"{translate('report_exported', language_code)}:\n{exported_path}")
 
     def _reset():
         suspend_events["value"] = True
@@ -1166,8 +1447,8 @@ def _build_i_vs_v_tab(
     limit_specs = [
         ("V min", v_min_var),
         ("V max", v_max_var),
-        ("I min", i_min_var),
-        ("I max", i_max_var),
+        ("j min", i_min_var),
+        ("j max", i_max_var),
         ("T min", temp_min_var),
         ("T max", temp_max_var),
     ]
@@ -1219,11 +1500,17 @@ def _build_i_vs_v_tab(
     buttons_frame.pack(fill="x", pady=(5, 0))
     ttk.Button(buttons_frame, text="Restablecer", command=_reset).pack(side="left", padx=(0, 6))
     ttk.Button(buttons_frame, text="Autoescala", command=_autofit).pack(side="left")
+    ttk.Button(buttons_frame, text=translate("pdf_report", _cv_language(language)), command=_export_report).pack(side="left", padx=(6, 0))
 
     _plot()
 
 
-def open_i_vs_v_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
+def open_i_vs_v_window(
+    input_dir: Path,
+    font_defaults: PlotFontDefaults | None = None,
+    language: str | None = None,
+) -> None:
+    language = _cv_language(language)
     datasets = discover_cv_datasets(Path(input_dir))
     if not datasets:
         raise ValueError("No se encontraron archivos de voltametria ciclica validos.")
@@ -1250,7 +1537,7 @@ def open_i_vs_v_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     notebook.pack(fill="both", expand=True, padx=8, pady=8)
 
     for dataset in datasets:
-        _build_i_vs_v_tab(notebook, dataset, font_default_values)
+        _build_i_vs_v_tab(notebook, dataset, font_default_values, language=language)
 
     def _on_close() -> None:
         win.destroy()
@@ -1310,6 +1597,8 @@ def run_pipeline(
     font_defaults: PlotFontDefaults | None = None,
     language: str = "es",
 ) -> list[Path]:
+    global CV_LANGUAGE
+    CV_LANGUAGE = _cv_language(language)
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
 
@@ -1320,7 +1609,7 @@ def run_pipeline(
     chosen = set(selected_options or [])
 
     if "I vs V" in chosen:
-        open_i_vs_v_window(input_dir, font_defaults=font_defaults)
+        open_i_vs_v_window(input_dir, font_defaults=font_defaults, language=CV_LANGUAGE)
 
     _show_cv_stub(chosen - {"I vs V"})
     return exported_files

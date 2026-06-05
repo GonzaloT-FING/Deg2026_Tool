@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import pathlib
+import threading
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from pipelines.activ_pip import run_pipeline as run_activ_pipeline
 from pipelines.cic_vol_pip import run_pipeline as run_cv_pipeline
 from pipelines.deg_pip import run_pipeline as run_deg_pipeline
 from pipelines.eis_pip import run_pipeline as run_eis_pipeline
+from pipelines.full_report_pip import generate_full_report
 from pipelines.ocp_pip import run_pipeline as run_ocp_pipeline
 from pipelines.pol_cur_pip import run_pipeline as run_pc_pipeline
 from i18n import LANGUAGE_CODE_BY_LABEL, LANGUAGE_LABELS, translate
@@ -91,6 +93,7 @@ class GamryProtocolApp:
         self.preview_outputs_var = tk.StringVar()
         self.preview_count_var = tk.StringVar()
         self.action_text_var = tk.StringVar()
+        self.full_report_text_var = tk.StringVar(value=translate("full_report_button", "es"))
 
         self.build_main_window()
         self._update_pipeline_preview()
@@ -288,10 +291,16 @@ class GamryProtocolApp:
         ).grid(row=0, column=0, sticky="w")
         ttk.Button(
             action_row,
+            textvariable=self.full_report_text_var,
+            style="Accent.TButton",
+            command=self.full_report_selected,
+        ).grid(row=0, column=1, sticky="w", padx=(12, 0))
+        ttk.Button(
+            action_row,
             text="Restaurar rutas",
             style="Subtle.TButton",
             command=self.reset_defaults,
-        ).grid(row=0, column=1, sticky="w", padx=(12, 0))
+        ).grid(row=0, column=2, sticky="w", padx=(12, 0))
 
         preview_card = ttk.Frame(content, style="Card.TFrame", padding=24)
         preview_card.grid(row=0, column=1, sticky="nsew")
@@ -388,6 +397,7 @@ class GamryProtocolApp:
             "\n".join(f"- {option}" for option in options) if options else "Sin vistas configuradas."
         )
         self.action_text_var.set(f"Configurar {selected_pipeline}" if selected_pipeline else "Configurar pipeline")
+        self.full_report_text_var.set(translate("full_report_button", self._current_language()))
 
     def _apply_theme(self, theme_name: str) -> None:
         self.current_theme = apply_theme(self.root, self.style, theme_name)
@@ -407,6 +417,7 @@ class GamryProtocolApp:
 
     def _on_language_changed(self, _event=None) -> None:
         language = self._current_language()
+        self.full_report_text_var.set(translate("full_report_button", language))
         self.set_status(
             translate(
                 "language_status",
@@ -450,6 +461,91 @@ class GamryProtocolApp:
         else:
             self.output_dir_var.set(folder)
             self.set_status("Carpeta de salida seleccionada.")
+
+    def full_report_selected(self) -> None:
+        input_dir_text = self.input_dir_var.get().strip()
+        output_dir_text = self.output_dir_var.get().strip()
+        language = self._current_language()
+
+        if not input_dir_text or not output_dir_text:
+            self.set_status("Complete las carpetas de entrada y salida antes de continuar.")
+            return
+
+        input_dir = pathlib.Path(input_dir_text)
+        output_dir = pathlib.Path(output_dir_text)
+
+        if not input_dir.exists() or not input_dir.is_dir():
+            self.set_status("La carpeta de entrada no existe o no es valida.")
+            return
+
+        try:
+            plot_font_defaults = self._current_plot_font_defaults()
+        except ValueError as exc:
+            self.set_status(f"Error en estilos de plot: {exc}")
+            return
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir_var.set(str(output_dir))
+
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title(translate("full_report", language))
+        progress_window.geometry("440x150")
+        progress_window.resizable(False, False)
+        progress_window.transient(self.root)
+        progress_window.configure(bg=self.current_theme.window_bg)
+        progress_window.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        panel = ttk.Frame(progress_window, style="Card.TFrame", padding=18)
+        panel.pack(fill="both", expand=True, padx=12, pady=12)
+        message_var = tk.StringVar(value=translate("full_report_generating", language))
+        ttk.Label(panel, textvariable=message_var, style="CardBody.TLabel", wraplength=380).pack(
+            anchor="w",
+            fill="x",
+            pady=(0, 12),
+        )
+        progress_bar = ttk.Progressbar(panel, mode="indeterminate", length=380)
+        progress_bar.pack(fill="x")
+        progress_bar.start(12)
+
+        self.set_status(translate("full_report_generating", language))
+
+        def report_progress(message: str, _done: int | None = None, _total: int | None = None) -> None:
+            self.root.after(0, lambda msg=message: message_var.set(msg))
+
+        def finish_success(path: pathlib.Path) -> None:
+            if progress_window.winfo_exists():
+                progress_bar.stop()
+                progress_window.destroy()
+            status = f"{translate('full_report_completed', language)}: {path}"
+            self.set_status(status)
+            messagebox.showinfo(translate("full_report", language), status)
+
+        def finish_error(error_message: str) -> None:
+            if progress_window.winfo_exists():
+                progress_bar.stop()
+                progress_window.destroy()
+            self.set_status(f"{translate('full_report_failed', language)}: {error_message}")
+            messagebox.showerror(translate("full_report", language), error_message)
+
+        def worker() -> None:
+            try:
+                exported_path = generate_full_report(
+                    input_dir,
+                    output_dir,
+                    language=language,
+                    font_defaults=plot_font_defaults,
+                    progress_callback=report_progress,
+                )
+            except Exception as exc:
+                import traceback
+
+                print(traceback.format_exc())
+                self.root.after(0, lambda msg=f"{type(exc).__name__}: {exc}": finish_error(msg))
+                return
+
+            self.root.after(0, lambda path=exported_path: finish_success(path))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def pipeline_selected(self) -> None:
         input_dir_text = self.input_dir_var.get().strip()

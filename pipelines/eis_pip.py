@@ -699,6 +699,30 @@ def _series_by_pt_aligned_rows(parsed: ParsedDTA) -> list[dict[str, float]]:
     return rows
 
 
+def _curve_aligned_rows(parsed: ParsedDTA, column_names: tuple[str, ...]) -> list[dict[str, float]]:
+    indices = {name: _column_index(parsed, name) for name in column_names}
+    if any(idx is None for idx in indices.values()):
+        return []
+
+    rows: list[dict[str, float]] = []
+    for row_index, raw_row in enumerate(parsed.rows):
+        item: dict[str, float] = {}
+        complete = True
+        for name, idx in indices.items():
+            if idx is None or idx >= len(raw_row):
+                complete = False
+                break
+            value = to_float(raw_row[idx])
+            if value is None:
+                complete = False
+                break
+            item[name] = value
+        if complete:
+            item["_row_index"] = float(row_index)
+            rows.append(item)
+    return rows
+
+
 def build_series_pt_indicator_rows(parsed: ParsedDTA) -> list[tuple[str, float | str, str]]:
     language = _eis_language()
     rows = _series_by_pt_aligned_rows(parsed)
@@ -732,6 +756,100 @@ def build_series_pt_indicator_rows(parsed: ParsedDTA) -> list[tuple[str, float |
         (translate("maximum_delta_voltage", language), _fmt_sig(max(voltage_values) - min(voltage_values)), voltage_unit),
         (translate("maximum_delta_current", language), _fmt_sig(max(current_values) - min(current_values)), current_unit),
     ]
+
+
+def build_pre_stabilization_indicator_rows(parsed: ParsedDTA) -> list[tuple[str, float | str, str]]:
+    language = _eis_language()
+    rows = _curve_aligned_rows(parsed, ("T", "Vf", "Im", "Temp"))
+    if not rows:
+        return []
+
+    time_unit = _column_unit(parsed, "T")
+    voltage_unit = _column_unit(parsed, "Vf")
+    current_unit = _column_unit(parsed, "Im")
+    temp_unit = _column_unit(parsed, "Temp")
+    area_cm2 = _metadata_area_cm2(parsed)
+    current_density_available = area_cm2 is not None and area_cm2 > 0
+    current_magnitude_unit = "A/cm^2" if current_density_available else current_unit
+    min_current_label_key = "current_density_at_minimum_temperature" if current_density_available else "current_at_minimum_temperature"
+    max_current_label_key = "current_density_at_maximum_temperature" if current_density_available else "current_at_maximum_temperature"
+    delta_current_label_key = "period_delta_current_density" if current_density_available else "period_delta_current"
+    operation_current_label_key = "operation_current_density_difference" if current_density_available else "operation_current_difference"
+
+    def _current_magnitude(row: dict[str, float]) -> float:
+        value = row["Im"]
+        if current_density_available and area_cm2 is not None:
+            return value / area_cm2
+        return value
+
+    min_temp_row = min(rows, key=lambda row: row["Temp"])
+    max_temp_row = max(rows, key=lambda row: row["Temp"])
+    def _fmt_sig(value: float | None, sig: int = 6) -> str:
+        if value is None:
+            return ""
+        return f"{value:.{sig}g}"
+
+    indicator_rows = [
+        (translate("minimum_temperature", language), _fmt_sig(min_temp_row["Temp"]), temp_unit),
+        (translate("time_at_minimum_temperature", language), _fmt_sig(min_temp_row["T"]), time_unit),
+        (translate("voltage_at_minimum_temperature", language), _fmt_sig(min_temp_row["Vf"]), voltage_unit),
+        (translate(min_current_label_key, language), _fmt_sig(_current_magnitude(min_temp_row)), current_magnitude_unit),
+        (translate("maximum_temperature", language), _fmt_sig(max_temp_row["Temp"]), temp_unit),
+        (translate("time_at_maximum_temperature", language), _fmt_sig(max_temp_row["T"]), time_unit),
+        (translate("voltage_at_maximum_temperature", language), _fmt_sig(max_temp_row["Vf"]), voltage_unit),
+        (translate(max_current_label_key, language), _fmt_sig(_current_magnitude(max_temp_row)), current_magnitude_unit),
+    ]
+
+    periods = getattr(parsed, "_pre_stab_periods", None)
+    if not isinstance(periods, list) or not periods:
+        periods = [{"kind": "global", "label": translate("pre_stabilization", language), "start": 0, "end": len(parsed.rows)}]
+
+    period_summaries: dict[str, dict[str, float]] = {}
+    for period in periods:
+        if not isinstance(period, dict):
+            continue
+        start = int(period.get("start", 0) or 0)
+        end = int(period.get("end", len(parsed.rows)) or len(parsed.rows))
+        period_rows = [
+            row for row in rows
+            if start <= int(row.get("_row_index", -1)) < end
+        ]
+        if not period_rows:
+            continue
+
+        label = str(period.get("label") or translate("pre_stabilization", language))
+        voltage_values = [row["Vf"] for row in period_rows]
+        current_values = [_current_magnitude(row) for row in period_rows]
+        indicator_rows.extend(
+            [
+                (translate("period_delta_voltage", language, period=label), _fmt_sig(max(voltage_values) - min(voltage_values)), voltage_unit),
+                (translate(delta_current_label_key, language, period=label), _fmt_sig(max(current_values) - min(current_values)), current_magnitude_unit),
+            ]
+        )
+        period_summaries[str(period.get("kind") or "").lower()] = {
+            "mean_voltage": sum(voltage_values) / len(voltage_values),
+            "mean_current": sum(current_values) / len(current_values),
+        }
+
+    galv_summary = period_summaries.get("galvanostatic")
+    pot_summary = period_summaries.get("potentiostatic")
+    if galv_summary is not None and pot_summary is not None:
+        indicator_rows.extend(
+            [
+                (
+                    translate("operation_voltage_difference", language),
+                    _fmt_sig(pot_summary["mean_voltage"] - galv_summary["mean_voltage"]),
+                    voltage_unit,
+                ),
+                (
+                    translate(operation_current_label_key, language),
+                    _fmt_sig(pot_summary["mean_current"] - galv_summary["mean_current"]),
+                    current_magnitude_unit,
+                ),
+            ]
+        )
+
+    return indicator_rows
 
 
 def _localized_meta_label(label: str, language: str | None = None) -> str:
@@ -1111,55 +1229,72 @@ def export_bode_report_pdf(fig: Figure, output_path: Path) -> Path:
     return output_path
 
 
-def export_series_pt_report_pdf(fig: Figure, output_path: Path) -> Path:
+def _line_xy(line) -> tuple[list[float], list[float]]:
+    xs: list[float] = []
+    ys: list[float] = []
+    for x_raw, y_raw in zip(line.get_xdata(orig=False), line.get_ydata(orig=False)):
+        try:
+            x_val = float(x_raw)
+            y_val = float(y_raw)
+        except Exception:
+            continue
+        if not math.isfinite(x_val) or not math.isfinite(y_val):
+            continue
+        xs.append(x_val)
+        ys.append(y_val)
+    return xs, ys
+
+
+def _export_three_axis_series_report_pdf(
+    fig: Figure,
+    output_path: Path,
+    *,
+    lines_attr: str,
+    axes_attr: str,
+    base_key: str,
+    series_order: tuple[str, str, str],
+    fallback_title: str,
+    report_title_key: str,
+    indicators_title_key: str,
+    indicator_rows: list[tuple[str, float | str, str]],
+    metadata_error: str,
+    data_error: str,
+    metadata_bbox: list[float] | None = None,
+    indicators_bbox: list[float] | None = None,
+) -> Path:
     language = _eis_language()
     parsed = getattr(fig, "_eis_parsed", None)
     if parsed is None:
-        raise ValueError("No se encontro metadata asociada a este grafico Series by Pt.")
+        raise ValueError(metadata_error)
 
-    source_lines = getattr(fig, "_pt_lines", {})
-    source_axes = getattr(fig, "_pt_axes", {})
+    source_lines = getattr(fig, lines_attr, {})
+    source_axes = getattr(fig, axes_attr, {})
     if not isinstance(source_lines, dict) or not source_lines:
-        raise ValueError("No hay datos Series by Pt para exportar.")
+        raise ValueError(data_error)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    source_base_ax = source_axes.get("I") if isinstance(source_axes, dict) else None
+    source_base_ax = source_axes.get(base_key) if isinstance(source_axes, dict) else None
     if source_base_ax is None and fig.axes:
         source_base_ax = fig.axes[0]
-    source_title = source_base_ax.get_title() if source_base_ax is not None else "Series by Pt"
+    source_title = source_base_ax.get_title() if source_base_ax is not None else fallback_title
     metadata_rows = _build_eis_report_metadata_rows(parsed, language)
-    indicator_rows = build_series_pt_indicator_rows(parsed)
-
-    def _line_xy(line) -> tuple[list[float], list[float]]:
-        xs: list[float] = []
-        ys: list[float] = []
-        for x_raw, y_raw in zip(line.get_xdata(orig=False), line.get_ydata(orig=False)):
-            try:
-                x_val = float(x_raw)
-                y_val = float(y_raw)
-            except Exception:
-                continue
-            if not math.isfinite(x_val) or not math.isfinite(y_val):
-                continue
-            xs.append(x_val)
-            ys.append(y_val)
-        return xs, ys
 
     with PdfPages(output_path) as pdf:
         plot_fig = Figure(figsize=(9.5, 6.2), dpi=150)
-        plot_ax_i = plot_fig.add_subplot(111)
-        plot_ax_v = plot_ax_i.twinx()
-        plot_ax_t = plot_ax_i.twinx()
-        plot_ax_t.spines["right"].set_position(("outward", 60))
-        for extra_ax in (plot_ax_v, plot_ax_t):
+        plot_base_ax = plot_fig.add_subplot(111)
+        report_axes = {base_key: plot_base_ax}
+        extra_axes = [key for key in series_order if key != base_key]
+        for idx, key in enumerate(extra_axes):
+            extra_ax = plot_base_ax.twinx()
+            if idx > 0:
+                extra_ax.spines["right"].set_position(("outward", 60))
             extra_ax.spines["left"].set_visible(False)
             extra_ax.yaxis.tick_right()
             extra_ax.yaxis.set_label_position("right")
+            report_axes[key] = extra_ax
 
-        report_axes = {"I": plot_ax_i, "V": plot_ax_v, "T": plot_ax_t}
-        series_order = ("I", "V", "T")
         plotted_handles = []
         plotted_labels = []
         x_values: list[float] = []
@@ -1189,7 +1324,7 @@ def export_series_pt_report_pdf(fig: Figure, output_path: Path) -> Path:
                 target_ax.set_ylabel(source_ax.get_ylabel())
                 target_ax.set_ylim(*source_ax.get_ylim())
                 axis_color = source_ax.yaxis.label.get_color()
-                side = "left" if key == "I" else "right"
+                side = "left" if key == base_key else "right"
                 target_ax.yaxis.label.set_color(axis_color)
                 target_ax.tick_params(axis="y", colors=axis_color)
                 if side in target_ax.spines:
@@ -1199,22 +1334,23 @@ def export_series_pt_report_pdf(fig: Figure, output_path: Path) -> Path:
             target_ax.yaxis.get_offset_text().set_visible(False)
 
         if not plotted_handles:
-            raise ValueError("No hay datos Series by Pt para exportar.")
+            raise ValueError(data_error)
 
         if source_base_ax is not None:
-            plot_ax_i.set_xlabel(source_base_ax.get_xlabel())
-            plot_ax_i.set_xlim(*source_base_ax.get_xlim())
+            plot_base_ax.set_xlabel(source_base_ax.get_xlabel())
+            plot_base_ax.set_xlim(*source_base_ax.get_xlim())
         elif x_values:
-            plot_ax_i.set_xlim(min(x_values), max(x_values))
-        plot_ax_i.xaxis.set_major_locator(LinearLocator(6))
-        plot_ax_i.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
-        plot_ax_i.xaxis.get_offset_text().set_visible(False)
-        plot_ax_i.set_title(source_title)
-        plot_ax_i.grid(True)
-        plot_ax_v.grid(False)
-        plot_ax_t.grid(False)
+            plot_base_ax.set_xlim(min(x_values), max(x_values))
+        plot_base_ax.xaxis.set_major_locator(LinearLocator(6))
+        plot_base_ax.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+        plot_base_ax.xaxis.get_offset_text().set_visible(False)
+        plot_base_ax.set_title(source_title)
+        plot_base_ax.grid(True)
+        for key, report_ax in report_axes.items():
+            if key != base_key:
+                report_ax.grid(False)
         if plotted_handles:
-            plot_ax_i.legend(plotted_handles, plotted_labels, loc="best")
+            plot_base_ax.legend(plotted_handles, plotted_labels, loc="best")
         plot_fig.tight_layout()
         pdf.savefig(plot_fig, bbox_inches="tight")
 
@@ -1224,17 +1360,69 @@ def export_series_pt_report_pdf(fig: Figure, output_path: Path) -> Path:
         table_fig.text(
             0.05,
             0.965,
-            translate("eis_series_pt_report_title", language, curve=source_title),
+            translate(report_title_key, language, curve=source_title),
             fontsize=18,
             fontweight="bold",
             ha="left",
             va="top",
         )
-        _add_eis_report_table(table_ax, translate("metadata", language), metadata_rows, [0.05, 0.53, 0.90, 0.34], language=language)
-        _add_eis_report_table(table_ax, translate("series_pt_indicators", language), indicator_rows, [0.05, 0.08, 0.90, 0.36], language=language)
+        _add_eis_report_table(
+            table_ax,
+            translate("metadata", language),
+            metadata_rows,
+            metadata_bbox or [0.05, 0.53, 0.90, 0.34],
+            language=language,
+        )
+        _add_eis_report_table(
+            table_ax,
+            translate(indicators_title_key, language),
+            indicator_rows,
+            indicators_bbox or [0.05, 0.08, 0.90, 0.36],
+            language=language,
+        )
         pdf.savefig(table_fig, bbox_inches="tight")
 
     return output_path
+
+
+def export_series_pt_report_pdf(fig: Figure, output_path: Path) -> Path:
+    parsed = getattr(fig, "_eis_parsed", None)
+    indicator_rows = build_series_pt_indicator_rows(parsed) if parsed is not None else []
+    return _export_three_axis_series_report_pdf(
+        fig,
+        output_path,
+        lines_attr="_pt_lines",
+        axes_attr="_pt_axes",
+        base_key="I",
+        series_order=("I", "V", "T"),
+        fallback_title="Series by Pt",
+        report_title_key="eis_series_pt_report_title",
+        indicators_title_key="series_pt_indicators",
+        indicator_rows=indicator_rows,
+        metadata_error="No se encontro metadata asociada a este grafico Series by Pt.",
+        data_error="No hay datos Series by Pt para exportar.",
+    )
+
+
+def export_pre_stabilization_report_pdf(fig: Figure, output_path: Path) -> Path:
+    parsed = getattr(fig, "_eis_parsed", None)
+    indicator_rows = build_pre_stabilization_indicator_rows(parsed) if parsed is not None else []
+    return _export_three_axis_series_report_pdf(
+        fig,
+        output_path,
+        lines_attr="_pre_stab_lines",
+        axes_attr="_pre_stab_axes",
+        base_key="V",
+        series_order=("V", "I", "T"),
+        fallback_title="Pre-estabilizacion",
+        report_title_key="eis_pre_stabilization_report_title",
+        indicators_title_key="pre_stabilization_indicators",
+        indicator_rows=indicator_rows,
+        metadata_error="No se encontro metadata asociada a este grafico Pre-estabilizacion.",
+        data_error="No hay datos Pre-estabilizacion para exportar.",
+        metadata_bbox=[0.05, 0.58, 0.90, 0.29],
+        indicators_bbox=[0.05, 0.06, 0.90, 0.43],
+    )
 
 
 def _technique_name(parsed: ParsedDTA) -> str:
@@ -1259,6 +1447,156 @@ def _extract_current_label(stem: str) -> tuple[str | None, float | None]:
         if re.fullmatch(r"[+-]?\d+(?:[.,]\d+)?A", clean, flags=re.IGNORECASE):
             return clean, to_float(clean[:-1])
     return None, None
+
+
+def _pre_stabilization_variant_order(path: Path) -> int:
+    stem = path.stem.lower()
+    if stem.startswith("est_eis"):
+        return 0
+    if stem.startswith("estv_eis"):
+        return 1
+    return 2
+
+
+def _pre_stabilization_period_kind(path: Path) -> str:
+    stem = path.stem.lower()
+    if stem.startswith("estv_eis"):
+        return "potentiostatic"
+    if stem.startswith("est_eis"):
+        return "galvanostatic"
+    return "pre_stabilization"
+
+
+def _pre_stabilization_period_label(path: Path, language: str | None = None) -> str:
+    language = _eis_language(language)
+    kind = _pre_stabilization_period_kind(path)
+    if kind == "potentiostatic":
+        return translate("potentiostatic_period", language)
+    if kind == "galvanostatic":
+        return translate("galvanostatic_period", language)
+    return translate("pre_stabilization", language)
+
+
+def _pre_stabilization_pair_key(path: Path) -> str:
+    stem = path.stem.strip()
+    match = re.match(r"^estv?_eis[_\s-]*(.+)$", stem, flags=re.IGNORECASE)
+    return (match.group(1) if match else stem).lower()
+
+
+def _canonical_pre_stabilization_path(paths: list[Path]) -> Path:
+    return sorted(paths, key=lambda path: (_pre_stabilization_variant_order(path), path.stem.lower()))[0]
+
+
+def _format_adjusted_curve_value(value: float, original: str) -> str:
+    if math.isfinite(value) and abs(value - round(value)) < 1e-9 and re.fullmatch(r"[+-]?\d+", original.strip()):
+        return str(int(round(value)))
+    formatted = f"{value:.12g}"
+    return formatted.replace(".", ",") if "," in original else formatted
+
+
+def _first_positive_step(values: list[float]) -> float:
+    for prev, curr in zip(values, values[1:]):
+        step = curr - prev
+        if step > 0:
+            return step
+    return 0.0
+
+
+def _first_float_from_rows(rows: list[list[str]], idx: int) -> float | None:
+    for row in rows:
+        if idx >= len(row):
+            continue
+        value = to_float(row[idx])
+        if value is not None:
+            return value
+    return None
+
+
+def _remap_curve_row(row: list[str], source_header: list[str], target_header: list[str]) -> list[str]:
+    source_indexes = {name: idx for idx, name in enumerate(source_header)}
+    mapped: list[str] = []
+    for name in target_header:
+        source_idx = source_indexes.get(name)
+        mapped.append(row[source_idx] if source_idx is not None and source_idx < len(row) else "")
+    return mapped
+
+
+def _concatenate_curve_parsed(parsed_items: list[ParsedDTA]) -> ParsedDTA:
+    if not parsed_items:
+        raise ValueError("No pre-stabilization CURVE data to concatenate.")
+
+    base = parsed_items[0]
+    header = list(base.header)
+    units = list(base.units)
+    combined_rows: list[list[str]] = []
+
+    pt_idx = _column_index(base, "Pt")
+    time_idx = _column_index(base, "T")
+    last_pt: float | None = None
+    last_time: float | None = None
+
+    for parsed_index, parsed in enumerate(parsed_items):
+        mapped_rows = [
+            _remap_curve_row(row, parsed.header, header)
+            for row in parsed.rows
+        ]
+
+        if parsed_index > 0 and mapped_rows:
+            first_pt = None
+            if pt_idx is not None:
+                first_pt = _first_float_from_rows(mapped_rows, pt_idx)
+            first_time = None
+            time_values: list[float] = []
+            if time_idx is not None:
+                for row in mapped_rows:
+                    if time_idx >= len(row):
+                        continue
+                    value = to_float(row[time_idx])
+                    if value is None:
+                        continue
+                    if first_time is None:
+                        first_time = value
+                    time_values.append(value)
+            time_offset = None
+            if last_time is not None and first_time is not None:
+                time_offset = last_time + _first_positive_step(time_values) - first_time
+
+            for row in mapped_rows:
+                if pt_idx is not None and last_pt is not None and first_pt is not None and pt_idx < len(row):
+                    value = to_float(row[pt_idx])
+                    if value is not None:
+                        row[pt_idx] = _format_adjusted_curve_value(last_pt + 1 + value - first_pt, row[pt_idx])
+                if time_idx is not None and time_offset is not None and time_idx < len(row):
+                    value = to_float(row[time_idx])
+                    if value is not None:
+                        row[time_idx] = _format_adjusted_curve_value(value + time_offset, row[time_idx])
+
+        combined_rows.extend(mapped_rows)
+
+        if pt_idx is not None:
+            for row in reversed(combined_rows):
+                if pt_idx >= len(row):
+                    continue
+                value = to_float(row[pt_idx])
+                if value is not None:
+                    last_pt = value
+                    break
+        if time_idx is not None:
+            for row in reversed(combined_rows):
+                if time_idx >= len(row):
+                    continue
+                value = to_float(row[time_idx])
+                if value is not None:
+                    last_time = value
+                    break
+
+    return ParsedDTA(
+        meta_values=dict(base.meta_values),
+        meta_units=dict(base.meta_units),
+        header=header,
+        units=units,
+        rows=combined_rows,
+    )
 
 
 def _format_decimal_for_plot_label(raw_value: str) -> str | None:
@@ -1459,8 +1797,30 @@ def _build_pre_stabilization_display_name(path: Path, language: str | None = Non
 def _collect_pre_stabilization_entries(dta_files: list[Path], language: str | None = None) -> list[EISPlotEntry]:
     language = _eis_language(language)
     entries: list[EISPlotEntry] = []
+    grouped_files: dict[str, list[Path]] = {}
     for dta_file in dta_files:
-        parsed = parse_gamry_curve_dta(dta_file)
+        grouped_files.setdefault(_pre_stabilization_pair_key(dta_file), []).append(dta_file)
+
+    for grouped in grouped_files.values():
+        ordered_files = sorted(grouped, key=lambda path: (_pre_stabilization_variant_order(path), path.stem.lower()))
+        dta_file = _canonical_pre_stabilization_path(ordered_files)
+        parsed_items = [parse_gamry_curve_dta(path) for path in ordered_files]
+        parsed = _concatenate_curve_parsed(parsed_items) if len(parsed_items) > 1 else parsed_items[0]
+        period_start = 0
+        periods: list[dict[str, object]] = []
+        for source_path, parsed_item in zip(ordered_files, parsed_items):
+            period_end = period_start + len(parsed_item.rows)
+            periods.append(
+                {
+                    "kind": _pre_stabilization_period_kind(source_path),
+                    "label": _pre_stabilization_period_label(source_path, language),
+                    "start": period_start,
+                    "end": period_end,
+                    "source": source_path.name,
+                }
+            )
+            period_start = period_end
+        parsed._pre_stab_periods = periods
         display_name, stage_number, current_label, current_value = _build_pre_stabilization_display_name(
             dta_file,
             language=language,
@@ -1946,6 +2306,8 @@ def fig_pre_stabilization(
 
     axes = {"I": axI, "V": axV, "T": axT}
     lines: dict[str, object] = {}
+    area_cm2 = _metadata_area_cm2(parsed)
+    current_density_default = area_cm2 is not None and area_cm2 > 0
 
     time_unit = _column_unit(parsed, "T")
     axV.set_xlabel(f"{translate('time', language)} ({time_unit})" if time_unit else translate("time", language))
@@ -1960,6 +2322,12 @@ def fig_pre_stabilization(
 
         unit = _column_unit(parsed, col)
         series_label = f"{label} ({unit})" if unit else label
+        absolute_y = tuple(y)
+        if key == "I":
+            density_label = f"{translate('current_density', language)} (A/cm^2)"
+            if current_density_default and area_cm2 is not None:
+                y = [value / area_cm2 for value in y]
+                series_label = density_label
         (ln,) = ax.plot(
             x,
             y,
@@ -1969,6 +2337,10 @@ def fig_pre_stabilization(
             color=color,
             label=series_label,
         )
+        if key == "I":
+            ln._eis_abs_ydata = absolute_y
+            ln._eis_abs_label = f"{label} ({unit})" if unit else label
+            ln._eis_density_label = f"{translate('current_density', language)} (A/cm^2)"
         lines[key] = ln
         ax.set_ylabel(series_label)
 
@@ -1979,11 +2351,14 @@ def fig_pre_stabilization(
     if not lines:
         return None
 
-    axV.set_title(f"{entry.display_name} - Pre-estabilizacion")
+    axV.set_title(f"{entry.display_name} - {translate('pre_stabilization', language)}")
 
+    fig._eis_parsed = parsed
     fig._pre_stab_series = True
     fig._pre_stab_lines = lines
     fig._pre_stab_axes = axes
+    fig._pt_current_area_cm2 = area_cm2
+    fig._pre_stab_current_density_default = current_density_default
 
     apply_plot_font_defaults(fig, font_defaults)
     fig.tight_layout()
@@ -2890,7 +3265,7 @@ def show_figures_tk(
                     _update_legend()
                     canvas.draw_idle()
 
-            multi_title = "Series vs Pt" if is_pt_series else "Pre-estabilizacion"
+            multi_title = "Series vs Pt" if is_pt_series else translate("pre_stabilization", _eis_language())
             pt_box = ttk.LabelFrame(ctrl_frame, text=multi_title, padding=8)
             pt_box.pack(fill="x", pady=(0, 10))
 
@@ -2907,8 +3282,9 @@ def show_figures_tk(
             ttk.Checkbutton(pt_box, text="y-axes a color", variable=color_axes_var,
                 command=lambda: (_refresh_axis_colors(), canvas.draw_idle())).pack(anchor="w", pady=(6,0))
 
-            current_density_var = tk.BooleanVar(value=False)
-            current_density_state = {"value": False}
+            current_density_default = bool(getattr(fig, "_pre_stab_current_density_default", False)) if is_pre_stabilization else False
+            current_density_var = tk.BooleanVar(value=current_density_default)
+            current_density_state = {"value": current_density_default}
             show_I = tk.BooleanVar(value=("I" in lines and lines["I"].get_visible()))
             show_V = tk.BooleanVar(value=("V" in lines and lines["V"].get_visible()))
             show_T = tk.BooleanVar(value=("T" in lines and lines["T"].get_visible()))
@@ -3009,7 +3385,7 @@ def show_figures_tk(
 
                 if new_state and (area_cm2 is None or area_cm2 <= 0):
                     mb.showerror(
-                        "Series vs Pt",
+                        "Series vs Pt" if is_pt_series else translate("pre_stabilization", _eis_language()),
                         "No se pudo leer un AREA valida de la metadata para convertir la corriente.",
                     )
                     current_density_var.set(old_state)
@@ -3207,7 +3583,7 @@ def show_figures_tk(
                 sp_lw.bind("<KeyRelease>", lambda e, kk=k: _apply_series_style(kk))
                 sp_ms.bind("<KeyRelease>", lambda e, kk=k: _apply_series_style(kk))
 
-            if is_pt_series and "I" in lines:
+            if "I" in lines:
                 ttk.Checkbutton(
                     pt_box,
                     text="Densidad de corriente",
@@ -3900,6 +4276,24 @@ def show_figures_tk(
                 return
             mb.showinfo("EIS Series by Pt Report", f"{translate('report_exported', language)}:\n{exported_path}")
 
+        def export_pre_stabilization_report() -> None:
+            language = _eis_language()
+            try:
+                default_name = f"EIS_Pre_Stabilization_Report_{_safe_filename_part(ax.get_title() or tab_title)}.pdf"
+                path_text = filedialog.asksaveasfilename(
+                    title=translate("save_eis_pre_stabilization_report", language),
+                    initialfile=default_name,
+                    defaultextension=".pdf",
+                    filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+                )
+                if not path_text:
+                    return
+                exported_path = export_pre_stabilization_report_pdf(fig, Path(path_text))
+            except Exception as exc:
+                mb.showerror("EIS Pre-stabilization Report", str(exc))
+                return
+            mb.showinfo("EIS Pre-stabilization Report", f"{translate('report_exported', language)}:\n{exported_path}")
+
         def pick_color():
             if line is None:
                 return
@@ -3976,7 +4370,7 @@ def show_figures_tk(
         if is_nyquist:
             ttk.Button(
                 btns_axes,
-                text="Reporte PDF" if _eis_language() == "es" else "PDF Report",
+                text=translate("pdf_report", _eis_language()),
                 command=export_nyquist_report,
             ).pack(
                 side="left",
@@ -3987,8 +4381,19 @@ def show_figures_tk(
         if is_pt_series:
             ttk.Button(
                 btns_axes,
-                text="Reporte PDF" if _eis_language() == "es" else "PDF Report",
+                text=translate("pdf_report", _eis_language()),
                 command=export_series_pt_report,
+            ).pack(
+                side="left",
+                expand=True,
+                fill="x",
+                padx=(6, 0),
+            )
+        if is_pre_stabilization:
+            ttk.Button(
+                btns_axes,
+                text=translate("pdf_report", _eis_language()),
+                command=export_pre_stabilization_report,
             ).pack(
                 side="left",
                 expand=True,
@@ -3998,7 +4403,7 @@ def show_figures_tk(
         if is_bode_plot:
             ttk.Button(
                 btns_axes,
-                text="Reporte PDF" if _eis_language() == "es" else "PDF Report",
+                text=translate("pdf_report", _eis_language()),
                 command=export_bode_report,
             ).pack(
                 side="left",
@@ -6005,18 +6410,19 @@ def show_figures_tk(
             _open_composer_pt(win, pt_sources, font_defaults)
             return
 
-        if "pre-estabiliz" in key:
+        if "pre-estabiliz" in key or "pre-stabiliz" in key:
+            pre_label = translate("pre_stabilization", _eis_language())
             _open_composer_pt(
                 win,
                 pre_stabilization_sources,
                 font_defaults,
-                window_title="Composite (Pre-estabilizacion)",
-                default_title="Composite - Pre-estabilizacion",
-                sources_title="Pre-estabilizacion sources",
+                window_title=f"Composite ({pre_label})",
+                default_title=f"Composite - {pre_label}",
+                sources_title=f"{pre_label} sources",
             )
             return
 
-        mb.showinfo("Componer", "Componer esta disponible para graficos Nyquist, Bode, Series vs Pt y Pre-estabilizacion.")
+        mb.showinfo("Componer", f"Componer esta disponible para graficos Nyquist, Bode, Series vs Pt y {translate('pre_stabilization', _eis_language())}.")
 
     compose_btn.configure(command=open_composer_for_current)
 
@@ -6044,13 +6450,23 @@ def find_pre_stabilization_files(input_dir: Path) -> list[Path]:
     return sorted(
         [
             p for p in input_dir.iterdir()
-            if p.is_file() and p.suffix.lower() == ".dta" and p.name.lower().startswith("est_eis")
+            if (
+                p.is_file()
+                and p.suffix.lower() == ".dta"
+                and (
+                    p.name.lower().startswith("est_eis")
+                    or p.name.lower().startswith("estv_eis")
+                )
+            )
         ]
     )
 
 
 def _wants_pre_stabilization(selected_options: Iterable[str] | None) -> bool:
-    return any("pre-estabiliz" in option.lower() for option in (selected_options or []))
+    return any(
+        "pre-estabiliz" in option.lower() or "pre-stabiliz" in option.lower()
+        for option in (selected_options or [])
+    )
 
 
 def export_folder(
@@ -6076,9 +6492,9 @@ def export_folder(
         export_to_xlsx(parsed, xlsx_path, language=language)
         exported_xlsx.append(xlsx_path)
 
-    for dta_file in pre_stabilization_files:
-        parsed = parse_gamry_curve_dta(dta_file)
-        xlsx_path = output_dir / f"{dta_file.stem}.xlsx"
+    for entry in _collect_pre_stabilization_entries(pre_stabilization_files, language=language):
+        parsed = entry.parsed
+        xlsx_path = output_dir / f"{entry.path.stem}.xlsx"
         export_to_xlsx(
             parsed,
             xlsx_path,
@@ -6148,7 +6564,7 @@ def run_pipeline(
             for entry in pre_entries:
                 fig = fig_pre_stabilization(entry, font_defaults=font_defaults)
                 if fig is not None:
-                    option_figs.append((f"{entry.display_name} - Pre-estabilizacion", fig))
+                    option_figs.append((f"{entry.display_name} - {translate('pre_stabilization', EIS_LANGUAGE)}", fig))
         else:
             for entry in plot_entries:
                 option_figs.extend(build_figures(entry, [option], font_defaults=font_defaults))
