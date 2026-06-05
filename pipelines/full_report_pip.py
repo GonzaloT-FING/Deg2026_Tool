@@ -52,6 +52,11 @@ def _format_sig(value: object, digits: int = 6) -> str:
     if isinstance(value, float):
         if not math.isfinite(value):
             return ""
+        if value == 0:
+            return "0"
+        abs_value = abs(value)
+        if 1e-6 <= abs_value < 1e6:
+            return f"{value:.{digits}f}".rstrip("0").rstrip(".")
         return f"{value:.{digits}g}"
     return str(value)
 
@@ -106,6 +111,8 @@ def _add_report_table(
     *,
     font_size: float = 8.4,
 ) -> None:
+    table_width = min(float(bbox[2]), 0.82)
+    bbox = [(1.0 - table_width) / 2.0, bbox[1], table_width, bbox[3]]
     ax.text(
         bbox[0],
         bbox[1] + bbox[3] + 0.025,
@@ -207,6 +214,52 @@ def _section_page(title: str, subtitle: str, language: str) -> Figure:
     return fig
 
 
+def _index_page(section_titles: list[str], language: str) -> Figure:
+    fig = _new_plot_figure(figsize=(8.5, 11.0), dpi=150)
+    ax = fig.add_subplot(111)
+    ax.axis("off")
+    fig.text(0.08, 0.88, translate("full_report_index", language), fontsize=25, fontweight="bold", ha="left", va="top")
+    fig.text(0.08, 0.84, translate("full_report_index_subtitle", language), fontsize=12, color="#4a5568", ha="left", va="top")
+    y = 0.76
+    for idx, title in enumerate(section_titles, start=1):
+        fig.text(0.12, y, f"{idx}. {title}", fontsize=12, ha="left", va="center", color="#2d3748")
+        y -= 0.052
+        if y < 0.12:
+            break
+    fig.text(0.08, 0.08, translate("full_report", language), fontsize=9, color="#718096", ha="left")
+    return fig
+
+
+def _add_pdf_outline(output_path: Path, section_entries: list[tuple[str, int]]) -> None:
+    if not section_entries:
+        return
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except Exception:
+        try:
+            from PyPDF2 import PdfReader, PdfWriter
+        except Exception:
+            return
+
+    try:
+        reader = PdfReader(str(output_path))
+        writer = PdfWriter()
+        for page in reader.pages:
+            writer.add_page(page)
+        for title, page_index in section_entries:
+            if 0 <= page_index < len(reader.pages):
+                if hasattr(writer, "add_outline_item"):
+                    writer.add_outline_item(title, page_index)
+                elif hasattr(writer, "addBookmark"):
+                    writer.addBookmark(title, page_index)
+        temp_path = output_path.with_name(f"{output_path.stem}.tmp{output_path.suffix}")
+        with temp_path.open("wb") as handle:
+            writer.write(handle)
+        temp_path.replace(output_path)
+    except Exception:
+        return
+
+
 def _pc_current_axis_mode(bundles: list[pc.CurveBundle]) -> bool:
     if not bundles:
         return False
@@ -291,7 +344,7 @@ def _draw_pc_ascending_summary(
 
 def _eis_current_group_key(entry: eis.EISPlotEntry) -> tuple[float | str, str]:
     if entry.current_value is not None:
-        label = entry.current_label or f"{entry.current_value:g}A"
+        label = entry.current_label or f"{eis._format_report_value(entry.current_value)}A"
         return round(entry.current_value, 12), label
     label = entry.current_label or entry.voltage_label or entry.display_name
     return label, label
@@ -339,7 +392,7 @@ def _draw_eis_nyquist_summary(
         ),
     )
     for index, entry in enumerate(ordered_entries):
-        x_values, z_imag_values, _freqs = eis._triplet_series(entry.parsed, "Zreal", "Zimag", "Freq")
+        x_values, z_imag_values, freqs = eis._triplet_series(entry.parsed, "Zreal", "Zimag", "Freq")
         if not x_values or not z_imag_values:
             continue
         y_values = [-value for value in z_imag_values]
@@ -359,6 +412,7 @@ def _draw_eis_nyquist_summary(
             color=color,
             label=_stage_label(entry.stage_number, entry.display_name, language),
         )
+        eis._annotate_nyquist_max_y(ax, x_values, y_values, freqs, fontsize=font_defaults.tick)
 
     if not all_x or not all_y:
         return None
@@ -699,10 +753,12 @@ def _append_pc_individual_pages(
 def _pre_stab_metadata_rows(parsed: eis.ParsedDTA, language: str) -> list[tuple[str, object, str]]:
     rows: list[tuple[str, object, str]] = []
     for key, label in eis.PRE_STAB_META_FIELDS:
+        raw_value = parsed.meta_values.get(key, "")
+        numeric = eis.to_float(raw_value) if key in {"ISTEP1", "TSTEP1", "SAMPLETIME", "AREA"} else None
         rows.append(
             (
                 eis._localized_meta_label(label, language),
-                parsed.meta_values.get(key, ""),
+                numeric if numeric is not None else raw_value,
                 parsed.meta_units.get(key, ""),
             )
         )
@@ -730,6 +786,7 @@ def _append_eis_individual_pages(
                 marker_style=entry.default_marker,
                 current_value=entry.current_value,
                 voltage_label=entry.voltage_label,
+                annotate_max_imaginary=True,
                 font_defaults=font_defaults,
             )
             if nyquist_fig is not None:
@@ -754,7 +811,7 @@ def _append_eis_individual_pages(
                 font_defaults=font_defaults,
             )
             if series_fig is not None:
-                FigureCanvasAgg(series_fig)
+                eis._update_right_axis_spacing(series_fig, FigureCanvasAgg(series_fig), getattr(series_fig, "_pt_axes", {}))
                 _save_figure(pdf, series_fig)
                 step[0] += 1
 
@@ -790,7 +847,7 @@ def _append_eis_individual_pages(
         try:
             pre_fig = eis.fig_pre_stabilization(entry, font_defaults=font_defaults)
             if pre_fig is not None:
-                FigureCanvasAgg(pre_fig)
+                eis._update_right_axis_spacing(pre_fig, FigureCanvasAgg(pre_fig), getattr(pre_fig, "_pre_stab_axes", {}))
                 _save_figure(pdf, pre_fig)
                 step[0] += 1
 
@@ -881,7 +938,7 @@ def _append_cv_individual_pages(
                 translate("cv_i_vs_v_report_title", language, curve=label),
                 "",
                 [
-                    (translate("metadata", language), cv._build_metadata_rows(dataset.parsed), [0.05, 0.53, 0.90, 0.34]),
+                    (translate("metadata", language), cv._build_metadata_rows(dataset.parsed, language=language), [0.05, 0.53, 0.90, 0.34]),
                     (
                         translate("cv_indicators", language),
                         cv._build_cv_report_indicator_rows(dataset, report_segment_keys, language=language),
@@ -919,7 +976,7 @@ def _estimate_total_pages(
     cv_datasets: list[cv.CVDataset],
     current_groups: list[tuple[str, list[eis.EISPlotEntry]]],
 ) -> int:
-    total = 1
+    total = 2
     if pc_bundles or current_groups:
         total += 1
     if pc_bundles:
@@ -975,13 +1032,28 @@ def generate_full_report(
     total = _estimate_total_pages(pc_bundles, eis_entries, pre_entries, cv_datasets, current_groups)
     step = [0]
     warnings: list[str] = []
+    section_titles: list[str] = []
+    if pc_bundles or current_groups:
+        section_titles.append(translate("full_report_summary", language))
+    if pc_bundles:
+        section_titles.append("PC")
+    if eis_entries or pre_entries:
+        section_titles.append("EIS")
+    if cv_datasets:
+        section_titles.append("CV")
+    section_entries: list[tuple[str, int]] = []
 
     with PdfPages(output_path) as pdf:
         _emit(progress_callback, translate("full_report_generating", language), step[0], total)
         _save_figure(pdf, _title_page(input_dir, output_dir, counts, language))
+        section_entries.append((translate("full_report_title", language), step[0]))
+        step[0] += 1
+        _save_figure(pdf, _index_page(section_titles, language))
+        section_entries.append((translate("full_report_index", language), step[0]))
         step[0] += 1
 
         if pc_bundles or current_groups:
+            section_entries.append((translate("full_report_summary", language), step[0]))
             _save_figure(
                 pdf,
                 _section_page(
@@ -1012,6 +1084,7 @@ def generate_full_report(
                 step[0] += 1
 
         if pc_bundles:
+            section_entries.append(("PC", step[0]))
             _save_figure(
                 pdf,
                 _section_page(
@@ -1024,6 +1097,7 @@ def generate_full_report(
             _append_pc_individual_pages(pdf, pc_bundles, font_defaults, language, warnings, progress_callback, step, total)
 
         if eis_entries or pre_entries:
+            section_entries.append(("EIS", step[0]))
             _save_figure(
                 pdf,
                 _section_page(
@@ -1036,6 +1110,7 @@ def generate_full_report(
             _append_eis_individual_pages(pdf, eis_entries, pre_entries, font_defaults, language, warnings, progress_callback, step, total)
 
         if cv_datasets:
+            section_entries.append(("CV", step[0]))
             _save_figure(
                 pdf,
                 _section_page(
@@ -1049,5 +1124,6 @@ def generate_full_report(
 
         _append_warnings_page(pdf, warnings, language)
 
+    _add_pdf_outline(output_path, section_entries)
     _emit(progress_callback, translate("full_report_completed", language), total, total)
     return output_path

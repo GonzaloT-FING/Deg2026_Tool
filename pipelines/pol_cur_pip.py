@@ -21,7 +21,7 @@ from pathlib import Path
 from collections import defaultdict
 import re
 
-from math import floor, ceil, log10
+from math import floor, ceil, log10, isfinite
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -274,6 +274,13 @@ def _format_report_value(value: object, digits: int = 6) -> str:
     if value is None:
         return ""
     if isinstance(value, float):
+        if not isfinite(value):
+            return ""
+        if value == 0:
+            return "0"
+        abs_value = abs(value)
+        if 1e-6 <= abs_value < 1e6:
+            return f"{value:.{digits}f}".rstrip("0").rstrip(".")
         return f"{value:.{digits}g}"
     return str(value)
 
@@ -3038,6 +3045,8 @@ def _add_report_table(
     bbox: list[float],
     language: str = "es",
 ) -> None:
+    table_width = min(float(bbox[2]), 0.82)
+    bbox = [(1.0 - table_width) / 2.0, bbox[1], table_width, bbox[3]]
     ax.text(
         bbox[0],
         bbox[1] + bbox[3] + 0.025,
@@ -3049,7 +3058,7 @@ def _add_report_table(
         transform=ax.transAxes,
     )
     table = ax.table(
-        cellText=[[name, value, unit] for name, value, unit in rows],
+        cellText=[[_format_report_value(name), _format_report_value(value), _format_report_value(unit)] for name, value, unit in rows],
         colLabels=[
             translate("name", language),
             translate("value", language),

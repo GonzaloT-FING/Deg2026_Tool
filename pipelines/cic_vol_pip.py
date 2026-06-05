@@ -54,7 +54,7 @@ CV_LANGUAGE = "es"
 
 
 META_FIELDS = [
-    ("TITLE", "Tecnica"),
+    ("TITLE", "Técnica"),
     ("DATE", "Fecha"),
     ("TIME", "Hora"),
     ("VLIMIT1", "Vlimit1"),
@@ -62,8 +62,20 @@ META_FIELDS = [
     ("SCANRATE", "Scanrate"),
     ("STEPSIZE", "Stepsize"),
     ("CYCLES", "Cycles"),
-    ("AREA", "Area"),
+    ("AREA", "Área"),
 ]
+
+CV_META_LABEL_KEYS = {
+    "TITLE": "technique",
+    "DATE": "date",
+    "TIME": "start_time",
+    "VLIMIT1": "v_limit_1",
+    "VLIMIT2": "v_limit_2",
+    "SCANRATE": "scan_rate",
+    "STEPSIZE": "step_size",
+    "CYCLES": "cycles",
+    "AREA": "area",
+}
 
 DATA_EXPORT = [
     ("Pt", "Pt", ""),
@@ -74,6 +86,13 @@ DATA_EXPORT = [
     ("Sig", "Sig", "V"),
     ("Temp", "Temperatura", "deg C"),
 ]
+
+CV_DATA_LABEL_KEYS = {
+    "T": "time",
+    "Vf": "voltage",
+    "Im": "current",
+    "Temp": "temperature",
+}
 
 CV_FILE_RE = re.compile(r"^Voltametria_ciclica(?:_.+)?\.DTA$", re.IGNORECASE)
 CV_STAGE_RE = re.compile(r"#(\d+)(?!.*#\d+)", re.IGNORECASE)
@@ -303,7 +322,23 @@ def _column_index(parsed: ParsedDTA, column_name: str) -> int | None:
         return None
 
 
-def _build_metadata_rows(parsed: ParsedDTA) -> list[tuple[str, object, str]]:
+def _format_report_value(value: object, digits: int = 6) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        if not (-float("inf") < value < float("inf")):
+            return ""
+        if value == 0:
+            return "0"
+        abs_value = abs(value)
+        if 1e-6 <= abs_value < 1e6:
+            return f"{value:.{digits}f}".rstrip("0").rstrip(".")
+        return f"{value:.{digits}g}"
+    return str(value)
+
+
+def _build_metadata_rows(parsed: ParsedDTA, language: str | None = None) -> list[tuple[str, object, str]]:
+    language = _cv_language(language)
     numeric_meta_keys = {"VLIMIT1", "VLIMIT2", "SCANRATE", "STEPSIZE", "CYCLES", "AREA"}
     metadata_rows: list[tuple[str, object, str]] = []
 
@@ -313,7 +348,8 @@ def _build_metadata_rows(parsed: ParsedDTA) -> list[tuple[str, object, str]]:
         if key in numeric_meta_keys:
             num = to_float(raw_value)
             value = num if num is not None else raw_value
-        metadata_rows.append((label, value, parsed.meta_units.get(key, "")))
+        label_key = CV_META_LABEL_KEYS.get(key)
+        metadata_rows.append((translate(label_key, language) if label_key else label, value, parsed.meta_units.get(key, "")))
 
     return metadata_rows
 
@@ -697,11 +733,12 @@ def compute_autofit_i_vs_v_limits(
     return out
 
 
-def _write_metadata_sheet(ws, metadata_rows: list[tuple[str, object, str]]) -> None:
+def _write_metadata_sheet(ws, metadata_rows: list[tuple[str, object, str]], language: str | None = None) -> None:
+    language = _cv_language(language)
     ws.title = "Metadata"
-    ws["A1"] = "Campo"
-    ws["B1"] = "Valor"
-    ws["C1"] = "Unidad"
+    ws["A1"] = translate("name", language)
+    ws["B1"] = translate("value", language)
+    ws["C1"] = translate("unit", language)
 
     for ref in ("A1", "B1", "C1"):
         ws[ref].font = Font(bold=True)
@@ -714,11 +751,16 @@ def _write_metadata_sheet(ws, metadata_rows: list[tuple[str, object, str]]) -> N
     ws.freeze_panes = "A2"
 
 
-def _write_data_sheet(ws, rows: list[dict[str, float]]) -> None:
+def _write_data_sheet(ws, rows: list[dict[str, float]], language: str | None = None) -> None:
+    language = _cv_language(language)
     headers = [label for _source, label, _unit in DATA_EXPORT]
+    display_headers = [
+        translate(CV_DATA_LABEL_KEYS[source], language) if source in CV_DATA_LABEL_KEYS else label
+        for source, label, _unit in DATA_EXPORT
+    ]
     units = [unit for _source, _label, unit in DATA_EXPORT]
 
-    for col_num, header in enumerate(headers, start=1):
+    for col_num, header in enumerate(display_headers, start=1):
         cell = ws.cell(row=1, column=col_num, value=header)
         cell.font = Font(bold=True)
 
@@ -934,6 +976,8 @@ def _add_cv_report_table(
     language: str | None = None,
 ) -> None:
     language = _cv_language(language)
+    table_width = min(float(bbox[2]), 0.82)
+    bbox = [(1.0 - table_width) / 2.0, bbox[1], table_width, bbox[3]]
     ax.text(
         bbox[0],
         bbox[1] + bbox[3] + 0.025,
@@ -945,7 +989,7 @@ def _add_cv_report_table(
         transform=ax.transAxes,
     )
     table = ax.table(
-        cellText=[[name, value, unit] for name, value, unit in rows],
+        cellText=[[_format_report_value(name), _format_report_value(value), _format_report_value(unit)] for name, value, unit in rows],
         colLabels=[
             translate("name", language),
             translate("value", language),
@@ -990,9 +1034,7 @@ def _build_cv_report_indicator_rows(
             cycle_delta_t.append(max(cycle_temp_values) - min(cycle_temp_values))
 
     def _fmt_sig(value: float | None, sig: int = 6) -> str:
-        if value is None:
-            return ""
-        return f"{value:.{sig}g}"
+        return _format_report_value(value, digits=sig)
 
     return [
         (
@@ -1041,7 +1083,7 @@ def export_i_vs_v_report_pdf(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     source_title = plot_title.strip() if plot_title.strip() else f"j vs V - CV {_dataset_stage_label(dataset)}"
-    metadata_rows = _build_metadata_rows(dataset.parsed)
+    metadata_rows = _build_metadata_rows(dataset.parsed, language=language)
     indicator_rows = _build_cv_report_indicator_rows(dataset, report_segment_keys, language=language)
     report_limits = compute_autofit_i_vs_v_limits(
         dataset=dataset,
@@ -1547,20 +1589,20 @@ def open_i_vs_v_window(
     win.protocol("WM_DELETE_WINDOW", _on_close)
 
 
-def export_cv_file(source_path: Path, output_path: Path) -> None:
+def export_cv_file(source_path: Path, output_path: Path, language: str | None = None) -> None:
     parsed = parse_gamry_dta(source_path)
-    metadata_rows = _build_metadata_rows(parsed)
+    metadata_rows = _build_metadata_rows(parsed, language=language)
     data_rows = _extract_data_rows(parsed)
     cycle_rows = split_rows_by_cycle(parsed, data_rows)
 
     wb = Workbook()
     ws_meta = wb.active
-    _write_metadata_sheet(ws_meta, metadata_rows)
+    _write_metadata_sheet(ws_meta, metadata_rows, language=language)
 
     cycle_sheets = []
     for cycle_number, rows_in_cycle in enumerate(cycle_rows, start=1):
         ws_cycle = wb.create_sheet(f"Cycle_#{cycle_number}")
-        _write_data_sheet(ws_cycle, rows_in_cycle)
+        _write_data_sheet(ws_cycle, rows_in_cycle, language=language)
         cycle_sheets.append(ws_cycle)
 
     for ws in (ws_meta, *cycle_sheets):
@@ -1570,14 +1612,14 @@ def export_cv_file(source_path: Path, output_path: Path) -> None:
     wb.save(output_path)
 
 
-def export_folder(input_dir: Path, output_dir: Path) -> list[Path]:
+def export_folder(input_dir: Path, output_dir: Path, language: str | None = None) -> list[Path]:
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
 
     exported_files: list[Path] = []
     for cv_file in find_cv_files(input_dir):
         out_path = output_dir / f"{cv_file.stem}.xlsx"
-        export_cv_file(cv_file, out_path)
+        export_cv_file(cv_file, out_path, language=language)
         exported_files.append(out_path)
 
     return exported_files
@@ -1587,7 +1629,7 @@ def _show_cv_stub(selected_options: set[str]) -> None:
     pending = [option for option in ("Peak current", "Onset potential", "I vs t") if option in selected_options]
     if not pending:
         return
-    messagebox.showinfo("CV", ", ".join(pending) + " aun no esta implementado.")
+    messagebox.showinfo("CV", ", ".join(pending) + " aún no está implementado.")
 
 
 def run_pipeline(
@@ -1602,7 +1644,7 @@ def run_pipeline(
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
 
-    exported_files = export_folder(input_dir, output_dir)
+    exported_files = export_folder(input_dir, output_dir, language=CV_LANGUAGE)
     if not exported_files:
         return []
 

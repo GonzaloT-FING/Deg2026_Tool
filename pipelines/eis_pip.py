@@ -37,6 +37,7 @@ from openpyxl.utils import get_column_letter
 import tkinter.messagebox as mb
 import tkinter as tk
 from tkinter import ttk, colorchooser, filedialog
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.backends.backend_pdf import PdfPages
 
@@ -88,13 +89,13 @@ DATA_MAP = {
 }
 
 PRE_STAB_META_FIELDS = [
-    ("TITLE", "Tecnica"),
+    ("TITLE", "Técnica"),
     ("DATE", "Fecha"),
     ("TIME", "Hora"),
     ("ISTEP1", "Corriente del paso"),
-    ("TSTEP1", "Duracion del paso"),
+    ("TSTEP1", "Duración del paso"),
     ("SAMPLETIME", "Tiempo de muestreo"),
-    ("AREA", "Area"),
+    ("AREA", "Área"),
 ]
 
 PRE_STAB_DATA_MAP = {
@@ -445,10 +446,26 @@ def _triplet_series(
 def _fmt_freq_hz(v: float) -> str:
     av = abs(v)
     if av >= 1e6:
-        return f"{v/1e6:.3g} MHz"
+        return f"{v/1e6:.3f}".rstrip("0").rstrip(".") + " MHz"
     if av >= 1e3:
-        return f"{v/1e3:.3g} kHz"
-    return f"{v:.3g} Hz"
+        return f"{v/1e3:.3f}".rstrip("0").rstrip(".") + " kHz"
+    return f"{v:.3f}".rstrip("0").rstrip(".") + " Hz"
+
+
+def _format_report_value(value: object, digits: int = 6) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (float, int)):
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return ""
+        if numeric == 0:
+            return "0"
+        abs_value = abs(numeric)
+        if 1e-6 <= abs_value < 1e6:
+            return f"{numeric:.{digits}f}".rstrip("0").rstrip(".")
+        return f"{numeric:.{digits}g}"
+    return str(value).strip()
 
 
 def _is_zero_voltage_measurement(parsed: ParsedDTA, voltage_label: str | None = None) -> bool:
@@ -598,9 +615,7 @@ def build_nyquist_indicator_rows(parsed: ParsedDTA) -> list[tuple[str, float | s
     freq_unit = _column_unit(parsed, "Freq") or "Hz"
 
     def _fmt_sig(value: float | None, sig: int = 3) -> str:
-        if value is None:
-            return ""
-        return f"{value:.{sig}g}"
+        return _format_report_value(value, digits=sig)
 
     return [
         (
@@ -626,9 +641,7 @@ def build_bode_indicator_rows(parsed: ParsedDTA) -> list[tuple[str, float | str,
     freq_unit = _column_unit(parsed, "Freq") or "Hz"
 
     def _fmt_sig(value: float | None, sig: int = 6) -> str:
-        if value is None:
-            return ""
-        return f"{value:.{sig}g}"
+        return _format_report_value(value, digits=sig)
 
     def _extreme_rows(
         value_column: str,
@@ -740,9 +753,7 @@ def build_series_pt_indicator_rows(parsed: ParsedDTA) -> list[tuple[str, float |
     current_values = [row["Idc"] for row in rows]
 
     def _fmt_sig(value: float | None, sig: int = 6) -> str:
-        if value is None:
-            return ""
-        return f"{value:.{sig}g}"
+        return _format_report_value(value, digits=sig)
 
     return [
         (translate("minimum_temperature", language), _fmt_sig(min_temp_row["Temp"]), temp_unit),
@@ -785,9 +796,7 @@ def build_pre_stabilization_indicator_rows(parsed: ParsedDTA) -> list[tuple[str,
     min_temp_row = min(rows, key=lambda row: row["Temp"])
     max_temp_row = max(rows, key=lambda row: row["Temp"])
     def _fmt_sig(value: float | None, sig: int = 6) -> str:
-        if value is None:
-            return ""
-        return f"{value:.{sig}g}"
+        return _format_report_value(value, digits=sig)
 
     indicator_rows = [
         (translate("minimum_temperature", language), _fmt_sig(min_temp_row["Temp"]), temp_unit),
@@ -862,6 +871,10 @@ def _localized_meta_label(label: str, language: str | None = None) -> str:
         "hora": "start_time",
         "frecuencia inicial": "frequency",
         "frecuencia final": "frequency",
+        "corriente del paso": "current_step",
+        "duración del paso": "step_duration",
+        "duracion del paso": "step_duration",
+        "tiempo de muestreo": "sampling_time",
         "área": "area",
         "area": "area",
     }
@@ -875,7 +888,7 @@ def _localized_meta_label(label: str, language: str | None = None) -> str:
     if normalized == "amplitud":
         return "Amplitud" if language == "es" else "Amplitude"
     if normalized == "puntos por década":
-        return "Puntos por decada" if language == "es" else "Points per decade"
+        return "Puntos por década" if language == "es" else "Points per decade"
     return label
 
 
@@ -913,6 +926,8 @@ def _add_eis_report_table(
     language: str | None = None,
 ) -> None:
     language = _eis_language(language)
+    table_width = min(float(bbox[2]), 0.82)
+    bbox = [(1.0 - table_width) / 2.0, bbox[1], table_width, bbox[3]]
     ax.text(
         bbox[0],
         bbox[1] + bbox[3] + 0.025,
@@ -924,7 +939,7 @@ def _add_eis_report_table(
         transform=ax.transAxes,
     )
     table = ax.table(
-        cellText=[[name, value, unit] for name, value, unit in rows],
+        cellText=[[_format_report_value(name), _format_report_value(value), _format_report_value(unit)] for name, value, unit in rows],
         colLabels=[
             translate("name", language),
             translate("value", language),
@@ -1036,12 +1051,23 @@ def _set_report_bode_y_axis(ax, ylim: tuple[float, float], nbins: int = 6) -> No
     ax.yaxis.get_offset_text().set_visible(False)
 
 
-def _build_eis_report_metadata_rows(parsed: ParsedDTA, language: str) -> list[tuple[str, object, str]]:
+def _build_eis_report_metadata_rows(
+    parsed: ParsedDTA,
+    language: str,
+    meta_fields: list[tuple[str, str]] | None = None,
+) -> list[tuple[str, object, str]]:
+    meta_fields = META_FIELDS if meta_fields is None else meta_fields
+    numeric_meta_keys = {"VDC", "FREQINIT", "FREQFINAL", "PTSPERDEC", "VAC", "AREA", "ISTEP1", "TSTEP1", "SAMPLETIME"}
     metadata_rows: list[tuple[str, object, str]] = []
-    for key, label in META_FIELDS:
+    for key, label in meta_fields:
+        raw_value = parsed.meta_values.get(key, "")
+        value: object = raw_value
+        if key in numeric_meta_keys:
+            numeric = to_float(raw_value)
+            value = numeric if numeric is not None else raw_value
         metadata_rows.append((
             _localized_meta_label(label, language),
-            parsed.meta_values.get(key, ""),
+            value,
             parsed.meta_units.get(key, ""),
         ))
     return metadata_rows
@@ -1259,6 +1285,7 @@ def _export_three_axis_series_report_pdf(
     indicator_rows: list[tuple[str, float | str, str]],
     metadata_error: str,
     data_error: str,
+    meta_fields: list[tuple[str, str]] | None = None,
     metadata_bbox: list[float] | None = None,
     indicators_bbox: list[float] | None = None,
 ) -> Path:
@@ -1279,7 +1306,7 @@ def _export_three_axis_series_report_pdf(
     if source_base_ax is None and fig.axes:
         source_base_ax = fig.axes[0]
     source_title = source_base_ax.get_title() if source_base_ax is not None else fallback_title
-    metadata_rows = _build_eis_report_metadata_rows(parsed, language)
+    metadata_rows = _build_eis_report_metadata_rows(parsed, language, meta_fields=meta_fields)
 
     with PdfPages(output_path) as pdf:
         plot_fig = Figure(figsize=(9.5, 6.2), dpi=150)
@@ -1352,6 +1379,7 @@ def _export_three_axis_series_report_pdf(
         if plotted_handles:
             plot_base_ax.legend(plotted_handles, plotted_labels, loc="best")
         plot_fig.tight_layout()
+        _update_right_axis_spacing(plot_fig, FigureCanvasAgg(plot_fig), report_axes)
         pdf.savefig(plot_fig, bbox_inches="tight")
 
         table_fig = Figure(figsize=(8.5, 11.0), dpi=150)
@@ -1414,12 +1442,13 @@ def export_pre_stabilization_report_pdf(fig: Figure, output_path: Path) -> Path:
         axes_attr="_pre_stab_axes",
         base_key="V",
         series_order=("V", "I", "T"),
-        fallback_title="Pre-estabilizacion",
+        fallback_title="Pre-estabilización",
         report_title_key="eis_pre_stabilization_report_title",
         indicators_title_key="pre_stabilization_indicators",
         indicator_rows=indicator_rows,
-        metadata_error="No se encontro metadata asociada a este grafico Pre-estabilizacion.",
-        data_error="No hay datos Pre-estabilizacion para exportar.",
+        metadata_error="No se encontró metadata asociada a este gráfico Pre-estabilización.",
+        data_error="No hay datos Pre-estabilización para exportar.",
+        meta_fields=PRE_STAB_META_FIELDS,
         metadata_bbox=[0.05, 0.58, 0.90, 0.29],
         indicators_bbox=[0.05, 0.06, 0.90, 0.43],
     )
@@ -2107,8 +2136,15 @@ def fig_bode(
 
 def _update_right_axis_spacing(fig, canvas, axes, pad_px: float = 12.0, min_outward_pt: float = 30.0):
     axV = axes.get("V")
+    axI = axes.get("I")
     axT = axes.get("T")
-    if axV is None or axT is None:
+    right_base_ax = axV
+    try:
+        if axV is not None and axV.yaxis.get_label_position() != "right":
+            right_base_ax = axI if axI is not None and axI.yaxis.get_label_position() == "right" else axV
+    except Exception:
+        right_base_ax = axV
+    if right_base_ax is None or axT is None:
         return
 
     # Force a draw so text extents are up-to-date
@@ -2117,7 +2153,7 @@ def _update_right_axis_spacing(fig, canvas, axes, pad_px: float = 12.0, min_outw
     px_per_pt = float(renderer.points_to_pixels(1.0))
 
     # Right edge (in display px) of the *base* right spine (x=1 in axes coords)
-    base_right_x = axV.transAxes.transform((1.0, 0.0))[0]
+    base_right_x = right_base_ax.transAxes.transform((1.0, 0.0))[0]
 
     def _rightmost_x1_of_v_axis(ax_):
         x1 = base_right_x
@@ -2137,7 +2173,7 @@ def _update_right_axis_spacing(fig, canvas, axes, pad_px: float = 12.0, min_outw
         return x1
 
     # How far to the right the V-axis content reaches (ticks + ylabel)
-    v_rightmost_x1 = _rightmost_x1_of_v_axis(axV)
+    v_rightmost_x1 = _rightmost_x1_of_v_axis(right_base_ax)
 
     # Required outward shift in pixels so the Temp spine is beyond V content
     required_px = (v_rightmost_x1 - base_right_x) + pad_px
@@ -2255,12 +2291,11 @@ def fig_series_vs_pt(
     if not lines:
         return None
 
-    # Default visibility: show only Idc if present, else first available
+    # Default visibility: show all available magnitudes in the report/full-report view.
     for k, ln in lines.items():
-        ln.set_visible(False)
+        ln.set_visible(k in {"I", "V", "T"})
 
     base_key = "I" if "I" in lines else next(iter(lines.keys()))
-    lines[base_key].set_visible(True)
 
     # Set ylabels for each axis (they can be colored later in UI)
     if "I" in lines: axI.set_ylabel(ylabels["I"])
@@ -2281,6 +2316,7 @@ def fig_series_vs_pt(
 
     apply_plot_font_defaults(fig, font_defaults)
     fig.tight_layout()
+    _update_right_axis_spacing(fig, FigureCanvasAgg(fig), axes)
     return fig
 
 
@@ -2362,6 +2398,7 @@ def fig_pre_stabilization(
 
     apply_plot_font_defaults(fig, font_defaults)
     fig.tight_layout()
+    _update_right_axis_spacing(fig, FigureCanvasAgg(fig), axes)
     return fig
 
 
@@ -2387,6 +2424,7 @@ def build_figures(
             marker_style=entry.default_marker,
             current_value=entry.current_value,
             voltage_label=entry.voltage_label,
+            annotate_max_imaginary=True,
             font_defaults=font_defaults,
         )
         if f is not None:
