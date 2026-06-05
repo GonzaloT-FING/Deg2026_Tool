@@ -621,6 +621,119 @@ def build_nyquist_indicator_rows(parsed: ParsedDTA) -> list[tuple[str, float | s
     ]
 
 
+def build_bode_indicator_rows(parsed: ParsedDTA) -> list[tuple[str, float | str, str]]:
+    language = _eis_language()
+    freq_unit = _column_unit(parsed, "Freq") or "Hz"
+
+    def _fmt_sig(value: float | None, sig: int = 6) -> str:
+        if value is None:
+            return ""
+        return f"{value:.{sig}g}"
+
+    def _extreme_rows(
+        value_column: str,
+        value_unit: str,
+        min_label_key: str,
+        min_freq_label_key: str,
+        max_label_key: str,
+        max_freq_label_key: str,
+    ) -> list[tuple[str, float | str, str]]:
+        freqs, values = _paired_series(parsed, "Freq", value_column, require_positive_x=True)
+        if not freqs or not values:
+            return []
+
+        min_idx = min(range(len(values)), key=lambda idx: values[idx])
+        max_idx = max(range(len(values)), key=lambda idx: values[idx])
+        return [
+            (translate(min_label_key, language), _fmt_sig(values[min_idx]), value_unit),
+            (translate(min_freq_label_key, language), _fmt_sig(freqs[min_idx]), freq_unit),
+            (translate(max_label_key, language), _fmt_sig(values[max_idx]), value_unit),
+            (translate(max_freq_label_key, language), _fmt_sig(freqs[max_idx]), freq_unit),
+        ]
+
+    rows: list[tuple[str, float | str, str]] = []
+    rows.extend(
+        _extreme_rows(
+            "Zmod",
+            _column_unit(parsed, "Zmod"),
+            "minimum_zmod",
+            "frequency_at_minimum_zmod",
+            "maximum_zmod",
+            "frequency_at_maximum_zmod",
+        )
+    )
+    rows.extend(
+        _extreme_rows(
+            "Zphz",
+            _column_unit(parsed, "Zphz"),
+            "minimum_zphz",
+            "frequency_at_minimum_zphz",
+            "maximum_zphz",
+            "frequency_at_maximum_zphz",
+        )
+    )
+    return rows
+
+
+def _series_by_pt_aligned_rows(parsed: ParsedDTA) -> list[dict[str, float]]:
+    required_columns = ("Pt", "Freq", "Temp", "Vdc", "Idc")
+    indices = {name: _column_index(parsed, name) for name in required_columns}
+    if any(idx is None for idx in indices.values()):
+        return []
+
+    rows: list[dict[str, float]] = []
+    for raw_row in parsed.rows:
+        item: dict[str, float] = {}
+        complete = True
+        for name, idx in indices.items():
+            if idx is None or idx >= len(raw_row):
+                complete = False
+                break
+            value = to_float(raw_row[idx])
+            if value is None:
+                complete = False
+                break
+            item[name] = value
+        if complete:
+            rows.append(item)
+    return rows
+
+
+def build_series_pt_indicator_rows(parsed: ParsedDTA) -> list[tuple[str, float | str, str]]:
+    language = _eis_language()
+    rows = _series_by_pt_aligned_rows(parsed)
+    if not rows:
+        return []
+
+    temp_unit = _column_unit(parsed, "Temp")
+    freq_unit = _column_unit(parsed, "Freq") or "Hz"
+    voltage_unit = _column_unit(parsed, "Vdc")
+    current_unit = _column_unit(parsed, "Idc")
+
+    min_temp_row = min(rows, key=lambda row: row["Temp"])
+    max_temp_row = max(rows, key=lambda row: row["Temp"])
+    voltage_values = [row["Vdc"] for row in rows]
+    current_values = [row["Idc"] for row in rows]
+
+    def _fmt_sig(value: float | None, sig: int = 6) -> str:
+        if value is None:
+            return ""
+        return f"{value:.{sig}g}"
+
+    return [
+        (translate("minimum_temperature", language), _fmt_sig(min_temp_row["Temp"]), temp_unit),
+        (translate("frequency_at_minimum_temperature", language), _fmt_sig(min_temp_row["Freq"]), freq_unit),
+        (translate("voltage_at_minimum_temperature", language), _fmt_sig(min_temp_row["Vdc"]), voltage_unit),
+        (translate("current_at_minimum_temperature", language), _fmt_sig(min_temp_row["Idc"]), current_unit),
+        (translate("maximum_temperature", language), _fmt_sig(max_temp_row["Temp"]), temp_unit),
+        (translate("frequency_at_maximum_temperature", language), _fmt_sig(max_temp_row["Freq"]), freq_unit),
+        (translate("voltage_at_maximum_temperature", language), _fmt_sig(max_temp_row["Vdc"]), voltage_unit),
+        (translate("current_at_maximum_temperature", language), _fmt_sig(max_temp_row["Idc"]), current_unit),
+        (translate("maximum_delta_voltage", language), _fmt_sig(max(voltage_values) - min(voltage_values)), voltage_unit),
+        (translate("maximum_delta_current", language), _fmt_sig(max(current_values) - min(current_values)), current_unit),
+    ]
+
+
 def _localized_meta_label(label: str, language: str | None = None) -> str:
     language = _eis_language(language)
     normalized = label.strip().lower()
@@ -790,6 +903,32 @@ def _set_report_axis_limits_on_ticks(ax, xlim: tuple[float, float], ylim: tuple[
     ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
 
+def _set_report_bode_x_axis(ax, xlim: tuple[float, float]) -> None:
+    ax.set_xscale("log")
+    x0, x1 = xlim
+    if x0 > 0 and x1 > 0:
+        ax.set_xlim(x0, x1)
+    ax.xaxis.set_major_locator(LogLocator(base=10.0, numticks=8))
+
+
+def _set_report_bode_y_axis(ax, ylim: tuple[float, float], nbins: int = 6) -> None:
+    ax.set_ylim(*ylim)
+    ax.yaxis.set_major_locator(LinearLocator(max(2, int(nbins))))
+    ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    ax.yaxis.get_offset_text().set_visible(False)
+
+
+def _build_eis_report_metadata_rows(parsed: ParsedDTA, language: str) -> list[tuple[str, object, str]]:
+    metadata_rows: list[tuple[str, object, str]] = []
+    for key, label in META_FIELDS:
+        metadata_rows.append((
+            _localized_meta_label(label, language),
+            parsed.meta_values.get(key, ""),
+            parsed.meta_units.get(key, ""),
+        ))
+    return metadata_rows
+
+
 def export_nyquist_report_pdf(fig: Figure, output_path: Path) -> Path:
     language = _eis_language()
     parsed = getattr(fig, "_eis_parsed", None)
@@ -807,13 +946,7 @@ def export_nyquist_report_pdf(fig: Figure, output_path: Path) -> Path:
     y_values = [float(value) for value in source_line.get_ydata(orig=False)]
     freqs = list(getattr(source_line, "_eis_freq", []))
 
-    metadata_rows: list[tuple[str, object, str]] = []
-    for key, label in META_FIELDS:
-        metadata_rows.append((
-            _localized_meta_label(label, language),
-            parsed.meta_values.get(key, ""),
-            parsed.meta_units.get(key, ""),
-        ))
+    metadata_rows = _build_eis_report_metadata_rows(parsed, language)
     indicator_rows = build_nyquist_indicator_rows(parsed)
 
     with PdfPages(output_path) as pdf:
@@ -851,6 +984,254 @@ def export_nyquist_report_pdf(fig: Figure, output_path: Path) -> Path:
         )
         _add_eis_report_table(table_ax, translate("metadata", language), metadata_rows, [0.05, 0.53, 0.90, 0.34], language=language)
         _add_eis_report_table(table_ax, translate("nyquist_indicators", language), indicator_rows, [0.05, 0.18, 0.90, 0.22], language=language)
+        pdf.savefig(table_fig, bbox_inches="tight")
+
+    return output_path
+
+
+def export_bode_report_pdf(fig: Figure, output_path: Path) -> Path:
+    language = _eis_language()
+    parsed = getattr(fig, "_eis_parsed", None)
+    if parsed is None:
+        raise ValueError("No se encontro metadata asociada a este grafico Bode.")
+
+    bode_lines = getattr(fig, "_bode_lines", {})
+    bode_axes = getattr(fig, "_bode_axes", {})
+    source_mod_ax = bode_axes.get("mod") if isinstance(bode_axes, dict) else None
+    source_phz_ax = bode_axes.get("phz") if isinstance(bode_axes, dict) else None
+    if source_mod_ax is None and fig.axes:
+        source_mod_ax = fig.axes[0]
+    if source_mod_ax is None and source_phz_ax is None:
+        raise ValueError("No hay ejes Bode para exportar.")
+
+    def _line_xy(line) -> tuple[list[float], list[float]]:
+        xs: list[float] = []
+        ys: list[float] = []
+        for x_raw, y_raw in zip(line.get_xdata(orig=False), line.get_ydata(orig=False)):
+            try:
+                x_val = float(x_raw)
+                y_val = float(y_raw)
+            except Exception:
+                continue
+            if not math.isfinite(x_val) or not math.isfinite(y_val) or x_val <= 0:
+                continue
+            xs.append(x_val)
+            ys.append(y_val)
+        return xs, ys
+
+    visible_series: dict[str, tuple[object, list[float], list[float]]] = {}
+    if isinstance(bode_lines, dict):
+        for key in ("mod", "phz"):
+            line = bode_lines.get(key)
+            if line is None or not line.get_visible():
+                continue
+            xs, ys = _line_xy(line)
+            if xs and ys:
+                visible_series[key] = (line, xs, ys)
+
+    if not visible_series:
+        raise ValueError("No hay datos Bode visibles para exportar.")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    source_title_ax = source_mod_ax or source_phz_ax
+    source_title = source_title_ax.get_title() if source_title_ax is not None else "Bode"
+    metadata_rows = _build_eis_report_metadata_rows(parsed, language)
+    indicator_rows = build_bode_indicator_rows(parsed)
+
+    with PdfPages(output_path) as pdf:
+        plot_fig = Figure(figsize=(9.5, 6.2), dpi=150)
+        plot_ax_mod = plot_fig.add_subplot(111)
+        plot_ax_phz = plot_ax_mod.twinx() if "phz" in visible_series else None
+        if plot_ax_phz is not None:
+            plot_ax_phz.spines["left"].set_visible(False)
+            plot_ax_phz.yaxis.tick_right()
+            plot_ax_phz.yaxis.set_label_position("right")
+
+        plotted_handles = []
+        plotted_labels = []
+        if "mod" in visible_series:
+            source_line, xs, ys = visible_series["mod"]
+            (plot_line,) = plot_ax_mod.semilogx(xs, ys, label=source_line.get_label())
+            _copy_line_style(source_line, plot_line)
+            plotted_handles.append(plot_line)
+            plotted_labels.append(plot_line.get_label())
+            if source_mod_ax is not None:
+                plot_ax_mod.set_ylabel(source_mod_ax.get_ylabel())
+                _set_report_bode_y_axis(plot_ax_mod, source_mod_ax.get_ylim(), nbins=6)
+                axis_color = source_mod_ax.yaxis.label.get_color()
+                plot_ax_mod.yaxis.label.set_color(axis_color)
+                plot_ax_mod.tick_params(axis="y", colors=axis_color)
+                plot_ax_mod.spines["left"].set_color(axis_color)
+        else:
+            plot_ax_mod.yaxis.set_visible(False)
+            plot_ax_mod.spines["left"].set_visible(False)
+
+        if "phz" in visible_series and plot_ax_phz is not None:
+            source_line, xs, ys = visible_series["phz"]
+            (plot_line,) = plot_ax_phz.semilogx(xs, ys, label=source_line.get_label())
+            _copy_line_style(source_line, plot_line)
+            plotted_handles.append(plot_line)
+            plotted_labels.append(plot_line.get_label())
+            if source_phz_ax is not None:
+                plot_ax_phz.set_ylabel(source_phz_ax.get_ylabel())
+                _set_report_bode_y_axis(plot_ax_phz, source_phz_ax.get_ylim(), nbins=6)
+                axis_color = source_phz_ax.yaxis.label.get_color()
+                plot_ax_phz.yaxis.label.set_color(axis_color)
+                plot_ax_phz.tick_params(axis="y", colors=axis_color)
+                plot_ax_phz.spines["right"].set_color(axis_color)
+
+        plot_ax_mod.set_title(source_title)
+        if source_mod_ax is not None:
+            plot_ax_mod.set_xlabel(source_mod_ax.get_xlabel())
+            _set_report_bode_x_axis(plot_ax_mod, source_mod_ax.get_xlim())
+        plot_ax_mod.grid(True, which="both")
+        if plotted_handles:
+            plot_ax_mod.legend(plotted_handles, plotted_labels, loc="best")
+        plot_fig.tight_layout()
+        pdf.savefig(plot_fig, bbox_inches="tight")
+
+        table_fig = Figure(figsize=(8.5, 11.0), dpi=150)
+        table_ax = table_fig.add_subplot(111)
+        table_ax.axis("off")
+        table_fig.text(
+            0.05,
+            0.965,
+            translate("eis_bode_report_title", language, curve=source_title),
+            fontsize=18,
+            fontweight="bold",
+            ha="left",
+            va="top",
+        )
+        _add_eis_report_table(table_ax, translate("metadata", language), metadata_rows, [0.05, 0.53, 0.90, 0.34], language=language)
+        _add_eis_report_table(table_ax, translate("bode_indicators", language), indicator_rows, [0.05, 0.08, 0.90, 0.36], language=language)
+        pdf.savefig(table_fig, bbox_inches="tight")
+
+    return output_path
+
+
+def export_series_pt_report_pdf(fig: Figure, output_path: Path) -> Path:
+    language = _eis_language()
+    parsed = getattr(fig, "_eis_parsed", None)
+    if parsed is None:
+        raise ValueError("No se encontro metadata asociada a este grafico Series by Pt.")
+
+    source_lines = getattr(fig, "_pt_lines", {})
+    source_axes = getattr(fig, "_pt_axes", {})
+    if not isinstance(source_lines, dict) or not source_lines:
+        raise ValueError("No hay datos Series by Pt para exportar.")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    source_base_ax = source_axes.get("I") if isinstance(source_axes, dict) else None
+    if source_base_ax is None and fig.axes:
+        source_base_ax = fig.axes[0]
+    source_title = source_base_ax.get_title() if source_base_ax is not None else "Series by Pt"
+    metadata_rows = _build_eis_report_metadata_rows(parsed, language)
+    indicator_rows = build_series_pt_indicator_rows(parsed)
+
+    def _line_xy(line) -> tuple[list[float], list[float]]:
+        xs: list[float] = []
+        ys: list[float] = []
+        for x_raw, y_raw in zip(line.get_xdata(orig=False), line.get_ydata(orig=False)):
+            try:
+                x_val = float(x_raw)
+                y_val = float(y_raw)
+            except Exception:
+                continue
+            if not math.isfinite(x_val) or not math.isfinite(y_val):
+                continue
+            xs.append(x_val)
+            ys.append(y_val)
+        return xs, ys
+
+    with PdfPages(output_path) as pdf:
+        plot_fig = Figure(figsize=(9.5, 6.2), dpi=150)
+        plot_ax_i = plot_fig.add_subplot(111)
+        plot_ax_v = plot_ax_i.twinx()
+        plot_ax_t = plot_ax_i.twinx()
+        plot_ax_t.spines["right"].set_position(("outward", 60))
+        for extra_ax in (plot_ax_v, plot_ax_t):
+            extra_ax.spines["left"].set_visible(False)
+            extra_ax.yaxis.tick_right()
+            extra_ax.yaxis.set_label_position("right")
+
+        report_axes = {"I": plot_ax_i, "V": plot_ax_v, "T": plot_ax_t}
+        series_order = ("I", "V", "T")
+        plotted_handles = []
+        plotted_labels = []
+        x_values: list[float] = []
+
+        for key in series_order:
+            source_line = source_lines.get(key)
+            target_ax = report_axes[key]
+            if source_line is None:
+                target_ax.yaxis.set_visible(False)
+                target_ax.yaxis.label.set_visible(False)
+                continue
+
+            xs, ys = _line_xy(source_line)
+            if not xs or not ys:
+                target_ax.yaxis.set_visible(False)
+                target_ax.yaxis.label.set_visible(False)
+                continue
+
+            (plot_line,) = target_ax.plot(xs, ys, label=source_line.get_label())
+            _copy_line_style(source_line, plot_line)
+            plotted_handles.append(plot_line)
+            plotted_labels.append(plot_line.get_label())
+            x_values.extend(xs)
+
+            source_ax = source_axes.get(key) if isinstance(source_axes, dict) else None
+            if source_ax is not None:
+                target_ax.set_ylabel(source_ax.get_ylabel())
+                target_ax.set_ylim(*source_ax.get_ylim())
+                axis_color = source_ax.yaxis.label.get_color()
+                side = "left" if key == "I" else "right"
+                target_ax.yaxis.label.set_color(axis_color)
+                target_ax.tick_params(axis="y", colors=axis_color)
+                if side in target_ax.spines:
+                    target_ax.spines[side].set_color(axis_color)
+            target_ax.yaxis.set_major_locator(LinearLocator(6))
+            target_ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+            target_ax.yaxis.get_offset_text().set_visible(False)
+
+        if not plotted_handles:
+            raise ValueError("No hay datos Series by Pt para exportar.")
+
+        if source_base_ax is not None:
+            plot_ax_i.set_xlabel(source_base_ax.get_xlabel())
+            plot_ax_i.set_xlim(*source_base_ax.get_xlim())
+        elif x_values:
+            plot_ax_i.set_xlim(min(x_values), max(x_values))
+        plot_ax_i.xaxis.set_major_locator(LinearLocator(6))
+        plot_ax_i.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+        plot_ax_i.xaxis.get_offset_text().set_visible(False)
+        plot_ax_i.set_title(source_title)
+        plot_ax_i.grid(True)
+        plot_ax_v.grid(False)
+        plot_ax_t.grid(False)
+        if plotted_handles:
+            plot_ax_i.legend(plotted_handles, plotted_labels, loc="best")
+        plot_fig.tight_layout()
+        pdf.savefig(plot_fig, bbox_inches="tight")
+
+        table_fig = Figure(figsize=(8.5, 11.0), dpi=150)
+        table_ax = table_fig.add_subplot(111)
+        table_ax.axis("off")
+        table_fig.text(
+            0.05,
+            0.965,
+            translate("eis_series_pt_report_title", language, curve=source_title),
+            fontsize=18,
+            fontweight="bold",
+            ha="left",
+            va="top",
+        )
+        _add_eis_report_table(table_ax, translate("metadata", language), metadata_rows, [0.05, 0.53, 0.90, 0.34], language=language)
+        _add_eis_report_table(table_ax, translate("series_pt_indicators", language), indicator_rows, [0.05, 0.08, 0.90, 0.36], language=language)
         pdf.savefig(table_fig, bbox_inches="tight")
 
     return output_path
@@ -1356,6 +1737,7 @@ def fig_bode(
     ax_mod.set_xlabel(f"{translate('frequency', language)} ({freq_unit})" if freq_unit else translate("frequency", language))
     ax_mod.grid(True, which="both")
 
+    fig._eis_parsed = parsed
     fig._bode_plot = True
     fig._bode_lines = bode_lines
     fig._bode_axes = bode_axes
@@ -1506,9 +1888,9 @@ def fig_series_vs_pt(
         lines[key] = ln
         ylabels[key] = lab
 
-    _add_series("I", "Idc", "Idc", axI)
-    _add_series("V", "Vdc", "Vdc", axV)
-    _add_series("T", "Temp", "Temp", axT)
+    _add_series("I", "Idc", translate("current", language), axI)
+    _add_series("V", "Vdc", translate("voltage", language), axV)
+    _add_series("T", "Temp", translate("temperature", language), axT)
 
     if not lines:
         return None
@@ -1529,6 +1911,7 @@ def fig_series_vs_pt(
     axI.set_title(plot_title or f"{_technique_name(parsed)} - Series vs Pt")
 
     # Save metadata for the UI
+    fig._eis_parsed = parsed
     fig._pt_series = True
     fig._pt_lines = lines
     fig._pt_axes = axes
@@ -3481,6 +3864,42 @@ def show_figures_tk(
                 return
             mb.showinfo("EIS Nyquist Report", f"{translate('report_exported', language)}:\n{exported_path}")
 
+        def export_bode_report() -> None:
+            language = _eis_language()
+            try:
+                default_name = f"EIS_Bode_Report_{_safe_filename_part(ax.get_title() or tab_title)}.pdf"
+                path_text = filedialog.asksaveasfilename(
+                    title=translate("save_eis_bode_report", language),
+                    initialfile=default_name,
+                    defaultextension=".pdf",
+                    filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+                )
+                if not path_text:
+                    return
+                exported_path = export_bode_report_pdf(fig, Path(path_text))
+            except Exception as exc:
+                mb.showerror("EIS Bode Report", str(exc))
+                return
+            mb.showinfo("EIS Bode Report", f"{translate('report_exported', language)}:\n{exported_path}")
+
+        def export_series_pt_report() -> None:
+            language = _eis_language()
+            try:
+                default_name = f"EIS_Series_by_Pt_Report_{_safe_filename_part(ax.get_title() or tab_title)}.pdf"
+                path_text = filedialog.asksaveasfilename(
+                    title=translate("save_eis_series_pt_report", language),
+                    initialfile=default_name,
+                    defaultextension=".pdf",
+                    filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+                )
+                if not path_text:
+                    return
+                exported_path = export_series_pt_report_pdf(fig, Path(path_text))
+            except Exception as exc:
+                mb.showerror("EIS Series by Pt Report", str(exc))
+                return
+            mb.showinfo("EIS Series by Pt Report", f"{translate('report_exported', language)}:\n{exported_path}")
+
         def pick_color():
             if line is None:
                 return
@@ -3559,6 +3978,28 @@ def show_figures_tk(
                 btns_axes,
                 text="Reporte PDF" if _eis_language() == "es" else "PDF Report",
                 command=export_nyquist_report,
+            ).pack(
+                side="left",
+                expand=True,
+                fill="x",
+                padx=(6, 0),
+            )
+        if is_pt_series:
+            ttk.Button(
+                btns_axes,
+                text="Reporte PDF" if _eis_language() == "es" else "PDF Report",
+                command=export_series_pt_report,
+            ).pack(
+                side="left",
+                expand=True,
+                fill="x",
+                padx=(6, 0),
+            )
+        if is_bode_plot:
+            ttk.Button(
+                btns_axes,
+                text="Reporte PDF" if _eis_language() == "es" else "PDF Report",
+                command=export_bode_report,
             ).pack(
                 side="left",
                 expand=True,
