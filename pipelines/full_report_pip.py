@@ -15,7 +15,9 @@ from matplotlib.ticker import LinearLocator, MaxNLocator, StrMethodFormatter
 
 from i18n import normalize_language, translate
 from plot_defaults import PlotFontDefaults, apply_plot_font_defaults, make_legend_draggable, resolve_plot_font_defaults
+from pipelines import activ_pip as activ
 from pipelines import cic_vol_pip as cv
+from pipelines import deg_pip as deg
 from pipelines import eis_pip as eis
 from pipelines import pol_cur_pip as pc
 
@@ -187,16 +189,18 @@ def _title_page(input_dir: Path, output_dir: Path, counts: dict[str, int], langu
     fig.text(0.08, 0.690, str(output_dir), fontsize=9.5, color="#2d3748", ha="left")
 
     rows = [
+        ("Activacion", counts.get("activation", 0), translate("curve", language)),
         ("PC", counts.get("pc", 0), translate("curve", language)),
         ("EIS", counts.get("eis", 0), translate("nyquist_plot", language)),
         ("EIS Pre", counts.get("pre_stab", 0), translate("pre_stabilization", language)),
         ("CV", counts.get("cv", 0), "CV"),
+        ("Deg", counts.get("deg", 0), translate("deg_stage_count", language)),
     ]
     _add_report_table(
         ax,
         translate("full_report_contents", language),
         [(name, value, unit) for name, value, unit in rows],
-        [0.08, 0.45, 0.84, 0.18],
+        [0.08, 0.39, 0.84, 0.24],
         language,
         font_size=9.0,
     )
@@ -429,6 +433,300 @@ def _draw_eis_nyquist_summary(
     make_legend_draggable(legend)
     apply_plot_font_defaults(fig, font_defaults)
     fig.tight_layout()
+    return fig
+
+
+def _activation_visible_ramp_keys(bundle: activ.ActivationBundle) -> set[str]:
+    return {ramp.key for ramp in activ.build_activation_ramps(bundle)}
+
+
+def _draw_activation_local_summary(
+    bundle: activ.ActivationBundle,
+    font_defaults: PlotFontDefaults,
+    language: str,
+) -> Figure | None:
+    visible_ramp_keys = _activation_visible_ramp_keys(bundle)
+    if not visible_ramp_keys:
+        return None
+
+    time_unit = "h"
+    limits = activ.compute_autofit_v_vs_t_limits(
+        bundle,
+        visible_ramp_keys=visible_ramp_keys,
+        show_voltage=True,
+        show_current=False,
+        show_temperature=True,
+        time_unit=time_unit,
+        local_cycle_time=True,
+    )
+    fig = _new_plot_figure(figsize=(10.0, 6.4), dpi=150)
+    has_plot = activ.draw_v_vs_t_on_figure(
+        fig=fig,
+        bundle=bundle,
+        visible_ramp_keys=visible_ramp_keys,
+        show_voltage=True,
+        show_current=False,
+        show_temperature=True,
+        voltage_linestyle="-",
+        current_linestyle="none",
+        temperature_linestyle="--",
+        time_unit=time_unit,
+        local_cycle_time=True,
+        x_tick_count=6,
+        y_tick_count=6,
+        t_min=_optional_float(limits.get("t_min")),
+        t_max=_optional_float(limits.get("t_max")),
+        v_min=_optional_float(limits.get("v_min")),
+        v_max=_optional_float(limits.get("v_max")),
+        temp_min=_optional_float(limits.get("temp_min")),
+        temp_max=_optional_float(limits.get("temp_max")),
+        current_min=None,
+        current_max=None,
+        plot_title=translate("full_report_activation_summary_title", language, curve=bundle.label),
+        show_title=True,
+        title_fontsize=font_defaults.title,
+        tick_fontsize=font_defaults.tick,
+        label_fontsize=font_defaults.label,
+        legend_fontsize=font_defaults.legend,
+        legend_scale=0.85,
+        color_axes_by_magnitude=False,
+        line_width=1.5,
+        language=language,
+    )
+    return fig if has_plot else None
+
+
+def _nyquist_y0_indicator(entry: eis.EISPlotEntry) -> tuple[float, str] | None:
+    rows = eis.build_nyquist_indicator_rows(entry.parsed)
+    if not rows:
+        return None
+    _label, value, unit = rows[0]
+    numeric = _optional_float(value)
+    if numeric is None:
+        return None
+    return numeric, unit
+
+
+def _eis_stage_key(entry: eis.EISPlotEntry) -> int | str:
+    return entry.stage_number if entry.stage_number is not None else entry.display_name
+
+
+def _draw_eis_y0_bar_summary(
+    current_groups: list[tuple[str, list[eis.EISPlotEntry]]],
+    font_defaults: PlotFontDefaults,
+    language: str,
+) -> Figure | None:
+    if not current_groups:
+        return None
+
+    stage_keys: list[int | str] = []
+    stage_labels: dict[int | str, str] = {}
+    stage_colors: dict[int | str, str] = {}
+    group_values: list[dict[int | str, float]] = []
+    y_unit = ""
+
+    for _current_label, entries in current_groups:
+        values_for_group: dict[int | str, float] = {}
+        ordered_entries = sorted(
+            entries,
+            key=lambda entry: (
+                entry.stage_number is None,
+                entry.stage_number if entry.stage_number is not None else math.inf,
+                entry.display_name,
+            ),
+        )
+        for entry in ordered_entries:
+            y0 = _nyquist_y0_indicator(entry)
+            if y0 is None:
+                continue
+            value, unit = y0
+            if not y_unit and unit:
+                y_unit = unit
+            stage_key = _eis_stage_key(entry)
+            if stage_key not in stage_labels:
+                stage_keys.append(stage_key)
+                stage_labels[stage_key] = _stage_label(entry.stage_number, entry.display_name, language)
+                if entry.nyquist_color:
+                    stage_colors[stage_key] = entry.nyquist_color
+            values_for_group[stage_key] = value
+        group_values.append(values_for_group)
+
+    if not stage_keys or not any(group_values):
+        return None
+
+    fig = _new_plot_figure(figsize=(10.0, 6.2), dpi=150)
+    ax = fig.add_subplot(111)
+    x_positions = list(range(len(current_groups)))
+    bar_width = min(0.26, 0.78 / max(1, len(stage_keys)))
+
+    for stage_index, stage_key in enumerate(stage_keys):
+        x_values: list[float] = []
+        y_values: list[float] = []
+        offset = (stage_index - ((len(stage_keys) - 1) / 2.0)) * bar_width
+        for group_index, values_for_group in enumerate(group_values):
+            if stage_key not in values_for_group:
+                continue
+            x_values.append(x_positions[group_index] + offset)
+            y_values.append(values_for_group[stage_key])
+        if not x_values:
+            continue
+        ax.bar(
+            x_values,
+            y_values,
+            width=bar_width * 0.88,
+            label=stage_labels[stage_key],
+            color=stage_colors.get(stage_key, _color_for_index(stage_index, len(stage_keys))),
+            edgecolor="#2d3748",
+            linewidth=0.35,
+        )
+
+    ax.set_title(translate("full_report_eis_y0_summary_title", language))
+    ax.set_xlabel(translate("current", language))
+    y_label = translate("y0_intersection", language)
+    ax.set_ylabel(f"{y_label} ({y_unit})" if y_unit else y_label)
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels([label for label, _entries in current_groups], rotation=20, ha="right")
+    ax.grid(True, axis="y", alpha=0.35)
+    ax.axhline(0.0, color="#4a5568", linewidth=0.8)
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    ax.tick_params(axis="both", labelsize=font_defaults.tick)
+    legend = ax.legend(fontsize=max(6.0, font_defaults.legend * 0.9), loc="best")
+    make_legend_draggable(legend)
+    apply_plot_font_defaults(fig, font_defaults)
+    fig.tight_layout()
+    return fig
+
+
+def _sorted_deg_items(parsed_items: list[tuple[deg.DegFile, deg.ParsedDTA]]) -> list[tuple[deg.DegFile, deg.ParsedDTA]]:
+    return sorted(parsed_items, key=lambda item: (item[0].stage, item[0].path.name.lower()))
+
+
+def _deg_v_vs_t_kwargs(
+    parsed_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
+    font_defaults: PlotFontDefaults,
+    language: str,
+    *,
+    title_key: str,
+) -> dict[str, object]:
+    limits = deg.compute_autofit_v_vs_t_limits(parsed_items, show_temperature=True, time_unit="h")
+    return {
+        "show_temperature": True,
+        "voltage_linestyle": "-",
+        "temperature_linestyle": "--",
+        "time_unit": "h",
+        "x_tick_count": 6,
+        "y_tick_count": 6,
+        "plot_title": translate(title_key, language),
+        "show_title": True,
+        "title_fontsize": font_defaults.title,
+        "tick_fontsize": font_defaults.tick,
+        "label_fontsize": font_defaults.label,
+        "legend_fontsize": max(6.0, font_defaults.legend * 0.85),
+        "line_width": 1.5,
+        "t_min": deg._parse_time_limit_text(limits["t_min"], "h"),
+        "t_max": deg._parse_time_limit_text(limits["t_max"], "h"),
+        "v_min": _optional_float(limits.get("v_min")),
+        "v_max": _optional_float(limits.get("v_max")),
+        "temp_min": _optional_float(limits.get("temp_min")),
+        "temp_max": _optional_float(limits.get("temp_max")),
+        "show_fit_line": False,
+        "show_fit_range": False,
+    }
+
+
+def _deg_simple_slope_uv_h(parsed_items: list[tuple[deg.DegFile, deg.ParsedDTA]]) -> float | None:
+    absolute_points: list[tuple[float, float]] = []
+    fallback_first_voltage: float | None = None
+    fallback_last_voltage: float | None = None
+    fallback_total_seconds = 0.0
+
+    for deg_file, parsed in _sorted_deg_items(parsed_items):
+        try:
+            time_values, voltage_values = deg._required_numeric_series(parsed, "T", "Vf")
+        except ValueError:
+            continue
+        pairs = sorted(zip(time_values, voltage_values), key=lambda item: item[0])
+        if len(pairs) < 2:
+            continue
+
+        stage_start_t, stage_start_v = pairs[0]
+        stage_end_t, stage_end_v = pairs[-1]
+        stage_duration = max(0.0, stage_end_t - stage_start_t)
+        if stage_duration <= 0.0:
+            continue
+
+        try:
+            stage_start_dt = deg._start_datetime(parsed, deg_file.path.name)
+        except ValueError:
+            stage_start_dt = None
+        if stage_start_dt is not None:
+            stage_epoch = stage_start_dt.timestamp()
+            absolute_points.append((stage_epoch + stage_start_t, stage_start_v))
+            absolute_points.append((stage_epoch + stage_end_t, stage_end_v))
+
+        if fallback_first_voltage is None:
+            fallback_first_voltage = stage_start_v
+        fallback_last_voltage = stage_end_v
+        fallback_total_seconds += stage_duration
+
+    if len(absolute_points) >= 2:
+        first_time, first_voltage = min(absolute_points, key=lambda item: item[0])
+        last_time, last_voltage = max(absolute_points, key=lambda item: item[0])
+        total_seconds = last_time - first_time
+        if total_seconds > 0.0:
+            return ((last_voltage - first_voltage) / total_seconds) * 1e6 * deg.SECONDS_PER_HOUR
+
+    if fallback_first_voltage is None or fallback_last_voltage is None or fallback_total_seconds <= 0.0:
+        return None
+    return ((fallback_last_voltage - fallback_first_voltage) / fallback_total_seconds) * 1e6 * deg.SECONDS_PER_HOUR
+
+def _deg_simple_slope_rows(
+    parsed_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
+    language: str,
+) -> list[tuple[str, object, str]]:
+    slope = _deg_simple_slope_uv_h(parsed_items)
+    if slope is None:
+        return []
+    return [(translate("simple_slope", language), _format_sig(slope), "µV/h")]
+
+
+def _draw_deg_summary(
+    parsed_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
+    font_defaults: PlotFontDefaults,
+    language: str,
+) -> Figure | None:
+    parsed_items = _sorted_deg_items(parsed_items)
+    if not parsed_items:
+        return None
+
+    fig = _new_plot_figure(figsize=(10.0, 6.4), dpi=150)
+    has_plot = deg.draw_v_vs_t_on_figure(
+        fig=fig,
+        parsed_items=parsed_items,
+        **_deg_v_vs_t_kwargs(
+            parsed_items,
+            font_defaults,
+            language,
+            title_key="full_report_deg_summary_title",
+        ),
+    )
+    if not has_plot:
+        return None
+
+    rows = _deg_simple_slope_rows(parsed_items, language)
+    if rows and fig.axes:
+        label, value, unit = rows[0]
+        fig.axes[0].text(
+            0.015,
+            0.985,
+            f"{label}: {value} {unit}".strip(),
+            transform=fig.axes[0].transAxes,
+            fontsize=max(7.0, font_defaults.legend * 0.9),
+            va="top",
+            ha="left",
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#cbd5e0", alpha=0.88),
+        )
     return fig
 
 
@@ -953,6 +1251,137 @@ def _append_cv_individual_pages(
             warnings.append(f"CV {label}: {type(exc).__name__}: {exc}")
 
 
+def _append_activation_individual_pages(
+    pdf: PdfPages,
+    bundles: list[activ.ActivationBundle],
+    font_defaults: PlotFontDefaults,
+    language: str,
+    warnings: list[str],
+    progress_callback: ProgressCallback | None,
+    step: list[int],
+    total: int,
+) -> None:
+    for bundle in bundles:
+        _emit(progress_callback, f"Activacion: {bundle.label}", step[0], total)
+        visible_ramp_keys = _activation_visible_ramp_keys(bundle)
+        if not visible_ramp_keys:
+            continue
+
+        try:
+            global_fig = _new_plot_figure(figsize=(10.0, 6.4), dpi=150)
+            if activ.draw_activation_report_time_on_figure(
+                global_fig,
+                bundle,
+                visible_ramp_keys,
+                local_cycle_time=False,
+                time_unit="h",
+                language=language,
+                title_fontsize=font_defaults.title,
+                tick_fontsize=font_defaults.tick,
+                label_fontsize=font_defaults.label,
+                legend_fontsize=font_defaults.legend,
+                line_width=1.5,
+                x_tick_count=6,
+                y_tick_count=6,
+            ):
+                _save_figure(pdf, global_fig)
+                step[0] += 1
+
+            local_fig = _new_plot_figure(figsize=(10.0, 6.4), dpi=150)
+            if activ.draw_activation_report_time_on_figure(
+                local_fig,
+                bundle,
+                visible_ramp_keys,
+                local_cycle_time=True,
+                time_unit="h",
+                language=language,
+                title_fontsize=font_defaults.title,
+                tick_fontsize=font_defaults.tick,
+                label_fontsize=font_defaults.label,
+                legend_fontsize=font_defaults.legend,
+                line_width=1.5,
+                x_tick_count=6,
+                y_tick_count=6,
+            ):
+                _save_figure(pdf, local_fig)
+                step[0] += 1
+
+            table_fig = _table_page(
+                translate("activation_report_title", language, curve=bundle.label),
+                translate("activation_report_subtitle", language),
+                [
+                    (
+                        translate("metadata", language),
+                        activ.build_activation_report_metadata(bundle, language=language),
+                        [0.05, 0.55, 0.90, 0.32],
+                    ),
+                    (
+                        translate("indicators", language),
+                        activ.build_activation_report_indicators(bundle, language=language),
+                        [0.05, 0.08, 0.90, 0.38],
+                    ),
+                ],
+                language,
+            )
+            _save_figure(pdf, table_fig)
+            step[0] += 1
+        except Exception as exc:
+            warnings.append(f"Activacion {bundle.label}: {type(exc).__name__}: {exc}")
+
+
+def _append_deg_individual_pages(
+    pdf: PdfPages,
+    parsed_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
+    font_defaults: PlotFontDefaults,
+    language: str,
+    warnings: list[str],
+    progress_callback: ProgressCallback | None,
+    step: list[int],
+    total: int,
+) -> None:
+    parsed_items = _sorted_deg_items(parsed_items)
+    if not parsed_items:
+        return
+
+    _emit(progress_callback, translate("deg_report_title", language), step[0], total)
+    try:
+        plot_fig = _new_plot_figure(figsize=(10.0, 6.4), dpi=150)
+        if deg.draw_v_vs_t_on_figure(
+            fig=plot_fig,
+            parsed_items=parsed_items,
+            **_deg_v_vs_t_kwargs(
+                parsed_items,
+                font_defaults,
+                language,
+                title_key="deg_report_plot_title",
+            ),
+        ):
+            _save_figure(pdf, plot_fig)
+            step[0] += 1
+
+        table_fig = _table_page(
+            translate("deg_report_title", language),
+            translate("deg_report_subtitle", language),
+            [
+                (
+                    translate("metadata", language),
+                    deg.build_deg_report_metadata(parsed_items, language=language),
+                    [0.05, 0.53, 0.90, 0.34],
+                ),
+                (
+                    translate("indicators", language),
+                    deg.build_deg_report_indicators(parsed_items, language=language),
+                    [0.05, 0.23, 0.90, 0.20],
+                ),
+            ],
+            language,
+        )
+        _save_figure(pdf, table_fig)
+        step[0] += 1
+    except Exception as exc:
+        warnings.append(f"Deg: {type(exc).__name__}: {exc}")
+
+
 def _append_warnings_page(pdf: PdfPages, warnings: list[str], language: str) -> None:
     if not warnings:
         return
@@ -970,24 +1399,35 @@ def _append_warnings_page(pdf: PdfPages, warnings: list[str], language: str) -> 
 
 
 def _estimate_total_pages(
+    activation_bundles: list[activ.ActivationBundle],
     pc_bundles: list[pc.CurveBundle],
     eis_entries: list[eis.EISPlotEntry],
     pre_entries: list[eis.EISPlotEntry],
     cv_datasets: list[cv.CVDataset],
     current_groups: list[tuple[str, list[eis.EISPlotEntry]]],
+    deg_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
 ) -> int:
     total = 2
-    if pc_bundles or current_groups:
+    if activation_bundles or pc_bundles or current_groups or deg_items:
         total += 1
+    total += len(activation_bundles)
     if pc_bundles:
         total += 1
     total += len(current_groups)
+    if current_groups:
+        total += 1
+    if deg_items:
+        total += 1
+    if activation_bundles:
+        total += 1 + (3 * len(activation_bundles))
     if pc_bundles:
         total += 1 + (10 * len(pc_bundles))
     if eis_entries or pre_entries:
         total += 1 + (4 * len(eis_entries)) + (2 * len(pre_entries))
     if cv_datasets:
         total += 1 + (2 * len(cv_datasets))
+    if deg_items:
+        total += 3
     return max(total, 1)
 
 
@@ -1010,37 +1450,54 @@ def generate_full_report(
     eis.EIS_LANGUAGE = language
     cv.CV_LANGUAGE = language
 
+    activation_bundles = activ.discover_activation_bundles(input_dir)
     pc_bundles = pc.discover_curve_bundles(input_dir)
     eis_files = eis.find_eis_files(input_dir)
     eis_entries = eis._collect_eis_plot_entries(eis_files, language=language)
     pre_files = eis.find_pre_stabilization_files(input_dir)
     pre_entries = eis._collect_pre_stabilization_entries(pre_files, language=language)
     cv_datasets = cv.discover_cv_datasets(input_dir)
+    deg_files = deg.find_deg_files(input_dir)
+    deg_items = _sorted_deg_items([(deg_file, deg.parse_gamry_dta(deg_file.path)) for deg_file in deg_files])
     current_groups = _eis_current_groups(eis_entries)
 
-    if not (pc_bundles or eis_entries or pre_entries or cv_datasets):
+    if not (activation_bundles or pc_bundles or eis_entries or pre_entries or cv_datasets or deg_items):
         raise ValueError(translate("full_report_no_data", language))
 
     counts = {
+        "activation": len(activation_bundles),
         "pc": len(pc_bundles),
         "eis": len(eis_entries),
         "pre_stab": len(pre_entries),
         "cv": len(cv_datasets),
+        "deg": len(deg_items),
     }
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_path = output_dir / f"Full_Report_{_safe_filename_part(input_dir.name)}_{timestamp}.pdf"
-    total = _estimate_total_pages(pc_bundles, eis_entries, pre_entries, cv_datasets, current_groups)
+    total = _estimate_total_pages(
+        activation_bundles,
+        pc_bundles,
+        eis_entries,
+        pre_entries,
+        cv_datasets,
+        current_groups,
+        deg_items,
+    )
     step = [0]
     warnings: list[str] = []
     section_titles: list[str] = []
-    if pc_bundles or current_groups:
+    if activation_bundles or pc_bundles or current_groups or deg_items:
         section_titles.append(translate("full_report_summary", language))
+    if activation_bundles:
+        section_titles.append("Activacion")
     if pc_bundles:
         section_titles.append("PC")
     if eis_entries or pre_entries:
         section_titles.append("EIS")
     if cv_datasets:
         section_titles.append("CV")
+    if deg_items:
+        section_titles.append("Deg")
     section_entries: list[tuple[str, int]] = []
 
     with PdfPages(output_path) as pdf:
@@ -1052,7 +1509,7 @@ def generate_full_report(
         section_entries.append((translate("full_report_index", language), step[0]))
         step[0] += 1
 
-        if pc_bundles or current_groups:
+        if activation_bundles or pc_bundles or current_groups or deg_items:
             section_entries.append((translate("full_report_summary", language), step[0]))
             _save_figure(
                 pdf,
@@ -1063,6 +1520,18 @@ def generate_full_report(
                 ),
             )
             step[0] += 1
+
+        for bundle in activation_bundles:
+            _emit(
+                progress_callback,
+                translate("full_report_activation_summary_title", language, curve=bundle.label),
+                step[0],
+                total,
+            )
+            activation_summary_fig = _draw_activation_local_summary(bundle, font_defaults, language)
+            if activation_summary_fig is not None:
+                _save_figure(pdf, activation_summary_fig)
+                step[0] += 1
 
         if pc_bundles:
             _emit(progress_callback, translate("full_report_pc_summary_title", language), step[0], total)
@@ -1082,6 +1551,42 @@ def generate_full_report(
             if summary_fig is not None:
                 _save_figure(pdf, summary_fig)
                 step[0] += 1
+
+        if current_groups:
+            _emit(progress_callback, translate("full_report_eis_y0_summary_title", language), step[0], total)
+            y0_summary_fig = _draw_eis_y0_bar_summary(current_groups, font_defaults, language)
+            if y0_summary_fig is not None:
+                _save_figure(pdf, y0_summary_fig)
+                step[0] += 1
+
+        if deg_items:
+            _emit(progress_callback, translate("full_report_deg_summary_title", language), step[0], total)
+            deg_summary_fig = _draw_deg_summary(deg_items, font_defaults, language)
+            if deg_summary_fig is not None:
+                _save_figure(pdf, deg_summary_fig)
+                step[0] += 1
+
+        if activation_bundles:
+            section_entries.append(("Activacion", step[0]))
+            _save_figure(
+                pdf,
+                _section_page(
+                    "Activacion",
+                    translate("full_report_individual_subtitle", language),
+                    language,
+                ),
+            )
+            step[0] += 1
+            _append_activation_individual_pages(
+                pdf,
+                activation_bundles,
+                font_defaults,
+                language,
+                warnings,
+                progress_callback,
+                step,
+                total,
+            )
 
         if pc_bundles:
             section_entries.append(("PC", step[0]))
@@ -1121,6 +1626,19 @@ def generate_full_report(
             )
             step[0] += 1
             _append_cv_individual_pages(pdf, cv_datasets, font_defaults, language, warnings, progress_callback, step, total)
+
+        if deg_items:
+            section_entries.append(("Deg", step[0]))
+            _save_figure(
+                pdf,
+                _section_page(
+                    "Deg",
+                    translate("full_report_individual_subtitle", language),
+                    language,
+                ),
+            )
+            step[0] += 1
+            _append_deg_individual_pages(pdf, deg_items, font_defaults, language, warnings, progress_callback, step, total)
 
         _append_warnings_page(pdf, warnings, language)
 

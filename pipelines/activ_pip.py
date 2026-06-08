@@ -8,8 +8,10 @@ from pathlib import Path
 import re
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox, filedialog
 from matplotlib import colors as mcolors
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 from matplotlib.ticker import LinearLocator, MaxNLocator, StrMethodFormatter
@@ -23,6 +25,7 @@ from plot_defaults import (
     ensure_axis_bottom_margin,
     resolve_plot_font_defaults,
 )
+from i18n import normalize_language, translate
 from ui_layout import create_resizable_plot_layout, create_scrollable_controls
 
 
@@ -372,6 +375,226 @@ def build_metadata(bundle: ActivationBundle) -> list[tuple[str, object, str]]:
     return [(field, *metadata_map[field]) for field in META_ROWS_ORDER]
 
 
+def _activ_language(language: str | None = None) -> str:
+    return normalize_language(language)
+
+
+def _safe_filename_part(text: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", text.strip())
+    return cleaned.strip("._") or "Activacion"
+
+
+def _format_report_value(value: object, digits: int = 6) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return f"{value:.{digits}g}"
+    return str(value)
+
+
+def _format_temperature_value(value: object) -> str:
+    return _format_report_value(value, digits=3)
+
+
+def _metadata_area_cm2(bundle: ActivationBundle) -> float | None:
+    all_files = [*sum(bundle.asc_cycles.values(), []), *sum(bundle.dsc_cycles.values(), [])]
+    if not all_files:
+        return None
+    parsed = parse_gamry_dta(all_files[0].path)
+    area = to_float(parsed.meta_values.get("AREA", ""))
+    return area if area is not None and area > 0 else None
+
+
+def _require_area_cm2(bundle: ActivationBundle) -> float:
+    area = _metadata_area_cm2(bundle)
+    if area is None:
+        raise ValueError("No se pudo leer un AREA valida para graficar densidad de corriente.")
+    return area
+
+
+def _current_density_values(bundle: ActivationBundle, rows: list[dict[str, float]]) -> list[float]:
+    area = _require_area_cm2(bundle)
+    return [row["Corriente"] / area for row in rows]
+
+
+def build_activation_report_metadata(
+    bundle: ActivationBundle,
+    language: str | None = None,
+) -> list[tuple[str, object, str]]:
+    language = _activ_language(language)
+    label_keys = {
+        "Tecnica": "technique",
+        "Fecha": "date",
+        "Hora": "start_time",
+        "Duracion del paso": "step_duration",
+        "Rango I": "current_range",
+        "Paso I": "current_step",
+        "Tiempo de muestreo": "sampling_time",
+        "Area": "area",
+    }
+    return [
+        (translate(label_keys.get(field, field), language), _format_report_value(value), unit)
+        for field, value, unit in build_metadata(bundle)
+    ]
+
+
+def _iter_cycle_step_rows(bundle: ActivationBundle) -> list[dict[str, float | str]]:
+    rows: list[dict[str, float | str]] = []
+    for ramp in build_activation_ramps(bundle):
+        cycle_rows = concatenate_cycle_data(ramp.files)
+        if not cycle_rows:
+            continue
+
+        current_tolerance = infer_current_tolerance(ramp.files)
+        step_number = 1
+        step_start = 0
+        plateau_current = cycle_rows[0]["Corriente"]
+        for idx in range(1, len(cycle_rows) + 1):
+            is_boundary = idx == len(cycle_rows)
+            if not is_boundary:
+                is_boundary = abs(cycle_rows[idx]["Corriente"] - plateau_current) > current_tolerance
+            if not is_boundary:
+                continue
+
+            step_rows = cycle_rows[step_start:idx]
+            if step_rows:
+                voltages = [row["Voltaje"] for row in step_rows]
+                temperatures = [row["Temperatura"] for row in step_rows]
+                rows.append(
+                    {
+                        "cycle": float(ramp.cycle),
+                        "step": float(step_number),
+                        "direction": ramp.direction,
+                        "delta_v": voltages[-1] - voltages[0],
+                        "current": step_rows[-1]["Corriente"],
+                        "final_voltage": voltages[-1],
+                        "max_temperature": max(temperatures),
+                        "mean_temperature": sum(temperatures) / len(temperatures),
+                        "temperature_sum": sum(temperatures),
+                        "temperature_count": float(len(temperatures)),
+                    }
+                )
+
+            if idx < len(cycle_rows):
+                step_number += 1
+                step_start = idx
+                plateau_current = cycle_rows[idx]["Corriente"]
+    return rows
+
+
+def _cycle_count(bundle: ActivationBundle) -> int:
+    return len(set(bundle.asc_cycles) | set(bundle.dsc_cycles))
+
+
+def _mean_abs_voltage_difference(
+    previous_rows: list[dict[str, float]],
+    final_rows: list[dict[str, float]],
+) -> float | None:
+    def _mean_voltage_by_current(rows: list[dict[str, float]]) -> dict[float, float]:
+        grouped: dict[float, list[float]] = defaultdict(list)
+        for row in rows:
+            grouped[round(row["Corriente"], 9)].append(row["Voltaje"])
+        return {current: sum(values) / len(values) for current, values in grouped.items() if values}
+
+    previous_by_current = _mean_voltage_by_current(previous_rows)
+    final_by_current = _mean_voltage_by_current(final_rows)
+    shared_currents = sorted(set(previous_by_current) & set(final_by_current))
+    if not shared_currents:
+        return None
+
+    differences = [abs(final_by_current[current] - previous_by_current[current]) for current in shared_currents]
+    return sum(differences) / len(differences)
+
+
+def _last_two_cycle_stabilization_delta_v(bundle: ActivationBundle) -> tuple[float, int, int, int] | None:
+    cycle_ids = sorted(set(bundle.asc_cycles) | set(bundle.dsc_cycles))
+    if len(cycle_ids) < 2:
+        return None
+
+    previous_cycle, final_cycle = cycle_ids[-2], cycle_ids[-1]
+    total_delta_v = 0.0
+    compared_curves = 0
+
+    for direction, cycle_map in (("Asc", bundle.asc_cycles), ("Dsc", bundle.dsc_cycles)):
+        previous_files = cycle_map.get(previous_cycle, [])
+        final_files = cycle_map.get(final_cycle, [])
+        if not previous_files or not final_files:
+            continue
+
+        previous_rows = concatenate_cycle_data(previous_files)
+        final_rows = concatenate_cycle_data(final_files)
+        mean_difference = _mean_abs_voltage_difference(previous_rows, final_rows)
+        if mean_difference is None:
+            continue
+
+        total_delta_v += mean_difference
+        compared_curves += 1
+
+    if compared_curves == 0:
+        return None
+    return total_delta_v, previous_cycle, final_cycle, compared_curves
+
+
+def build_activation_report_indicators(
+    bundle: ActivationBundle,
+    language: str | None = None,
+) -> list[tuple[str, object, str]]:
+    language = _activ_language(language)
+    step_rows = _iter_cycle_step_rows(bundle)
+    indicator_rows: list[tuple[str, object, str]] = [
+        (translate("activation_cycle_count", language), _cycle_count(bundle), ""),
+    ]
+
+    cycle_temp_totals: dict[int, list[float]] = defaultdict(lambda: [0.0, 0.0])
+    for row in step_rows:
+        totals = cycle_temp_totals[int(row["cycle"])]
+        totals[0] += float(row["temperature_sum"])
+        totals[1] += float(row["temperature_count"])
+    for cycle, (temp_sum, temp_count) in sorted(cycle_temp_totals.items()):
+        if temp_count > 0:
+            indicator_rows.append(
+                (
+                    translate("activation_average_temperature_cycle", language, cycle=cycle),
+                    _format_temperature_value(temp_sum / temp_count),
+                    "C",
+                )
+            )
+
+    if step_rows:
+        max_temp_row = max(step_rows, key=lambda row: float(row["max_temperature"]))
+        indicator_rows.append(
+            (
+                translate(
+                    "activation_max_temperature_step",
+                    language,
+                    cycle=int(max_temp_row["cycle"]),
+                    step=int(max_temp_row["step"]),
+                ),
+                _format_temperature_value(max_temp_row["max_temperature"]),
+                "C",
+            )
+        )
+
+    stabilization = _last_two_cycle_stabilization_delta_v(bundle)
+    if stabilization is not None:
+        delta_v, previous_cycle, final_cycle, compared_curves = stabilization
+        indicator_rows.append(
+            (
+                translate(
+                    "activation_stabilization_delta_voltage",
+                    language,
+                    previous_cycle=previous_cycle,
+                    final_cycle=final_cycle,
+                    compared_curves=compared_curves,
+                ),
+                _format_report_value(delta_v),
+                "V",
+            )
+        )
+
+    return indicator_rows
+
+
 def concatenate_cycle_data(files: list[ActivationFile]) -> list[dict[str, float]]:
     all_rows: list[dict[str, float]] = []
     time_offset = 0.0
@@ -539,7 +762,10 @@ def compute_default_v_vs_t_limits(bundle: ActivationBundle, time_unit: str = "s"
 
     t_min, t_max = _padded_limits([r["plot_time"] for r in rows], decimals=decimals)
     v_min, v_max = _padded_limits([r["Voltaje"] for r in rows])
-    i_min, i_max = _padded_limits([r["Corriente"] for r in rows])
+    try:
+        i_min, i_max = _padded_limits(_current_density_values(bundle, rows))
+    except ValueError:
+        i_min, i_max = None, None
     temp_min, temp_max = _padded_limits([r["Temperatura"] for r in rows])
 
     return {
@@ -602,7 +828,7 @@ def compute_autofit_v_vs_t_limits(
             out["v_max"] = _format_limit_value(_round_up_dec(max(v_values)), 1)
 
     if show_current:
-        i_values = [r["Corriente"] for r in rows]
+        i_values = _current_density_values(bundle, rows)
         if i_values:
             out["i_min"] = _format_limit_value(_round_down_dec(min(i_values)), 1)
             out["i_max"] = _format_limit_value(_round_up_dec(max(i_values)), 1)
@@ -840,6 +1066,13 @@ def apply_x_edge_ticks(ax, x_min: float | None, x_max: float | None, tick_count:
     ax.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
 
 
+def apply_y_edge_ticks(ax, y_min: float | None, y_max: float | None, tick_count: int) -> None:
+    if y_min is None and y_max is None:
+        return
+    ax.yaxis.set_major_locator(LinearLocator(max(2, int(tick_count))))
+    ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+
+
 def apply_current_axis_scaling(
     ax_current,
     current_values: list[float],
@@ -918,7 +1151,7 @@ def _draw_cycle_scale_bars(
     if show_voltage:
         series_specs.append(("V", "voltage"))
     if show_current:
-        series_specs.append(("I", "current"))
+        series_specs.append(("j", "current"))
     if show_temperature:
         series_specs.append(("T", "temperature"))
 
@@ -1058,6 +1291,161 @@ def _auto_format_sheet(ws) -> None:
             cell.alignment = Alignment(vertical="top")
 
 
+def _add_report_table(
+    ax,
+    title: str,
+    rows: list[tuple[str, object, str]],
+    bbox: list[float],
+    language: str = "es",
+) -> None:
+    ax.text(
+        bbox[0],
+        bbox[1] + bbox[3] + 0.025,
+        title,
+        fontsize=13,
+        fontweight="bold",
+        ha="left",
+        va="bottom",
+        transform=ax.transAxes,
+    )
+    table = ax.table(
+        cellText=[[_format_report_value(name), _format_report_value(value), _format_report_value(unit)] for name, value, unit in rows],
+        colLabels=[translate("name", language), translate("value", language), translate("unit", language)],
+        cellLoc="left",
+        colLoc="left",
+        colWidths=[bbox[2] * 0.62, bbox[2] * 0.24, bbox[2] * 0.14],
+        bbox=bbox,
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8.0)
+    for (row_idx, _col_idx), cell in table.get_celld().items():
+        cell.set_edgecolor("#b8c0c8")
+        cell.set_linewidth(0.5)
+        if row_idx == 0:
+            cell.set_facecolor("#edf2f7")
+            cell.set_text_props(weight="bold")
+        else:
+            cell.set_facecolor("white")
+
+
+def draw_activation_report_time_on_figure(
+    fig: Figure,
+    bundle: ActivationBundle,
+    visible_ramp_keys: set[str],
+    *,
+    local_cycle_time: bool,
+    time_unit: str = "s",
+    language: str = "es",
+    title_fontsize: float = 14,
+    tick_fontsize: float = 10,
+    label_fontsize: float = 11,
+    legend_fontsize: float = 10,
+    line_width: float = 1.5,
+    x_tick_count: int = 6,
+    y_tick_count: int = 6,
+) -> bool:
+    fig.clear()
+    language = _activ_language(language)
+    area = _metadata_area_cm2(bundle)
+    if area is None:
+        raise ValueError("No se pudo leer un AREA valida para graficar densidad de corriente.")
+
+    plot_data = build_visible_cycle_plot_data(
+        bundle,
+        visible_ramp_keys=visible_ramp_keys,
+        time_unit=time_unit,
+        local_cycle_time=local_cycle_time,
+    )
+    visible_cycles = plot_data["cycles"]
+    if not visible_cycles:
+        return False
+
+    cycle_ids = [cycle_data["cycle"] for cycle_data in visible_cycles]
+    ax_voltage = fig.add_subplot(111)
+    ax_current_density = ax_voltage.twinx()
+    ax_temperature = ax_voltage.twinx()
+    ax_current_density.spines["left"].set_visible(False)
+    ax_temperature.spines["left"].set_visible(False)
+    ax_current_density.yaxis.tick_right()
+    ax_temperature.yaxis.tick_right()
+    ax_current_density.yaxis.set_label_position("right")
+    ax_temperature.yaxis.set_label_position("right")
+
+    x_values: list[float] = []
+    voltage_values: list[float] = []
+    current_density_values: list[float] = []
+    temperature_values: list[float] = []
+    for color_idx, cycle_data in enumerate(visible_cycles):
+        grouped_rows = cycle_data["rows"]
+        x_vals = [row["plot_time"] for row in grouped_rows]
+        voltage_color = _cycle_gradient_color(ACTIV_CYCLE_GRADIENTS["voltage"], color_idx, len(cycle_ids))
+        current_color = _cycle_gradient_color(ACTIV_CYCLE_GRADIENTS["current"], color_idx, len(cycle_ids))
+        temp_color = _cycle_gradient_color(ACTIV_CYCLE_GRADIENTS["temperature"], color_idx, len(cycle_ids))
+        voltages = [row["Voltaje"] for row in grouped_rows]
+        current_densities = [row["Corriente"] / area for row in grouped_rows]
+        temperatures = [row["Temperatura"] for row in grouped_rows]
+
+        ax_voltage.plot(x_vals, voltages, color=voltage_color, linewidth=line_width)
+        ax_current_density.plot(x_vals, current_densities, color=current_color, linewidth=line_width)
+        ax_temperature.plot(x_vals, temperatures, color=temp_color, linewidth=line_width)
+        x_values.extend(x_vals)
+        voltage_values.extend(voltages)
+        current_density_values.extend(current_densities)
+        temperature_values.extend(temperatures)
+
+    title_key = "activation_report_local_time_plot_title" if local_cycle_time else "activation_report_global_time_plot_title"
+    ax_voltage.set_title(translate(title_key, language, curve=bundle.label), fontsize=title_fontsize)
+    ax_voltage.set_xlabel(f"{translate('time', language)} ({time_unit})", fontsize=label_fontsize)
+    ax_voltage.set_ylabel(f"{translate('voltage', language)} (V)", fontsize=label_fontsize)
+    ax_current_density.set_ylabel(f"{translate('current_density', language)} (A/cm^2)", fontsize=label_fontsize)
+    ax_temperature.set_ylabel(f"{translate('temperature', language)} (C)", fontsize=label_fontsize)
+    ax_voltage.grid(True)
+
+    x_lo, x_hi = _padded_limits(x_values, decimals=_time_unit_decimals(time_unit))
+    v_lo, v_hi = _padded_limits(voltage_values)
+    j_lo, j_hi = _padded_limits(current_density_values)
+    t_lo, t_hi = _padded_limits(temperature_values)
+    if x_lo is not None and x_hi is not None:
+        ax_voltage.set_xlim(x_lo, x_hi)
+    if v_lo is not None and v_hi is not None:
+        ax_voltage.set_ylim(v_lo, v_hi)
+    if j_lo is not None and j_hi is not None:
+        ax_current_density.set_ylim(j_lo, j_hi)
+    if t_lo is not None and t_hi is not None:
+        ax_temperature.set_ylim(t_lo, t_hi)
+
+    apply_x_edge_ticks(ax_voltage, *ax_voltage.get_xlim(), x_tick_count)
+    apply_y_edge_ticks(ax_voltage, *ax_voltage.get_ylim(), y_tick_count)
+    apply_y_edge_ticks(ax_current_density, *ax_current_density.get_ylim(), y_tick_count)
+    apply_y_edge_ticks(ax_temperature, *ax_temperature.get_ylim(), y_tick_count)
+
+    for axis in (ax_voltage, ax_current_density, ax_temperature):
+        axis.tick_params(axis="both", labelsize=tick_fontsize)
+    apply_x_tick_label_padding(ax_voltage, tick_fontsize)
+
+    fig.subplots_adjust(right=0.88, bottom=0.24)
+    fig.canvas.draw()
+    current_axis_offset_px = _axis_right_footprint_px(fig, ax_current_density) + max(12.0, tick_fontsize * 1.2)
+    ax_temperature.spines["right"].set_position(("outward", _pixels_to_points(fig, current_axis_offset_px)))
+    fig.canvas.draw()
+
+    total_right_px = current_axis_offset_px + _axis_right_footprint_px(fig, ax_temperature)
+    fig_width_px = fig.get_size_inches()[0] * fig.dpi
+    dynamic_right_margin = 1.0 - ((total_right_px + max(10.0, tick_fontsize)) / fig_width_px)
+    fig.subplots_adjust(right=min(0.96, max(0.55, dynamic_right_margin)), bottom=0.24)
+
+    _draw_cycle_scale_bars(
+        fig,
+        cycle_ids,
+        True,
+        True,
+        True,
+        legend_fontsize,
+        1.0,
+    )
+    return True
+
+
 def draw_v_vs_t_on_figure(
     fig: Figure,
     bundle: ActivationBundle,
@@ -1089,13 +1477,16 @@ def draw_v_vs_t_on_figure(
     legend_scale: float = 1.0,
     color_axes_by_magnitude: bool = False,
     line_width: float = 1.5,
+    language: str = "es",
 ) -> bool:
     fig.clear()
+    language = _activ_language(language)
 
     if not visible_ramp_keys:
         return False
     if not (show_voltage or show_current or show_temperature):
         return False
+    area = _require_area_cm2(bundle) if show_current else None
 
     plot_data = build_visible_cycle_plot_data(
         bundle,
@@ -1108,6 +1499,7 @@ def draw_v_vs_t_on_figure(
         return False
 
     cycle_ids = [cycle_data["cycle"] for cycle_data in visible_cycles]
+    all_rows = [row for cycle_data in visible_cycles for row in cycle_data["rows"]]
 
     x_tick_count = max(2, int(x_tick_count))
     y_tick_count = max(2, int(y_tick_count))
@@ -1168,7 +1560,7 @@ def draw_v_vs_t_on_figure(
         if show_current and ax_current is not None and current_ls != "None":
             ax_current.plot(
                 x_vals,
-                [row["Corriente"] for row in grouped_rows],
+                [row["Corriente"] / area for row in grouped_rows],
                 color=current_color,
                 linestyle=current_ls,
                 linewidth=line_width,
@@ -1186,18 +1578,19 @@ def draw_v_vs_t_on_figure(
     handles, labels = [], []
 
     if ax_current is ax_main:
-        current_values = [row["Corriente"] for cycle_data in visible_cycles for row in cycle_data["rows"]]
-        ax_main.set_ylabel("Corriente (A)", fontsize=label_fontsize)
+        current_values = _current_density_values(bundle, [row for cycle_data in visible_cycles for row in cycle_data["rows"]])
+        ax_main.set_ylabel(f"{translate('current_density', language)} (A/cm^2)", fontsize=label_fontsize)
         apply_current_axis_scaling(ax_main, current_values, y_tick_count, current_min, current_max)
 
     if not (show_voltage and voltage_ls != "None") and not (show_current and current_ls != "None") and not (show_temperature and temp_ls != "None"):
         fig.clear()
         return False
 
-    default_title = "V vs local t - Activacion " + bundle.label if local_cycle_time else f"V vs t - Activacion {bundle.label}"
+    title_key = "activation_report_local_time_plot_title" if local_cycle_time else "activation_report_global_time_plot_title"
+    default_title = translate(title_key, language, curve=bundle.label)
     final_title = plot_title.strip() if plot_title.strip() else default_title
 
-    ax_main.set_xlabel(f"Tiempo ({time_unit})", fontsize=label_fontsize)
+    ax_main.set_xlabel(f"{translate('time', language)} ({time_unit})", fontsize=label_fontsize)
     ax_main.set_title(final_title if show_title else "", fontsize=title_fontsize)
     ax_main.grid(True)
     ax_main.xaxis.set_major_locator(MaxNLocator(nbins=x_tick_count))
@@ -1207,23 +1600,31 @@ def draw_v_vs_t_on_figure(
 
     if t_min is not None or t_max is not None:
         ax_main.set_xlim(left=t_min, right=t_max)
-        apply_x_edge_ticks(ax_main, t_min, t_max, x_tick_count)
+    else:
+        auto_t_min, auto_t_max = _padded_limits(
+            [row["plot_time"] for row in all_rows],
+            decimals=_time_unit_decimals(time_unit),
+        )
+        if auto_t_min is not None and auto_t_max is not None:
+            ax_main.set_xlim(left=auto_t_min, right=auto_t_max)
+    apply_x_edge_ticks(ax_main, *ax_main.get_xlim(), x_tick_count)
 
     if show_voltage:
-        ax_main.set_ylabel("Voltaje (V)", fontsize=label_fontsize)
+        ax_main.set_ylabel(f"{translate('voltage', language)} (V)", fontsize=label_fontsize)
         if v_min is not None or v_max is not None:
             ax_main.set_ylim(bottom=v_min, top=v_max)
-            ax_main.yaxis.set_major_locator(LinearLocator(y_tick_count))
         else:
-            ax_main.yaxis.set_major_locator(MaxNLocator(nbins=y_tick_count))
-        ax_main.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+            auto_v_min, auto_v_max = _padded_limits([row["Voltaje"] for row in all_rows])
+            if auto_v_min is not None and auto_v_max is not None:
+                ax_main.set_ylim(bottom=auto_v_min, top=auto_v_max)
+        apply_y_edge_ticks(ax_main, *ax_main.get_ylim(), y_tick_count)
         if color_axes_by_magnitude:
             ax_main.yaxis.label.set_color(axis_colors["voltage"])
             ax_main.tick_params(axis="y", colors=axis_colors["voltage"], labelsize=tick_fontsize)
             ax_main.spines["left"].set_color(axis_colors["voltage"])
     elif ax_temp is ax_main:
         temp_values = [row["Temperatura"] for cycle_data in visible_cycles for row in cycle_data["rows"]]
-        ax_main.set_ylabel("Temperatura (C)", fontsize=label_fontsize)
+        ax_main.set_ylabel(f"{translate('temperature', language)} (C)", fontsize=label_fontsize)
         apply_temperature_axis_scaling(ax_main, temp_values, y_tick_count, temp_min, temp_max)
         if color_axes_by_magnitude:
             ax_main.yaxis.label.set_color(axis_colors["temperature"])
@@ -1231,9 +1632,9 @@ def draw_v_vs_t_on_figure(
             ax_main.spines["left"].set_color(axis_colors["temperature"])
 
     if ax_current is not None and ax_current is not ax_main:
-        current_values = [row["Corriente"] for cycle_data in visible_cycles for row in cycle_data["rows"]]
+        current_values = _current_density_values(bundle, [row for cycle_data in visible_cycles for row in cycle_data["rows"]])
         ax_current.tick_params(axis="y", labelsize=tick_fontsize)
-        ax_current.set_ylabel("Corriente (A)", fontsize=label_fontsize)
+        ax_current.set_ylabel(f"{translate('current_density', language)} (A/cm^2)", fontsize=label_fontsize)
         apply_current_axis_scaling(ax_current, current_values, y_tick_count, current_min, current_max)
         if color_axes_by_magnitude:
             ax_current.yaxis.label.set_color(axis_colors["current"])
@@ -1243,7 +1644,7 @@ def draw_v_vs_t_on_figure(
     if ax_temp is not None and ax_temp is not ax_main:
         temp_values = [row["Temperatura"] for cycle_data in visible_cycles for row in cycle_data["rows"]]
         ax_temp.tick_params(axis="y", labelsize=tick_fontsize)
-        ax_temp.set_ylabel("Temperatura (C)", fontsize=label_fontsize)
+        ax_temp.set_ylabel(f"{translate('temperature', language)} (C)", fontsize=label_fontsize)
         apply_temperature_axis_scaling(ax_temp, temp_values, y_tick_count, temp_min, temp_max)
         if color_axes_by_magnitude:
             ax_temp.yaxis.label.set_color(axis_colors["temperature"])
@@ -1520,7 +1921,74 @@ def export_activation_bundle(bundle: ActivationBundle, out_path: Path) -> None:
     wb.save(out_path)
 
 
-def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
+def export_activation_report_pdf(
+    bundle: ActivationBundle,
+    output_path: Path,
+    *,
+    plot_kwargs: dict[str, object],
+) -> Path:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    plot_kwargs = dict(plot_kwargs)
+    language = _activ_language(str(plot_kwargs.pop("language", "")))
+    visible_ramp_keys = set(plot_kwargs.pop("visible_ramp_keys", set()))
+    if not visible_ramp_keys:
+        raise ValueError("Debe seleccionar al menos una rampa para generar el reporte.")
+
+    metadata_rows = build_activation_report_metadata(bundle, language=language)
+    indicator_rows = build_activation_report_indicators(bundle, language=language)
+
+    with PdfPages(output_path) as pdf:
+        for local_cycle_time in (False, True):
+            plot_fig = Figure(figsize=(9.5, 6.2), dpi=150)
+            FigureCanvasAgg(plot_fig)
+            has_plot = draw_activation_report_time_on_figure(
+                plot_fig,
+                bundle=bundle,
+                visible_ramp_keys=visible_ramp_keys,
+                local_cycle_time=local_cycle_time,
+                language=language,
+                **plot_kwargs,
+            )
+            if not has_plot:
+                raise ValueError("No hay datos suficientes para generar el grafico del reporte.")
+            pdf.savefig(plot_fig, bbox_inches="tight")
+
+        table_fig = Figure(figsize=(8.5, 11.0), dpi=150)
+        ax = table_fig.add_subplot(111)
+        ax.axis("off")
+        table_fig.text(
+            0.05,
+            0.965,
+            translate("activation_report_title", language, curve=bundle.label),
+            fontsize=18,
+            fontweight="bold",
+            ha="left",
+            va="top",
+        )
+        table_fig.text(
+            0.05,
+            0.935,
+            translate("activation_report_subtitle", language),
+            fontsize=10,
+            ha="left",
+            va="top",
+            color="#4a5568",
+        )
+        _add_report_table(ax, translate("metadata", language), metadata_rows, [0.05, 0.53, 0.90, 0.34], language=language)
+        _add_report_table(ax, translate("indicators", language), indicator_rows, [0.05, 0.08, 0.90, 0.36], language=language)
+        pdf.savefig(table_fig, bbox_inches="tight")
+
+    return output_path
+
+
+def open_v_vs_t_window(
+    input_dir: Path,
+    font_defaults: PlotFontDefaults | None = None,
+    language: str = "es",
+) -> None:
+    language = _activ_language(language)
     bundles = discover_activation_bundles(Path(input_dir))
     if not bundles:
         raise ValueError("No se encontraron archivos de activacion validos.")
@@ -1691,6 +2159,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
                 legend_fontsize=_positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
                 legend_scale=_positive_float(legend_scale_var.get(), "Escala del gradiente"),
                 line_width=_positive_float(line_width_var.get(), "Grosor de línea"),
+                language=language,
                 **_collect_limits(),
             )
         except ValueError as exc:
@@ -1774,6 +2243,45 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
 
         _schedule_plot()
 
+    def _collect_report_plot_kwargs() -> dict[str, object]:
+        return {
+            "visible_ramp_keys": _visible_ramp_keys(),
+            "time_unit": time_unit_var.get(),
+            "x_tick_count": x_tick_count_var.get(),
+            "y_tick_count": y_tick_count_var.get(),
+            "title_fontsize": _positive_float(title_fontsize_var.get(), "Tamaño del título"),
+            "tick_fontsize": _positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
+            "label_fontsize": _positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
+            "legend_fontsize": _positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
+            "line_width": _positive_float(line_width_var.get(), "Grosor de línea"),
+            "language": language,
+        }
+
+    def _export_report() -> None:
+        try:
+            default_name = f"Activacion_Report_{_safe_filename_part(bundle.label)}.pdf"
+            path_text = filedialog.asksaveasfilename(
+                parent=win,
+                title=translate("save_activation_report", language),
+                initialfile=default_name,
+                defaultextension=".pdf",
+                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            )
+            if not path_text:
+                status_var.set(translate("export_cancelled", language))
+                return
+            exported_path = export_activation_report_pdf(
+                bundle,
+                Path(path_text),
+                plot_kwargs=_collect_report_plot_kwargs(),
+            )
+        except Exception as exc:
+            status_var.set(f"Error al exportar reporte: {type(exc).__name__}: {exc}")
+            messagebox.showerror("Activacion Report", str(exc), parent=win)
+            return
+
+        status_var.set(f"{translate('report_exported', language)}: {exported_path}")
+
     def _reset():
         suspend_events["value"] = True
         try:
@@ -1853,7 +2361,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     ttk.Checkbutton(series_box, text="Ascendente", variable=asc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Descendente", variable=dsc_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Voltaje", variable=voltage_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
-    ttk.Checkbutton(series_box, text="Corriente", variable=current_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
+    ttk.Checkbutton(series_box, text="Densidad de corriente", variable=current_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Temperatura", variable=temperature_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="Tiempo local del ciclo", variable=local_cycle_time_var, command=_on_local_cycle_time_changed).pack(anchor="w", padx=8, pady=2)
     ttk.Checkbutton(series_box, text="y-axes a color", variable=color_axes_var, command=_schedule_plot).pack(anchor="w", padx=8, pady=2)
@@ -1865,7 +2373,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     voltage_line_combo = ttk.Combobox(style_box, textvariable=voltage_line_var, values=LINESTYLE_OPTIONS, state="readonly", width=10)
     voltage_line_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Línea de corriente").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Línea de densidad").grid(row=1, column=0, sticky="w", padx=8, pady=3)
     current_line_combo = ttk.Combobox(style_box, textvariable=current_line_var, values=LINESTYLE_OPTIONS, state="readonly", width=10)
     current_line_combo.grid(row=1, column=1, sticky="w", padx=8, pady=3)
 
@@ -1908,8 +2416,8 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
         ("t max", t_max_var),
         ("V min", v_min_var),
         ("V max", v_max_var),
-        ("I min", i_min_var),
-        ("I max", i_max_var),
+        ("j min", i_min_var),
+        ("j max", i_max_var),
         ("T min", temp_min_var),
         ("T max", temp_max_var),
     ]
@@ -1962,6 +2470,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     buttons_frame.pack(fill="x", pady=(5, 0))
     ttk.Button(buttons_frame, text="Restablecer", command=_reset).pack(side="left", padx=(0, 6))
     ttk.Button(buttons_frame, text="Autoescala", command=_autofit).pack(side="left")
+    ttk.Button(buttons_frame, text=translate("pdf_report", language), command=_export_report).pack(side="left", padx=(6, 0))
 
     _plot()
 
@@ -2366,7 +2875,7 @@ def run_pipeline(
 
     chosen = set(selected_options or [])
     if "V vs t" in chosen:
-        open_v_vs_t_window(input_dir, font_defaults=font_defaults)
+        open_v_vs_t_window(input_dir, font_defaults=font_defaults, language=language)
     if "V vs I" in chosen:
         open_v_vs_i_window(input_dir, font_defaults=font_defaults)
 

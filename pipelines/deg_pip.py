@@ -10,7 +10,9 @@ import re
 
 import tkinter as tk
 import matplotlib.dates as mdates
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.ticker import LinearLocator, LogFormatterSciNotation, LogLocator, MaxNLocator, StrMethodFormatter
@@ -21,6 +23,7 @@ from openpyxl.utils import get_column_letter
 
 from pipelines.activ_pip import ACTIV_CYCLE_GRADIENTS, _build_scrollable_cycle_selector, _cycle_gradient_color
 from plot_defaults import PlotFontDefaults, apply_x_tick_label_padding, make_legend_draggable, resolve_plot_font_defaults
+from i18n import normalize_language, translate
 from ui_layout import create_resizable_plot_layout, create_scrollable_controls
 
 
@@ -577,6 +580,213 @@ def compute_degradation_rate(
 
     slope = _linear_fit_slope(filt_t, filt_v) if use_linear_fit else _edge_slope(filt_t, filt_v)
     return slope, len(filt_t)
+
+
+def _deg_language(language: str | None = None) -> str:
+    return normalize_language(language)
+
+
+def _safe_filename_part(text: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", text.strip())
+    return cleaned.strip("._") or "Deg"
+
+
+def _format_report_value(value: object, digits: int = 6) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return f"{value:.{digits}g}"
+    return str(value)
+
+
+def build_deg_report_metadata(
+    parsed_items: list[tuple[DegFile, ParsedDTA]],
+    language: str | None = None,
+) -> list[tuple[str, object, str]]:
+    language = _deg_language(language)
+    if not parsed_items:
+        return []
+
+    _first_file, first_parsed = parsed_items[0]
+    label_keys = {
+        "TITLE": "technique",
+        "DATE": "date",
+        "TIME": "start_time",
+        "ISTEP1": "current",
+        "TSTEP1": "step_duration",
+        "SAMPLETIME": "sampling_time",
+        "AREA": "area",
+    }
+    rows: list[tuple[str, object, str]] = [
+        (translate("deg_stage_count", language), len(parsed_items), ""),
+    ]
+
+    for key, fallback_label in META_FIELDS:
+        label = translate(label_keys.get(key, fallback_label), language)
+        raw_value = first_parsed.meta_values.get(key, "")
+        value = to_float(raw_value)
+        rows.append((label, _format_report_value(value if value is not None else raw_value), first_parsed.meta_units.get(key, "")))
+    return rows
+
+
+def build_deg_report_indicators(
+    parsed_items: list[tuple[DegFile, ParsedDTA]],
+    language: str | None = None,
+) -> list[tuple[str, object, str]]:
+    language = _deg_language(language)
+    slopes_uv_h: list[float] = []
+    voltage_deltas: list[float] = []
+    temperature_deltas: list[float] = []
+    temperatures: list[float] = []
+
+    for _deg_file, parsed in parsed_items:
+        try:
+            t_vals, v_vals = _required_numeric_series(parsed, "T", "Vf")
+        except ValueError:
+            continue
+        slope = _edge_slope(t_vals, v_vals)
+        if slope is not None:
+            slopes_uv_h.append(slope * 1e6 * SECONDS_PER_HOUR)
+        if v_vals:
+            voltage_deltas.append(max(v_vals) - min(v_vals))
+
+        try:
+            _temp_t, temp_vals = _required_numeric_series(parsed, "T", "Temp")
+        except ValueError:
+            temp_vals = []
+        if temp_vals:
+            temperature_deltas.append(max(temp_vals) - min(temp_vals))
+            temperatures.extend(temp_vals)
+
+    rows: list[tuple[str, object, str]] = []
+    if slopes_uv_h:
+        rows.append((translate("deg_average_slope", language), _format_report_value(sum(slopes_uv_h) / len(slopes_uv_h)), "µV/h"))
+    if voltage_deltas:
+        rows.append((translate("deg_max_delta_voltage", language), _format_report_value(max(voltage_deltas)), "V"))
+    if temperature_deltas:
+        rows.append((translate("deg_max_delta_temperature", language), _format_report_value(max(temperature_deltas)), "C"))
+    if temperatures:
+        rows.append((translate("deg_max_temperature", language), _format_report_value(max(temperatures), digits=3), "C"))
+    return rows
+
+
+def _add_report_table(
+    ax,
+    title: str,
+    rows: list[tuple[str, object, str]],
+    bbox: list[float],
+    language: str = "es",
+) -> None:
+    ax.text(
+        bbox[0],
+        bbox[1] + bbox[3] + 0.025,
+        title,
+        fontsize=13,
+        fontweight="bold",
+        ha="left",
+        va="bottom",
+        transform=ax.transAxes,
+    )
+    table = ax.table(
+        cellText=[[_format_report_value(name), _format_report_value(value), _format_report_value(unit)] for name, value, unit in rows],
+        colLabels=[translate("name", language), translate("value", language), translate("unit", language)],
+        cellLoc="left",
+        colLoc="left",
+        colWidths=[bbox[2] * 0.58, bbox[2] * 0.27, bbox[2] * 0.15],
+        bbox=bbox,
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8.0)
+    for (row_idx, _col_idx), cell in table.get_celld().items():
+        cell.set_edgecolor("#b8c0c8")
+        cell.set_linewidth(0.5)
+        if row_idx == 0:
+            cell.set_facecolor("#edf2f7")
+            cell.set_text_props(weight="bold")
+        else:
+            cell.set_facecolor("white")
+
+
+def export_deg_v_vs_t_report_pdf(
+    parsed_items: list[tuple[DegFile, ParsedDTA]],
+    output_path: Path,
+    *,
+    language: str = "es",
+    font_defaults: PlotFontDefaults | None = None,
+) -> Path:
+    if not parsed_items:
+        raise ValueError("Debe seleccionar al menos una etapa para generar el reporte.")
+
+    language = _deg_language(language)
+    font_defaults = resolve_plot_font_defaults(font_defaults)
+    font_values = font_defaults.as_strings()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    limits = compute_autofit_v_vs_t_limits(parsed_items, show_temperature=True, time_unit="h")
+    plot_kwargs = {
+        "show_temperature": True,
+        "voltage_linestyle": "-",
+        "temperature_linestyle": "--",
+        "time_unit": "h",
+        "x_tick_count": 6,
+        "y_tick_count": 6,
+        "plot_title": translate("deg_report_plot_title", language),
+        "show_title": True,
+        "title_fontsize": float(font_values["title"]),
+        "tick_fontsize": float(font_values["tick"]),
+        "label_fontsize": float(font_values["label"]),
+        "legend_fontsize": float(font_values["legend"]),
+        "line_width": 1.5,
+        "t_min": _parse_time_limit_text(limits["t_min"], "h"),
+        "t_max": _parse_time_limit_text(limits["t_max"], "h"),
+        "v_min": _optional_float(limits["v_min"]),
+        "v_max": _optional_float(limits["v_max"]),
+        "temp_min": _optional_float(limits["temp_min"]),
+        "temp_max": _optional_float(limits["temp_max"]),
+        "show_fit_line": False,
+        "show_fit_range": False,
+    }
+
+    metadata_rows = build_deg_report_metadata(parsed_items, language=language)
+    indicator_rows = build_deg_report_indicators(parsed_items, language=language)
+
+    with PdfPages(output_path) as pdf:
+        plot_fig = Figure(figsize=(9.5, 6.2), dpi=150)
+        FigureCanvasAgg(plot_fig)
+        has_plot = draw_v_vs_t_on_figure(plot_fig, parsed_items=parsed_items, **plot_kwargs)
+        if not has_plot:
+            raise ValueError("No hay datos suficientes para generar el grafico del reporte.")
+        pdf.savefig(plot_fig, bbox_inches="tight")
+
+        table_fig = Figure(figsize=(8.5, 11.0), dpi=150)
+        ax = table_fig.add_subplot(111)
+        ax.axis("off")
+        table_fig.text(
+            0.05,
+            0.965,
+            translate("deg_report_title", language),
+            fontsize=18,
+            fontweight="bold",
+            ha="left",
+            va="top",
+        )
+        table_fig.text(
+            0.05,
+            0.935,
+            translate("deg_report_subtitle", language),
+            fontsize=10,
+            ha="left",
+            va="top",
+            color="#4a5568",
+        )
+        _add_report_table(ax, translate("metadata", language), metadata_rows, [0.05, 0.53, 0.90, 0.34], language=language)
+        _add_report_table(ax, translate("indicators", language), indicator_rows, [0.05, 0.08, 0.90, 0.36], language=language)
+        pdf.savefig(table_fig, bbox_inches="tight")
+
+    return output_path
+
+
 def _build_scrollable_controls(parent) -> ttk.Frame:
     _outer, inner = create_scrollable_controls(parent, reset_y_on_resize=True)
     return inner
@@ -1316,7 +1526,12 @@ def draw_v_vs_t_on_figure(
     return True
 
 
-def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
+def open_v_vs_t_window(
+    input_dir: Path,
+    font_defaults: PlotFontDefaults | None = None,
+    language: str = "es",
+) -> None:
+    language = _deg_language(language)
     deg_files = find_deg_files(Path(input_dir))
     if not deg_files:
         raise ValueError("No se encontraron archivos de degradacion validos.")
@@ -1643,6 +1858,37 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
         _plot()
         status_var.set("Valores restaurados.")
 
+    def _export_report() -> None:
+        visible_items = _selected_stage_items(parsed_items, stage_vars)
+        if not visible_items:
+            status_var.set("Reporte no disponible: seleccione al menos una etapa.")
+            return
+        try:
+            stage_text = f"{visible_items[0][0].stage}-{visible_items[-1][0].stage}"
+            default_name = f"Deg_Report_stages_{_safe_filename_part(stage_text)}.pdf"
+            path_text = filedialog.asksaveasfilename(
+                parent=win,
+                title=translate("save_deg_report", language),
+                initialfile=default_name,
+                defaultextension=".pdf",
+                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            )
+            if not path_text:
+                status_var.set(translate("export_cancelled", language))
+                return
+            exported_path = export_deg_v_vs_t_report_pdf(
+                visible_items,
+                Path(path_text),
+                language=language,
+                font_defaults=font_defaults,
+            )
+        except Exception as exc:
+            status_var.set(f"Error al exportar reporte: {type(exc).__name__}: {exc}")
+            messagebox.showerror("Deg Report", str(exc), parent=win)
+            return
+
+        status_var.set(f"{translate('report_exported', language)}: {exported_path}")
+
     def _open_composer_placeholder():
         existing = getattr(win, "_composer_win", None)
         if existing is not None and existing.winfo_exists():
@@ -1918,6 +2164,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     ttk.Button(buttons_frame, text="Restablecer", command=_reset).pack(side="left", padx=(0, 6))
     ttk.Button(buttons_frame, text="Componer", command=_open_composer_placeholder).pack(side="left", padx=(0, 6))
     ttk.Button(buttons_frame, text="Autoescala", command=_autofit).pack(side="left")
+    ttk.Button(buttons_frame, text=translate("pdf_report", language), command=_export_report).pack(side="left", padx=(6, 0))
 
     _plot()
 
@@ -2528,7 +2775,7 @@ def run_pipeline(
     chosen = set(selected_options or [])
 
     if "V vs t" in chosen:
-        open_v_vs_t_window(input_dir, font_defaults=font_defaults)
+        open_v_vs_t_window(input_dir, font_defaults=font_defaults, language=language)
 
     if "dV/dt" in chosen:
         open_dv_dt_window(input_dir, font_defaults=font_defaults)
