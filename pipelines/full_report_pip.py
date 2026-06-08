@@ -23,6 +23,7 @@ from pipelines import pol_cur_pip as pc
 
 
 ProgressCallback = Callable[[str, int | None, int | None], None]
+SummaryIndicatorRow = tuple[str, str, str, object, str]
 
 
 def _safe_filename_part(text: str) -> str:
@@ -149,6 +150,43 @@ def _add_report_table(
             cell.set_facecolor("white")
 
 
+def _add_summary_indicator_table(
+    ax,
+    rows: list[SummaryIndicatorRow],
+    bbox: list[float],
+    language: str,
+    *,
+    font_size: float = 6.8,
+) -> None:
+    table = ax.table(
+        cellText=[
+            [_format_sig(pipeline), _format_sig(item), _format_sig(indicator), _format_sig(value), _format_sig(unit)]
+            for pipeline, item, indicator, value, unit in rows
+        ],
+        colLabels=[
+            translate("pipeline", language),
+            translate("item", language),
+            translate("indicator", language),
+            translate("value", language),
+            translate("unit", language),
+        ],
+        cellLoc="left",
+        colLoc="left",
+        colWidths=[0.13, 0.22, 0.37, 0.15, 0.13],
+        bbox=bbox,
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(font_size)
+    for (row_idx, _col_idx), cell in table.get_celld().items():
+        cell.set_edgecolor("#b8c0c8")
+        cell.set_linewidth(0.45)
+        if row_idx == 0:
+            cell.set_facecolor("#edf2f7")
+            cell.set_text_props(weight="bold")
+        else:
+            cell.set_facecolor("white")
+
+
 def _table_page(
     title: str,
     subtitle: str,
@@ -262,6 +300,10 @@ def _add_pdf_outline(output_path: Path, section_entries: list[tuple[str, int]]) 
         temp_path.replace(output_path)
     except Exception:
         return
+
+
+def _bookmark(section_entries: list[tuple[str, int]], title: str, page_index: int) -> None:
+    section_entries.append((title, page_index))
 
 
 def _pc_current_axis_mode(bundles: list[pc.CurveBundle]) -> bool:
@@ -689,6 +731,155 @@ def _deg_simple_slope_rows(
     if slope is None:
         return []
     return [(translate("simple_slope", language), _format_sig(slope), "µV/h")]
+
+
+def _append_summary_indicator_rows(
+    rows: list[SummaryIndicatorRow],
+    pipeline: str,
+    item: str,
+    indicator_rows: list[tuple[str, object, str]],
+) -> None:
+    for indicator, value, unit in indicator_rows:
+        rows.append((pipeline, item, indicator, value, unit))
+
+
+def _summary_indicator_rows(
+    activation_bundles: list[activ.ActivationBundle],
+    pc_bundles: list[pc.CurveBundle],
+    eis_entries: list[eis.EISPlotEntry],
+    pre_entries: list[eis.EISPlotEntry],
+    cv_datasets: list[cv.CVDataset],
+    deg_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
+    language: str,
+) -> list[SummaryIndicatorRow]:
+    rows: list[SummaryIndicatorRow] = []
+
+    for bundle in activation_bundles:
+        try:
+            _append_summary_indicator_rows(
+                rows,
+                "Activacion",
+                bundle.label,
+                activ.build_activation_report_indicators(bundle, language=language),
+            )
+        except Exception:
+            continue
+
+    for bundle in pc_bundles:
+        try:
+            use_density = _pc_bundle_use_density(bundle)
+            curve_label = f"{bundle.description} #{bundle.curve_id}"
+            _append_summary_indicator_rows(
+                rows,
+                "PC",
+                curve_label,
+                pc.build_pc_report_indicators(bundle, use_current_density=use_density, language=language),
+            )
+            _append_summary_indicator_rows(
+                rows,
+                "PC dV/dI",
+                curve_label,
+                pc.build_pc_dv_di_report_indicators(
+                    bundle,
+                    point_fraction=1.0,
+                    smoothing_algorithm="Median filter",
+                    smoothing_window=1,
+                    use_current_density=use_density,
+                    high_current_fraction=0.90,
+                    language=language,
+                ),
+            )
+            _append_summary_indicator_rows(
+                rows,
+                "PC Step",
+                curve_label,
+                pc.build_pc_step_stability_report_indicators(bundle, use_current_density=use_density, language=language),
+            )
+        except Exception:
+            continue
+
+    for entry in eis_entries:
+        try:
+            _append_summary_indicator_rows(rows, "EIS Nyquist", entry.display_name, eis.build_nyquist_indicator_rows(entry.parsed))
+            _append_summary_indicator_rows(rows, "EIS Bode", entry.display_name, eis.build_bode_indicator_rows(entry.parsed))
+            _append_summary_indicator_rows(rows, "EIS Series Pt", entry.display_name, eis.build_series_pt_indicator_rows(entry.parsed))
+        except Exception:
+            continue
+
+    for entry in pre_entries:
+        try:
+            _append_summary_indicator_rows(
+                rows,
+                "EIS Pre",
+                entry.display_name,
+                eis.build_pre_stabilization_indicator_rows(entry.parsed),
+            )
+        except Exception:
+            continue
+
+    for dataset in cv_datasets:
+        try:
+            visible_segment_keys = {segment.key for segment in dataset.segments if segment.cycle >= 2}
+            if visible_segment_keys:
+                _append_summary_indicator_rows(
+                    rows,
+                    "CV",
+                    cv._dataset_stage_label(dataset),
+                    cv._build_cv_report_indicator_rows(dataset, visible_segment_keys, language=language),
+                )
+        except Exception:
+            continue
+
+    if deg_items:
+        try:
+            _append_summary_indicator_rows(
+                rows,
+                "Deg",
+                translate("deg_report_title", language),
+                deg.build_deg_report_indicators(deg_items, language=language),
+            )
+        except Exception:
+            pass
+
+    return rows
+
+
+def _draw_summary_indicators_pages(
+    activation_bundles: list[activ.ActivationBundle],
+    pc_bundles: list[pc.CurveBundle],
+    eis_entries: list[eis.EISPlotEntry],
+    pre_entries: list[eis.EISPlotEntry],
+    cv_datasets: list[cv.CVDataset],
+    deg_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
+    language: str,
+) -> list[Figure]:
+    rows = _summary_indicator_rows(activation_bundles, pc_bundles, eis_entries, pre_entries, cv_datasets, deg_items, language)
+    if not rows:
+        return []
+
+    rows_per_page = 30
+    pages: list[Figure] = []
+    for page_index, start in enumerate(range(0, len(rows), rows_per_page), start=1):
+        page_rows = rows[start : start + rows_per_page]
+        fig = _new_plot_figure(figsize=(11.0, 8.5), dpi=150)
+        ax = fig.add_subplot(111)
+        ax.axis("off")
+        title = translate("full_report_summary_indicators_title", language)
+        if len(rows) > rows_per_page:
+            title = f"{title} ({page_index})"
+        fig.text(0.04, 0.955, title, fontsize=17, fontweight="bold", ha="left", va="top")
+        fig.text(
+            0.04,
+            0.915,
+            translate("full_report_summary_indicators_subtitle", language),
+            fontsize=9.5,
+            ha="left",
+            va="top",
+            color="#4a5568",
+        )
+        _add_summary_indicator_table(ax, page_rows, [0.04, 0.06, 0.92, 0.80], language)
+        pages.append(fig)
+    return pages
 
 
 def _draw_deg_summary(
@@ -1408,8 +1599,16 @@ def _estimate_total_pages(
     deg_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
 ) -> int:
     total = 2
-    if activation_bundles or pc_bundles or current_groups or deg_items:
+    if activation_bundles or pc_bundles or current_groups or pre_entries or cv_datasets or deg_items:
         total += 1
+    try:
+        summary_indicator_count = len(
+            _summary_indicator_rows(activation_bundles, pc_bundles, eis_entries, pre_entries, cv_datasets, deg_items, "es")
+        )
+    except Exception:
+        summary_indicator_count = 1
+    if summary_indicator_count:
+        total += max(1, math.ceil(summary_indicator_count / 30))
     total += len(activation_bundles)
     if pc_bundles:
         total += 1
@@ -1486,7 +1685,7 @@ def generate_full_report(
     step = [0]
     warnings: list[str] = []
     section_titles: list[str] = []
-    if activation_bundles or pc_bundles or current_groups or deg_items:
+    if activation_bundles or pc_bundles or current_groups or pre_entries or cv_datasets or deg_items:
         section_titles.append(translate("full_report_summary", language))
     if activation_bundles:
         section_titles.append("Activacion")
@@ -1503,14 +1702,14 @@ def generate_full_report(
     with PdfPages(output_path) as pdf:
         _emit(progress_callback, translate("full_report_generating", language), step[0], total)
         _save_figure(pdf, _title_page(input_dir, output_dir, counts, language))
-        section_entries.append((translate("full_report_title", language), step[0]))
+        _bookmark(section_entries, translate("full_report_title", language), step[0])
         step[0] += 1
         _save_figure(pdf, _index_page(section_titles, language))
-        section_entries.append((translate("full_report_index", language), step[0]))
+        _bookmark(section_entries, translate("full_report_index", language), step[0])
         step[0] += 1
 
-        if activation_bundles or pc_bundles or current_groups or deg_items:
-            section_entries.append((translate("full_report_summary", language), step[0]))
+        if activation_bundles or pc_bundles or current_groups or pre_entries or cv_datasets or deg_items:
+            _bookmark(section_entries, translate("full_report_summary", language), step[0])
             _save_figure(
                 pdf,
                 _section_page(
@@ -1521,53 +1720,81 @@ def generate_full_report(
             )
             step[0] += 1
 
+        summary_indicator_figs = _draw_summary_indicators_pages(
+            activation_bundles,
+            pc_bundles,
+            eis_entries,
+            pre_entries,
+            cv_datasets,
+            deg_items,
+            language,
+        )
+        if summary_indicator_figs:
+            title = translate("full_report_summary_indicators_title", language)
+            for page_index, summary_indicator_fig in enumerate(summary_indicator_figs):
+                _emit(progress_callback, title, step[0], total)
+                if page_index == 0:
+                    _bookmark(section_entries, title, step[0])
+                _save_figure(pdf, summary_indicator_fig)
+                step[0] += 1
+
         for bundle in activation_bundles:
+            title = translate("full_report_activation_summary_title", language, curve=bundle.label)
             _emit(
                 progress_callback,
-                translate("full_report_activation_summary_title", language, curve=bundle.label),
+                title,
                 step[0],
                 total,
             )
             activation_summary_fig = _draw_activation_local_summary(bundle, font_defaults, language)
             if activation_summary_fig is not None:
+                _bookmark(section_entries, title, step[0])
                 _save_figure(pdf, activation_summary_fig)
                 step[0] += 1
 
         if pc_bundles:
-            _emit(progress_callback, translate("full_report_pc_summary_title", language), step[0], total)
+            title = translate("full_report_pc_summary_title", language)
+            _emit(progress_callback, title, step[0], total)
             pc_summary_fig = _draw_pc_ascending_summary(pc_bundles, font_defaults, language)
             if pc_summary_fig is not None:
+                _bookmark(section_entries, title, step[0])
                 _save_figure(pdf, pc_summary_fig)
                 step[0] += 1
 
         for current_label, group_entries in current_groups:
+            title = translate("full_report_eis_summary_title", language, current=current_label)
             _emit(
                 progress_callback,
-                translate("full_report_eis_summary_title", language, current=current_label),
+                title,
                 step[0],
                 total,
             )
             summary_fig = _draw_eis_nyquist_summary(current_label, group_entries, font_defaults, language)
             if summary_fig is not None:
+                _bookmark(section_entries, title, step[0])
                 _save_figure(pdf, summary_fig)
                 step[0] += 1
 
         if current_groups:
-            _emit(progress_callback, translate("full_report_eis_y0_summary_title", language), step[0], total)
+            title = translate("full_report_eis_y0_summary_title", language)
+            _emit(progress_callback, title, step[0], total)
             y0_summary_fig = _draw_eis_y0_bar_summary(current_groups, font_defaults, language)
             if y0_summary_fig is not None:
+                _bookmark(section_entries, title, step[0])
                 _save_figure(pdf, y0_summary_fig)
                 step[0] += 1
 
         if deg_items:
-            _emit(progress_callback, translate("full_report_deg_summary_title", language), step[0], total)
+            title = translate("full_report_deg_summary_title", language)
+            _emit(progress_callback, title, step[0], total)
             deg_summary_fig = _draw_deg_summary(deg_items, font_defaults, language)
             if deg_summary_fig is not None:
+                _bookmark(section_entries, title, step[0])
                 _save_figure(pdf, deg_summary_fig)
                 step[0] += 1
 
         if activation_bundles:
-            section_entries.append(("Activacion", step[0]))
+            _bookmark(section_entries, "Activacion", step[0])
             _save_figure(
                 pdf,
                 _section_page(
@@ -1589,7 +1816,7 @@ def generate_full_report(
             )
 
         if pc_bundles:
-            section_entries.append(("PC", step[0]))
+            _bookmark(section_entries, "PC", step[0])
             _save_figure(
                 pdf,
                 _section_page(
@@ -1602,7 +1829,7 @@ def generate_full_report(
             _append_pc_individual_pages(pdf, pc_bundles, font_defaults, language, warnings, progress_callback, step, total)
 
         if eis_entries or pre_entries:
-            section_entries.append(("EIS", step[0]))
+            _bookmark(section_entries, "EIS", step[0])
             _save_figure(
                 pdf,
                 _section_page(
@@ -1615,7 +1842,7 @@ def generate_full_report(
             _append_eis_individual_pages(pdf, eis_entries, pre_entries, font_defaults, language, warnings, progress_callback, step, total)
 
         if cv_datasets:
-            section_entries.append(("CV", step[0]))
+            _bookmark(section_entries, "CV", step[0])
             _save_figure(
                 pdf,
                 _section_page(
@@ -1628,7 +1855,7 @@ def generate_full_report(
             _append_cv_individual_pages(pdf, cv_datasets, font_defaults, language, warnings, progress_callback, step, total)
 
         if deg_items:
-            section_entries.append(("Deg", step[0]))
+            _bookmark(section_entries, "Deg", step[0])
             _save_figure(
                 pdf,
                 _section_page(
