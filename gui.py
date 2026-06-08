@@ -67,7 +67,7 @@ class GamryProtocolApp:
         self.root.minsize(940, 580)
 
         self.repo_dir = pathlib.Path(__file__).resolve().parent
-        self.default_input_dir = self.repo_dir / "data2/test"
+        self.default_input_dir = self.repo_dir / "data2/MEA_B_05_iniciodeprotocolo"
         self.default_output_dir = self.repo_dir / "outputs"
         self.default_output_dir.mkdir(parents=True, exist_ok=True)
 
