@@ -87,6 +87,8 @@ SECONDS_PER_MINUTE = 60.0
 SECONDS_PER_HOUR = 3600.0
 TIME_UNIT_OPTIONS = ["s", "min", "h"]
 PC_LANGUAGE = "es"
+PC_HIGH_CURRENT_TARGET_A = 18.0
+PC_HIGH_CURRENT_FIT_POINTS = 5
 
 
 def _pc_language(language: str | None = None) -> str:
@@ -2556,61 +2558,51 @@ def _v_vs_i_voltage_points(
 def _slope_at_current_from_points(
     points: list[tuple[float, float]],
     target_current: float,
+    fit_point_count: int = PC_HIGH_CURRENT_FIT_POINTS,
 ) -> float | None:
-    state = _voltage_state_at_current_from_points(points, target_current)
+    state = _voltage_state_at_current_from_points(points, target_current, fit_point_count=fit_point_count)
     return state["slope"] if state is not None else None
 
 
 def _voltage_state_at_current_from_points(
     points: list[tuple[float, float]],
     target_current: float,
+    fit_point_count: int = PC_HIGH_CURRENT_FIT_POINTS,
 ) -> dict[str, float] | None:
     if len(points) < 2:
         return None
 
-    segments: list[dict[str, float]] = []
-    for index in range(len(points) - 1):
-        x0, y0 = points[index]
-        x1, y1 = points[index + 1]
-        dx = x1 - x0
-        if abs(dx) <= 1e-12:
-            continue
-        slope = (y1 - y0) / dx
-        segments.append(
-            {
-                "x0": x0,
-                "y0": y0,
-                "x1": x1,
-                "y1": y1,
-                "slope": slope,
-            }
-        )
+    sorted_points = sorted(points, key=lambda item: item[0])
+    fit_count = max(2, int(fit_point_count))
+    if fit_count % 2 == 0:
+        fit_count += 1
+    fit_count = min(fit_count, len(sorted_points))
+    nearest_index = min(
+        range(len(sorted_points)),
+        key=lambda index: abs(sorted_points[index][0] - target_current),
+    )
+    half_window = fit_count // 2
+    start = nearest_index - half_window
+    end = start + fit_count
+    if start < 0:
+        start = 0
+        end = fit_count
+    if end > len(sorted_points):
+        end = len(sorted_points)
+        start = max(0, end - fit_count)
 
-    if not segments:
+    fit_points = sorted_points[start:end]
+    fit = _linear_fit(fit_points)
+    if fit is None:
         return None
 
-    selected_segment: dict[str, float] | None = None
-    if target_current <= segments[0]["x0"]:
-        selected_segment = segments[0]
-    elif target_current >= segments[-1]["x1"]:
-        selected_segment = segments[-1]
-    else:
-        for segment in segments:
-            if segment["x0"] <= target_current <= segment["x1"]:
-                selected_segment = segment
-                break
-
-    if selected_segment is None:
-        selected_segment = min(
-            segments,
-            key=lambda item: abs(((item["x0"] + item["x1"]) / 2.0) - target_current),
-        )
-
-    voltage = selected_segment["y0"] + selected_segment["slope"] * (target_current - selected_segment["x0"])
+    voltage = fit["slope"] * target_current + fit["intercept"]
     return {
         "current": target_current,
         "voltage": voltage,
-        "slope": selected_segment["slope"],
+        "slope": fit["slope"],
+        "fit_center_current": sorted_points[nearest_index][0],
+        "fit_points": float(len(fit_points)),
     }
 
 
@@ -2763,33 +2755,6 @@ def build_pc_report_indicators(
     return rows
 
 
-def _dvdi_value_at_current(points: list[tuple[float, float]], target_current: float) -> float | None:
-    if not points:
-        return None
-    if len(points) == 1:
-        return points[0][1]
-
-    sorted_points = sorted(points, key=lambda item: item[0])
-    if target_current <= sorted_points[0][0]:
-        left, right = sorted_points[0], sorted_points[1]
-    elif target_current >= sorted_points[-1][0]:
-        left, right = sorted_points[-2], sorted_points[-1]
-    else:
-        left = sorted_points[0]
-        right = sorted_points[-1]
-        for idx in range(len(sorted_points) - 1):
-            candidate_left = sorted_points[idx]
-            candidate_right = sorted_points[idx + 1]
-            if candidate_left[0] <= target_current <= candidate_right[0]:
-                left, right = candidate_left, candidate_right
-                break
-
-    dx = right[0] - left[0]
-    if abs(dx) <= 1e-12:
-        return left[1]
-    return left[1] + ((target_current - left[0]) / dx) * (right[1] - left[1])
-
-
 def build_pc_dv_di_report_indicators(
     bundle: CurveBundle,
     point_fraction: float = 1.0,
@@ -2797,13 +2762,15 @@ def build_pc_dv_di_report_indicators(
     smoothing_window: int = 1,
     use_current_density: bool = True,
     high_current_fraction: float = 0.90,
+    high_current_target_a: float | None = PC_HIGH_CURRENT_TARGET_A,
+    high_current_fit_points: int = PC_HIGH_CURRENT_FIT_POINTS,
     language: str | None = None,
 ) -> list[tuple[str, str, str]]:
     language = _pc_language(language)
     curve_data = build_curve_bundle_data(bundle)
     area_cm2 = _bundle_area_cm2(bundle) if use_current_density else None
 
-    def _direction_points(rows: list[dict[str, float]], tolerance: float) -> list[tuple[float, float]]:
+    def _direction_dvdi_points(rows: list[dict[str, float]], tolerance: float) -> list[tuple[float, float]]:
         derivative_rows = build_dv_di_rows(
             rows,
             tolerance,
@@ -2819,36 +2786,55 @@ def build_pc_dv_di_report_indicators(
             for row in derivative_rows
         ]
 
-    asc_points = (
-        _direction_points(curve_data["asc_rows"], curve_data["asc_tol"])
+    def _direction_voltage_points(rows: list[dict[str, float]], tolerance: float) -> list[tuple[float, float]]:
+        return _pc_report_direction_points(rows, tolerance, point_fraction, use_current_density, area_cm2)
+
+    asc_dvdi_points = (
+        _direction_dvdi_points(curve_data["asc_rows"], curve_data["asc_tol"])
         if curve_data["asc_rows"] else []
     )
-    dsc_points = (
-        _direction_points(curve_data["dsc_rows"], curve_data["dsc_tol"])
+    dsc_dvdi_points = (
+        _direction_dvdi_points(curve_data["dsc_rows"], curve_data["dsc_tol"])
         if curve_data["dsc_rows"] else []
     )
-    all_points = asc_points + dsc_points
+    asc_voltage_points = (
+        _direction_voltage_points(curve_data["asc_rows"], curve_data["asc_tol"])
+        if curve_data["asc_rows"] else []
+    )
+    dsc_voltage_points = (
+        _direction_voltage_points(curve_data["dsc_rows"], curve_data["dsc_tol"])
+        if curve_data["dsc_rows"] else []
+    )
+    all_voltage_points = asc_voltage_points + dsc_voltage_points
 
     current_unit = "A/cm^2" if use_current_density else "A"
     dvdi_unit = _dvdi_axis_unit(use_current_density)
     rows: list[tuple[str, str, str]] = []
 
-    if all_points:
-        currents = [point[0] for point in all_points]
+    if high_current_target_a is not None:
+        high_current = _scaled_current(high_current_target_a, use_current_density, area_cm2)
+    elif all_voltage_points:
+        currents = [point[0] for point in all_voltage_points]
         current_min = min(currents)
         current_max = max(currents)
         high_current = current_min + high_current_fraction * (current_max - current_min)
-        rows.append((translate("high_current_target", language), _format_report_value(high_current), current_unit))
     else:
         high_current = None
 
-    for direction_key, points in (
-        ("ascending", asc_points),
-        ("descending", dsc_points),
+    if high_current is not None:
+        rows.append((translate("high_current_target", language), _format_report_value(high_current), current_unit))
+
+    for direction_key, voltage_points, dvdi_points in (
+        ("ascending", asc_voltage_points, asc_dvdi_points),
+        ("descending", dsc_voltage_points, dsc_dvdi_points),
     ):
         direction_label = translate(direction_key, language)
         high_value = (
-            _dvdi_value_at_current(points, high_current)
+            _slope_at_current_from_points(
+                voltage_points,
+                high_current,
+                fit_point_count=high_current_fit_points,
+            )
             if high_current is not None else None
         )
         rows.append((
@@ -2857,8 +2843,8 @@ def build_pc_dv_di_report_indicators(
             dvdi_unit,
         ))
 
-        if points:
-            max_current, max_dvdi = max(points, key=lambda item: item[1])
+        if dvdi_points:
+            max_current, max_dvdi = max(dvdi_points, key=lambda item: item[1])
         else:
             max_current = None
             max_dvdi = None

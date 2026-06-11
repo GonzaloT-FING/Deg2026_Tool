@@ -468,8 +468,12 @@ def _format_report_value(value: object, digits: int = 6) -> str:
     return str(value).strip()
 
 
+def _is_zero_voltage_label(voltage_label: str | None) -> bool:
+    return (voltage_label or "").strip().lower() in {"0v", "0v vs ocp"}
+
+
 def _is_zero_voltage_measurement(parsed: ParsedDTA, voltage_label: str | None = None) -> bool:
-    if voltage_label == "0V":
+    if _is_zero_voltage_label(voltage_label):
         return True
     vdc = to_float(parsed.meta_values.get("VDC", ""))
     return vdc is not None and abs(vdc) <= 1e-12
@@ -1664,7 +1668,11 @@ def _format_voltage_label(parsed: ParsedDTA) -> str | None:
     formatted = _format_decimal_for_plot_label(raw_value)
     if formatted is None:
         compact = raw_value.replace(" ", "").replace(".", ",")
-        return f"{compact}V" if compact else None
+        if not compact:
+            return None
+        return "0V vs OCP" if compact in {"0", "+0", "-0"} else f"{compact}V"
+    if formatted == "0":
+        return "0V vs OCP"
     return f"{formatted}V"
 
 
@@ -1675,7 +1683,7 @@ def _extract_characterization_label(
     voltage_label: str | None,
     language: str | None = None,
 ) -> str | None:
-    if current_label is not None or voltage_label != "0V":
+    if current_label is not None or not _is_zero_voltage_label(voltage_label):
         return None
 
     match = re.fullmatch(r"EISPOT_[^_]+_([23])_#\d+", stem, flags=re.IGNORECASE)
@@ -1723,7 +1731,7 @@ def _build_eis_display_name(
     # Only prettify filenames when they match the expected naming schemes.
     # Non-standard 0 V measurements should keep their stem so the composer
     # treats them as independent series instead of merging them under a
-    # generic label such as "Etapa N / 0V".
+    # generic label such as "Etapa N / 0V vs OCP".
     display_name = " / ".join(parts) if parts else stem
     return display_name, stage_number, current_label, voltage_label, current_value
 
@@ -2209,6 +2217,32 @@ def _update_right_axis_spacing(fig, canvas, axes, pad_px: float = 12.0, min_outw
         extra = overflow / fig_px
         fig.subplots_adjust(right=max(0.50, fig._default_right_margin - extra))
 
+
+def _apply_plain_series_axis_ticks(
+    axes: Iterable[object],
+    *,
+    include_x: bool = False,
+    tick_count: int = 6,
+) -> None:
+    locator_count = max(2, int(tick_count))
+    for axis in axes:
+        if axis is None:
+            continue
+        if include_x:
+            axis.xaxis.set_major_locator(LinearLocator(locator_count))
+            axis.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+            axis.xaxis.get_offset_text().set_visible(False)
+        axis.yaxis.set_major_locator(LinearLocator(locator_count))
+        axis.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+        axis.yaxis.get_offset_text().set_visible(False)
+
+
+def _apply_series_axis_color(axis, color: str, side: str) -> None:
+    axis.yaxis.label.set_color(color)
+    axis.tick_params(axis="y", colors=color)
+    if side in axis.spines:
+        axis.spines[side].set_color(color)
+
 def fig_series_vs_pt(
     parsed: ParsedDTA,
     *,
@@ -2301,6 +2335,7 @@ def fig_series_vs_pt(
     if "I" in lines: axI.set_ylabel(ylabels["I"])
     if "V" in lines: axV.set_ylabel(ylabels["V"])
     if "T" in lines: axT.set_ylabel(ylabels["T"])
+    _apply_plain_series_axis_ticks((axI, axV, axT), include_x=True)
 
     # Title
     axI.set_title(plot_title or f"{_technique_name(parsed)} - Series vs Pt")
@@ -2386,6 +2421,12 @@ def fig_pre_stabilization(
 
     if not lines:
         return None
+
+    _apply_plain_series_axis_ticks((axV, axI, axT), include_x=True)
+    for key, axis, side in (("V", axV, "left"), ("I", axI, "right"), ("T", axT, "right")):
+        line = lines.get(key)
+        if line is not None:
+            _apply_series_axis_color(axis, line.get_color(), side)
 
     axV.set_title(f"{entry.display_name} - {translate('pre_stabilization', language)}")
 

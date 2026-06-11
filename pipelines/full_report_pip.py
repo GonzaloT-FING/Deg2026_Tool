@@ -19,11 +19,12 @@ from pipelines import activ_pip as activ
 from pipelines import cic_vol_pip as cv
 from pipelines import deg_pip as deg
 from pipelines import eis_pip as eis
+from pipelines import ocp_pip as ocp
 from pipelines import pol_cur_pip as pc
 
 
 ProgressCallback = Callable[[str, int | None, int | None], None]
-SummaryIndicatorRow = tuple[str, str, str, object, str]
+RELEVANT_SUMMARY_ROWS_PER_PAGE = 28
 
 
 def _safe_filename_part(text: str) -> str:
@@ -93,6 +94,10 @@ def _stage_label(stage_number: int | None, fallback: str, language: str) -> str:
     return f"{translate('stage', language)} {stage_number}"
 
 
+def _pc_curve_label(bundle: pc.CurveBundle, language: str) -> str:
+    return f"{_stage_label(bundle.curve_id, bundle.description, language)} - {bundle.description} #{bundle.curve_id}"
+
+
 def _new_plot_figure(figsize: tuple[float, float] = (9.5, 6.2), dpi: int = 150) -> Figure:
     fig = Figure(figsize=figsize, dpi=dpi)
     FigureCanvasAgg(fig)
@@ -150,43 +155,6 @@ def _add_report_table(
             cell.set_facecolor("white")
 
 
-def _add_summary_indicator_table(
-    ax,
-    rows: list[SummaryIndicatorRow],
-    bbox: list[float],
-    language: str,
-    *,
-    font_size: float = 6.8,
-) -> None:
-    table = ax.table(
-        cellText=[
-            [_format_sig(pipeline), _format_sig(item), _format_sig(indicator), _format_sig(value), _format_sig(unit)]
-            for pipeline, item, indicator, value, unit in rows
-        ],
-        colLabels=[
-            translate("pipeline", language),
-            translate("item", language),
-            translate("indicator", language),
-            translate("value", language),
-            translate("unit", language),
-        ],
-        cellLoc="left",
-        colLoc="left",
-        colWidths=[0.13, 0.22, 0.37, 0.15, 0.13],
-        bbox=bbox,
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(font_size)
-    for (row_idx, _col_idx), cell in table.get_celld().items():
-        cell.set_edgecolor("#b8c0c8")
-        cell.set_linewidth(0.45)
-        if row_idx == 0:
-            cell.set_facecolor("#edf2f7")
-            cell.set_text_props(weight="bold")
-        else:
-            cell.set_facecolor("white")
-
-
 def _table_page(
     title: str,
     subtitle: str,
@@ -229,10 +197,10 @@ def _title_page(input_dir: Path, output_dir: Path, counts: dict[str, int], langu
     rows = [
         ("Activacion", counts.get("activation", 0), translate("curve", language)),
         ("PC", counts.get("pc", 0), translate("curve", language)),
-        ("EIS", counts.get("eis", 0), translate("nyquist_plot", language)),
-        ("EIS Pre", counts.get("pre_stab", 0), translate("pre_stabilization", language)),
+        ("EIS", counts.get("eis", 0) + counts.get("pre_stab", 0), "EIS"),
         ("CV", counts.get("cv", 0), "CV"),
         ("Deg", counts.get("deg", 0), translate("deg_stage_count", language)),
+        ("Deg OCP", counts.get("deg_ocp", 0), "OCP"),
     ]
     _add_report_table(
         ax,
@@ -396,6 +364,41 @@ def _eis_current_group_key(entry: eis.EISPlotEntry) -> tuple[float | str, str]:
     return label, label
 
 
+def _eis_zero_voltage_group_label(entry: eis.EISPlotEntry, language: str) -> str:
+    parts = [part.strip() for part in entry.display_name.split("/") if part.strip()]
+    stage_prefixes = (f"{translate('stage', language)} ", "Etapa ", "Stage ")
+    parts = [part for part in parts if not any(part.startswith(prefix) for prefix in stage_prefixes)]
+    if parts:
+        return " / ".join(parts)
+    return entry.display_name or entry.voltage_label or "0V vs OCP"
+
+
+def _eis_resistance_group_key(entry: eis.EISPlotEntry, language: str) -> tuple[float | str, str]:
+    if entry.current_value is not None:
+        return _eis_current_group_key(entry)
+    if eis._is_zero_voltage_measurement(entry.parsed, entry.voltage_label):
+        label = _eis_zero_voltage_group_label(entry, language)
+        return label, label
+    return _eis_current_group_key(entry)
+
+
+def _is_activation_ocp_bar_label(label: object) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(label).strip().lower()).strip("_")
+    return normalized == "eispot_0v_1"
+
+
+def _eis_group_sort_key(key: tuple[float | str, str]) -> tuple[int, float, str]:
+    if _is_activation_ocp_bar_label(key[1]):
+        return -1, 0.0, key[1]
+    if not isinstance(key[0], float) and (
+        eis._is_zero_voltage_label(key[1]) or "0v vs ocp" in str(key[1]).strip().lower()
+    ):
+        return 0, 0.0, key[1]
+    if isinstance(key[0], float):
+        return 1, key[0], key[1]
+    return 2, math.inf, key[1]
+
+
 def _eis_current_groups(entries: list[eis.EISPlotEntry]) -> list[tuple[str, list[eis.EISPlotEntry]]]:
     grouped: dict[tuple[float | str, str], list[eis.EISPlotEntry]] = defaultdict(list)
     for entry in entries:
@@ -403,14 +406,21 @@ def _eis_current_groups(entries: list[eis.EISPlotEntry]) -> list[tuple[str, list
             continue
         grouped[_eis_current_group_key(entry)].append(entry)
 
-    ordered_keys = sorted(
-        grouped,
-        key=lambda key: (
-            not isinstance(key[0], float),
-            key[0] if isinstance(key[0], float) else math.inf,
-            key[1],
-        ),
-    )
+    ordered_keys = sorted(grouped, key=_eis_group_sort_key)
+    return [(key[1], grouped[key]) for key in ordered_keys]
+
+
+def _eis_resistance_summary_groups(
+    entries: list[eis.EISPlotEntry],
+    language: str,
+) -> list[tuple[str, list[eis.EISPlotEntry]]]:
+    grouped: dict[tuple[float | str, str], list[eis.EISPlotEntry]] = defaultdict(list)
+    for entry in entries:
+        if entry.current_value is None and not eis._is_zero_voltage_measurement(entry.parsed, entry.voltage_label):
+            continue
+        grouped[_eis_resistance_group_key(entry, language)].append(entry)
+
+    ordered_keys = sorted(grouped, key=_eis_group_sort_key)
     return [(key[1], grouped[key]) for key in ordered_keys]
 
 
@@ -549,25 +559,63 @@ def _nyquist_y0_indicator(entry: eis.EISPlotEntry) -> tuple[float, str] | None:
     return numeric, unit
 
 
+def _nyquist_area_resistance_indicator(entry: eis.EISPlotEntry) -> tuple[float, str] | None:
+    y0 = _nyquist_y0_indicator(entry)
+    area_cm2 = eis._metadata_area_cm2(entry.parsed)
+    if y0 is None or area_cm2 is None or area_cm2 <= 0:
+        return None
+    value, _unit = y0
+    return value * area_cm2, "ohm.cm^2"
+
+
+def _pc_high_current_resistance_indicator(bundle: pc.CurveBundle, language: str) -> tuple[float, str] | None:
+    try:
+        rows = pc.build_pc_dv_di_report_indicators(
+            bundle,
+            point_fraction=1.0,
+            smoothing_algorithm="Median filter",
+            smoothing_window=1,
+            use_current_density=True,
+            language=language,
+        )
+    except Exception:
+        return None
+
+    ascending_label = translate("ascending", language)
+    target_label = translate("high_current_dvdi", language, direction=ascending_label)
+    fallback: tuple[float, str] | None = None
+    for label, value, unit in rows:
+        numeric = _optional_float(value)
+        if numeric is None:
+            continue
+        if str(label) == target_label:
+            return numeric, "ohm.cm^2"
+        if fallback is None and str(unit) == "V/(A/cm^2)" and "dV/dI" in str(label):
+            fallback = (numeric, "ohm.cm^2")
+    return fallback
+
+
 def _eis_stage_key(entry: eis.EISPlotEntry) -> int | str:
     return entry.stage_number if entry.stage_number is not None else entry.display_name
 
 
 def _draw_eis_y0_bar_summary(
     current_groups: list[tuple[str, list[eis.EISPlotEntry]]],
+    pc_bundles: list[pc.CurveBundle],
     font_defaults: PlotFontDefaults,
     language: str,
 ) -> Figure | None:
-    if not current_groups:
+    if not current_groups and not pc_bundles:
         return None
 
     stage_keys: list[int | str] = []
     stage_labels: dict[int | str, str] = {}
     stage_colors: dict[int | str, str] = {}
+    group_labels: list[str] = []
     group_values: list[dict[int | str, float]] = []
     y_unit = ""
 
-    for _current_label, entries in current_groups:
+    for current_label, entries in current_groups:
         values_for_group: dict[int | str, float] = {}
         ordered_entries = sorted(
             entries,
@@ -578,10 +626,10 @@ def _draw_eis_y0_bar_summary(
             ),
         )
         for entry in ordered_entries:
-            y0 = _nyquist_y0_indicator(entry)
-            if y0 is None:
+            resistance = _nyquist_area_resistance_indicator(entry)
+            if resistance is None:
                 continue
-            value, unit = y0
+            value, unit = resistance
             if not y_unit and unit:
                 y_unit = unit
             stage_key = _eis_stage_key(entry)
@@ -591,14 +639,33 @@ def _draw_eis_y0_bar_summary(
                 if entry.nyquist_color:
                     stage_colors[stage_key] = entry.nyquist_color
             values_for_group[stage_key] = value
-        group_values.append(values_for_group)
+        if values_for_group:
+            group_labels.append(current_label)
+            group_values.append(values_for_group)
+
+    pc_values: dict[int | str, float] = {}
+    for bundle in sorted(pc_bundles, key=lambda item: (item.curve_id, item.description)):
+        resistance = _pc_high_current_resistance_indicator(bundle, language)
+        if resistance is None:
+            continue
+        value, unit = resistance
+        if not y_unit and unit:
+            y_unit = unit
+        stage_key = bundle.curve_id
+        if stage_key not in stage_labels:
+            stage_keys.append(stage_key)
+            stage_labels[stage_key] = _stage_label(bundle.curve_id, bundle.description, language)
+        pc_values[stage_key] = value
+    if pc_values:
+        group_labels.append("PC")
+        group_values.append(pc_values)
 
     if not stage_keys or not any(group_values):
         return None
 
     fig = _new_plot_figure(figsize=(10.0, 6.2), dpi=150)
     ax = fig.add_subplot(111)
-    x_positions = list(range(len(current_groups)))
+    x_positions = list(range(len(group_values)))
     bar_width = min(0.26, 0.78 / max(1, len(stage_keys)))
 
     for stage_index, stage_key in enumerate(stage_keys):
@@ -623,11 +690,11 @@ def _draw_eis_y0_bar_summary(
         )
 
     ax.set_title(translate("full_report_eis_y0_summary_title", language))
-    ax.set_xlabel(translate("current", language))
-    y_label = translate("y0_intersection", language)
+    ax.set_xlabel("EIS / PC")
+    y_label = translate("resistance", language)
     ax.set_ylabel(f"{y_label} ({y_unit})" if y_unit else y_label)
     ax.set_xticks(x_positions)
-    ax.set_xticklabels([label for label, _entries in current_groups], rotation=20, ha="right")
+    ax.set_xticklabels(group_labels, rotation=20, ha="right")
     ax.grid(True, axis="y", alpha=0.35)
     ax.axhline(0.0, color="#4a5568", linewidth=0.8)
     ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
@@ -650,8 +717,12 @@ def _deg_v_vs_t_kwargs(
     language: str,
     *,
     title_key: str,
+    title_detail: str | None = None,
 ) -> dict[str, object]:
     limits = deg.compute_autofit_v_vs_t_limits(parsed_items, show_temperature=True, time_unit="h")
+    plot_title = translate(title_key, language)
+    if title_detail:
+        plot_title = f"{plot_title} - {title_detail}"
     return {
         "show_temperature": True,
         "voltage_linestyle": "-",
@@ -659,7 +730,7 @@ def _deg_v_vs_t_kwargs(
         "time_unit": "h",
         "x_tick_count": 6,
         "y_tick_count": 6,
-        "plot_title": translate(title_key, language),
+        "plot_title": plot_title,
         "show_title": True,
         "title_fontsize": font_defaults.title,
         "tick_fontsize": font_defaults.tick,
@@ -675,6 +746,16 @@ def _deg_v_vs_t_kwargs(
         "show_fit_line": False,
         "show_fit_range": False,
     }
+
+
+def _deg_stage_range_label(parsed_items: list[tuple[deg.DegFile, deg.ParsedDTA]], language: str) -> str:
+    stages = [item[0].stage for item in _sorted_deg_items(parsed_items)]
+    if not stages:
+        return ""
+    stage_word = translate("stage", language)
+    if len(stages) == 1:
+        return f"{stage_word} {stages[0]}"
+    return f"{stage_word} {stages[0]}-{stages[-1]}"
 
 
 def _deg_simple_slope_uv_h(parsed_items: list[tuple[deg.DegFile, deg.ParsedDTA]]) -> float | None:
@@ -733,155 +814,6 @@ def _deg_simple_slope_rows(
     return [(translate("simple_slope", language), _format_sig(slope), "µV/h")]
 
 
-def _append_summary_indicator_rows(
-    rows: list[SummaryIndicatorRow],
-    pipeline: str,
-    item: str,
-    indicator_rows: list[tuple[str, object, str]],
-) -> None:
-    for indicator, value, unit in indicator_rows:
-        rows.append((pipeline, item, indicator, value, unit))
-
-
-def _summary_indicator_rows(
-    activation_bundles: list[activ.ActivationBundle],
-    pc_bundles: list[pc.CurveBundle],
-    eis_entries: list[eis.EISPlotEntry],
-    pre_entries: list[eis.EISPlotEntry],
-    cv_datasets: list[cv.CVDataset],
-    deg_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
-    language: str,
-) -> list[SummaryIndicatorRow]:
-    rows: list[SummaryIndicatorRow] = []
-
-    for bundle in activation_bundles:
-        try:
-            _append_summary_indicator_rows(
-                rows,
-                "Activacion",
-                bundle.label,
-                activ.build_activation_report_indicators(bundle, language=language),
-            )
-        except Exception:
-            continue
-
-    for bundle in pc_bundles:
-        try:
-            use_density = _pc_bundle_use_density(bundle)
-            curve_label = f"{bundle.description} #{bundle.curve_id}"
-            _append_summary_indicator_rows(
-                rows,
-                "PC",
-                curve_label,
-                pc.build_pc_report_indicators(bundle, use_current_density=use_density, language=language),
-            )
-            _append_summary_indicator_rows(
-                rows,
-                "PC dV/dI",
-                curve_label,
-                pc.build_pc_dv_di_report_indicators(
-                    bundle,
-                    point_fraction=1.0,
-                    smoothing_algorithm="Median filter",
-                    smoothing_window=1,
-                    use_current_density=use_density,
-                    high_current_fraction=0.90,
-                    language=language,
-                ),
-            )
-            _append_summary_indicator_rows(
-                rows,
-                "PC Step",
-                curve_label,
-                pc.build_pc_step_stability_report_indicators(bundle, use_current_density=use_density, language=language),
-            )
-        except Exception:
-            continue
-
-    for entry in eis_entries:
-        try:
-            _append_summary_indicator_rows(rows, "EIS Nyquist", entry.display_name, eis.build_nyquist_indicator_rows(entry.parsed))
-            _append_summary_indicator_rows(rows, "EIS Bode", entry.display_name, eis.build_bode_indicator_rows(entry.parsed))
-            _append_summary_indicator_rows(rows, "EIS Series Pt", entry.display_name, eis.build_series_pt_indicator_rows(entry.parsed))
-        except Exception:
-            continue
-
-    for entry in pre_entries:
-        try:
-            _append_summary_indicator_rows(
-                rows,
-                "EIS Pre",
-                entry.display_name,
-                eis.build_pre_stabilization_indicator_rows(entry.parsed),
-            )
-        except Exception:
-            continue
-
-    for dataset in cv_datasets:
-        try:
-            visible_segment_keys = {segment.key for segment in dataset.segments if segment.cycle >= 2}
-            if visible_segment_keys:
-                _append_summary_indicator_rows(
-                    rows,
-                    "CV",
-                    cv._dataset_stage_label(dataset),
-                    cv._build_cv_report_indicator_rows(dataset, visible_segment_keys, language=language),
-                )
-        except Exception:
-            continue
-
-    if deg_items:
-        try:
-            _append_summary_indicator_rows(
-                rows,
-                "Deg",
-                translate("deg_report_title", language),
-                deg.build_deg_report_indicators(deg_items, language=language),
-            )
-        except Exception:
-            pass
-
-    return rows
-
-
-def _draw_summary_indicators_pages(
-    activation_bundles: list[activ.ActivationBundle],
-    pc_bundles: list[pc.CurveBundle],
-    eis_entries: list[eis.EISPlotEntry],
-    pre_entries: list[eis.EISPlotEntry],
-    cv_datasets: list[cv.CVDataset],
-    deg_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
-    language: str,
-) -> list[Figure]:
-    rows = _summary_indicator_rows(activation_bundles, pc_bundles, eis_entries, pre_entries, cv_datasets, deg_items, language)
-    if not rows:
-        return []
-
-    rows_per_page = 30
-    pages: list[Figure] = []
-    for page_index, start in enumerate(range(0, len(rows), rows_per_page), start=1):
-        page_rows = rows[start : start + rows_per_page]
-        fig = _new_plot_figure(figsize=(11.0, 8.5), dpi=150)
-        ax = fig.add_subplot(111)
-        ax.axis("off")
-        title = translate("full_report_summary_indicators_title", language)
-        if len(rows) > rows_per_page:
-            title = f"{title} ({page_index})"
-        fig.text(0.04, 0.955, title, fontsize=17, fontweight="bold", ha="left", va="top")
-        fig.text(
-            0.04,
-            0.915,
-            translate("full_report_summary_indicators_subtitle", language),
-            fontsize=9.5,
-            ha="left",
-            va="top",
-            color="#4a5568",
-        )
-        _add_summary_indicator_table(ax, page_rows, [0.04, 0.06, 0.92, 0.80], language)
-        pages.append(fig)
-    return pages
-
-
 def _draw_deg_summary(
     parsed_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
     font_defaults: PlotFontDefaults,
@@ -900,6 +832,7 @@ def _draw_deg_summary(
             font_defaults,
             language,
             title_key="full_report_deg_summary_title",
+            title_detail=_deg_stage_range_label(parsed_items, language),
         ),
     )
     if not has_plot:
@@ -921,9 +854,96 @@ def _draw_deg_summary(
     return fig
 
 
+def _relevant_summary_indicator_rows(
+    activation_bundles: list[activ.ActivationBundle],
+    deg_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
+    language: str,
+) -> list[tuple[object, object, object]]:
+    rows: list[tuple[object, object, object]] = []
+
+    for bundle in sorted(activation_bundles, key=lambda item: item.label):
+        for label, value, unit in activ.build_activation_report_indicators(bundle, language=language):
+            if str(label).startswith("dV stab C#"):
+                rows.append((f"Activacion - {bundle.label} - {label}", value, unit))
+
+    slope_label = translate("deg_average_slope", language)
+    for deg_file, parsed in _sorted_deg_items(deg_items):
+        stage_label = _stage_label(deg_file.stage, deg_file.path.stem, language)
+        for label, value, unit in deg.build_deg_report_indicators([(deg_file, parsed)], language=language):
+            if str(label) == slope_label:
+                rows.append((f"Deg - {stage_label} - {label}", value, unit))
+                break
+
+    return rows
+
+
+def _relevant_summary_indicator_page_count(rows: list[tuple[object, object, object]]) -> int:
+    if not rows:
+        return 0
+    return math.ceil(len(rows) / RELEVANT_SUMMARY_ROWS_PER_PAGE)
+
+
+def _relevant_summary_indicator_pages(
+    rows: list[tuple[object, object, object]],
+    language: str,
+) -> list[Figure]:
+    page_count = _relevant_summary_indicator_page_count(rows)
+    pages: list[Figure] = []
+    title = translate("full_report_relevant_indicators_title", language)
+    subtitle = translate("full_report_relevant_indicators_subtitle", language)
+    for page_index in range(page_count):
+        start = page_index * RELEVANT_SUMMARY_ROWS_PER_PAGE
+        chunk = rows[start : start + RELEVANT_SUMMARY_ROWS_PER_PAGE]
+        page_title = title if page_count == 1 else f"{title} ({page_index + 1}/{page_count})"
+        pages.append(
+            _table_page(
+                page_title,
+                subtitle,
+                [(translate("indicators", language), chunk, [0.05, 0.08, 0.90, 0.78])],
+                language,
+            )
+        )
+    return pages
+
+
+def _sorted_deg_ocp_items(parsed_items: list[tuple[deg.DegFile, ocp.ParsedDTA]]) -> list[tuple[deg.DegFile, ocp.ParsedDTA]]:
+    return sorted(parsed_items, key=lambda item: (item[0].stage, item[0].path.name.lower()))
+
+
+def _deg_ocp_plot_kwargs(
+    deg_file: deg.DegFile,
+    parsed: ocp.ParsedDTA,
+    font_defaults: PlotFontDefaults,
+    language: str,
+) -> dict[str, object]:
+    limits = ocp.compute_autofit_v_vs_t_limits(parsed, show_temperature=True)
+    stage_label = _stage_label(deg_file.stage, deg_file.path.stem, language)
+    return {
+        "show_temperature": True,
+        "voltage_linestyle": "-",
+        "temperature_linestyle": "--",
+        "tick_count": 6,
+        "plot_title": f"Deg OCP - {stage_label}",
+        "show_title": True,
+        "title_fontsize": font_defaults.title,
+        "tick_fontsize": font_defaults.tick,
+        "label_fontsize": font_defaults.label,
+        "legend_fontsize": max(6.0, font_defaults.legend * 0.9),
+        "line_width": 1.5,
+        "t_min": _optional_float(limits.get("t_min")),
+        "t_max": _optional_float(limits.get("t_max")),
+        "v_min": _optional_float(limits.get("v_min")),
+        "v_max": _optional_float(limits.get("v_max")),
+        "temp_min": _optional_float(limits.get("temp_min")),
+        "temp_max": _optional_float(limits.get("temp_max")),
+        "language": language,
+    }
+
+
 def _pc_v_vs_i_kwargs(bundle: pc.CurveBundle, font_defaults: PlotFontDefaults, language: str) -> dict[str, object]:
     use_density = _pc_bundle_use_density(bundle)
     limits = pc.compute_default_v_vs_i_limits(bundle, use_current_density=use_density)
+    curve_label = _pc_curve_label(bundle, language)
     return {
         "show_asc": True,
         "show_dsc": True,
@@ -943,7 +963,7 @@ def _pc_v_vs_i_kwargs(bundle: pc.CurveBundle, font_defaults: PlotFontDefaults, l
         "v_max": _optional_float(limits.get("v_max")),
         "temp_min": None,
         "temp_max": None,
-        "plot_title": "",
+        "plot_title": f"{translate('v_vs_i', language)} - {curve_label}",
         "show_title": True,
         "title_fontsize": font_defaults.title,
         "tick_fontsize": font_defaults.tick,
@@ -962,6 +982,7 @@ def _pc_series_kwargs(bundle: pc.CurveBundle, font_defaults: PlotFontDefaults, l
     time_unit = "min"
     use_density = _pc_bundle_use_density(bundle)
     limits = pc.compute_default_series_by_time_limits(bundle, time_unit=time_unit, use_current_density=use_density)
+    curve_label = _pc_curve_label(bundle, language)
     return {
         "show_asc": True,
         "show_dsc": True,
@@ -985,7 +1006,7 @@ def _pc_series_kwargs(bundle: pc.CurveBundle, font_defaults: PlotFontDefaults, l
         "i_max": _optional_float(limits.get("i_max")),
         "temp_min": _optional_float(limits.get("temp_min")),
         "temp_max": _optional_float(limits.get("temp_max")),
-        "plot_title": "",
+        "plot_title": f"{translate('series_by_time', language)} - {curve_label}",
         "show_title": True,
         "title_fontsize": font_defaults.title,
         "tick_fontsize": font_defaults.tick,
@@ -1001,6 +1022,7 @@ def _pc_series_kwargs(bundle: pc.CurveBundle, font_defaults: PlotFontDefaults, l
 def _pc_dvdi_kwargs(bundle: pc.CurveBundle, font_defaults: PlotFontDefaults, language: str) -> dict[str, object]:
     use_density = _pc_bundle_use_density(bundle)
     limits = pc.compute_default_dv_di_limits(bundle, use_current_density=use_density)
+    curve_label = _pc_curve_label(bundle, language)
     return {
         "show_asc": True,
         "show_dsc": True,
@@ -1018,7 +1040,7 @@ def _pc_dvdi_kwargs(bundle: pc.CurveBundle, font_defaults: PlotFontDefaults, lan
         "x_max": _optional_float(limits.get("x_max")),
         "dvdi_min": _optional_float(limits.get("dvdi_min")),
         "dvdi_max": _optional_float(limits.get("dvdi_max")),
-        "plot_title": "",
+        "plot_title": f"{translate('dv_di', language)} - {curve_label}",
         "show_title": True,
         "title_fontsize": font_defaults.title,
         "tick_fontsize": font_defaults.tick,
@@ -1076,7 +1098,7 @@ def _append_pc_individual_pages(
     total: int,
 ) -> None:
     for bundle in bundles:
-        curve_label = f"{bundle.description} #{bundle.curve_id}"
+        curve_label = _pc_curve_label(bundle, language)
         use_density = _pc_bundle_use_density(bundle)
         _emit(progress_callback, f"PC: {curve_label}", step[0], total)
 
@@ -1195,7 +1217,7 @@ def _append_pc_individual_pages(
                 {
                     "show_voltage_delta": True,
                     "show_temperature_delta": False,
-                    "plot_title": translate("voltage_step_range", language),
+                    "plot_title": f"{curve_label} - {translate('voltage_step_range', language)}",
                 }
             )
             step_fig = _new_plot_figure()
@@ -1208,7 +1230,7 @@ def _append_pc_individual_pages(
                 {
                     "show_voltage_delta": False,
                     "show_temperature_delta": True,
-                    "plot_title": translate("temperature_step_range", language),
+                    "plot_title": f"{curve_label} - {translate('temperature_step_range', language)}",
                     "dv_min": None,
                     "dv_max": None,
                 }
@@ -1254,6 +1276,13 @@ def _pre_stab_metadata_rows(parsed: eis.ParsedDTA, language: str) -> list[tuple[
     return rows
 
 
+def _eis_measurement_key(entry: eis.EISPlotEntry) -> tuple[int | str, float | str] | None:
+    if entry.current_value is None:
+        return None
+    stage_key: int | str = entry.stage_number if entry.stage_number is not None else entry.display_name
+    return stage_key, round(entry.current_value, 12)
+
+
 def _append_eis_individual_pages(
     pdf: PdfPages,
     entries: list[eis.EISPlotEntry],
@@ -1265,7 +1294,46 @@ def _append_eis_individual_pages(
     step: list[int],
     total: int,
 ) -> None:
-    for entry in entries:
+    pre_by_key: dict[tuple[int | str, float | str], list[eis.EISPlotEntry]] = defaultdict(list)
+    for pre_entry in pre_entries:
+        key = _eis_measurement_key(pre_entry)
+        if key is not None:
+            pre_by_key[key].append(pre_entry)
+    emitted_pre_ids: set[int] = set()
+
+    def _append_pre_entry(entry: eis.EISPlotEntry) -> None:
+        emitted_pre_ids.add(id(entry))
+        _emit(progress_callback, f"EIS Pre: {entry.display_name}", step[0], total)
+        try:
+            pre_fig = eis.fig_pre_stabilization(entry, font_defaults=font_defaults)
+            if pre_fig is not None:
+                eis._update_right_axis_spacing(pre_fig, FigureCanvasAgg(pre_fig), getattr(pre_fig, "_pre_stab_axes", {}))
+                _save_figure(pdf, pre_fig)
+                step[0] += 1
+
+            table_fig = _table_page(
+                translate("eis_pre_stabilization_report_title", language, curve=entry.display_name),
+                "",
+                [
+                    (
+                        translate("metadata", language),
+                        _pre_stab_metadata_rows(entry.parsed, language),
+                        [0.05, 0.58, 0.90, 0.29],
+                    ),
+                    (
+                        translate("pre_stabilization_indicators", language),
+                        eis.build_pre_stabilization_indicator_rows(entry.parsed),
+                        [0.05, 0.06, 0.90, 0.43],
+                    ),
+                ],
+                language,
+            )
+            _save_figure(pdf, table_fig)
+            step[0] += 1
+        except Exception as exc:
+            warnings.append(f"EIS Pre {entry.display_name}: {type(exc).__name__}: {exc}")
+
+    def _append_eis_entry(entry: eis.EISPlotEntry) -> None:
         _emit(progress_callback, f"EIS: {entry.display_name}", step[0], total)
         try:
             nyquist_fig = eis.fig_nyquist(
@@ -1328,39 +1396,42 @@ def _append_eis_individual_pages(
             )
             _save_figure(pdf, table_fig)
             step[0] += 1
+
+            series_indicator_rows = eis.build_series_pt_indicator_rows(entry.parsed)
+            if series_indicator_rows:
+                series_table_fig = _table_page(
+                    translate("eis_series_pt_report_title", language, curve=entry.display_name),
+                    "",
+                    [
+                        (
+                            translate("metadata", language),
+                            eis._build_eis_report_metadata_rows(entry.parsed, language),
+                            [0.05, 0.53, 0.90, 0.34],
+                        ),
+                        (
+                            translate("series_pt_indicators", language),
+                            series_indicator_rows,
+                            [0.05, 0.08, 0.90, 0.36],
+                        ),
+                    ],
+                    language,
+                )
+                _save_figure(pdf, series_table_fig)
+                step[0] += 1
         except Exception as exc:
             warnings.append(f"EIS {entry.display_name}: {type(exc).__name__}: {exc}")
 
-    for entry in pre_entries:
-        _emit(progress_callback, f"EIS Pre: {entry.display_name}", step[0], total)
-        try:
-            pre_fig = eis.fig_pre_stabilization(entry, font_defaults=font_defaults)
-            if pre_fig is not None:
-                eis._update_right_axis_spacing(pre_fig, FigureCanvasAgg(pre_fig), getattr(pre_fig, "_pre_stab_axes", {}))
-                _save_figure(pdf, pre_fig)
-                step[0] += 1
+    for entry in entries:
+        key = _eis_measurement_key(entry)
+        if key is not None:
+            for pre_entry in pre_by_key.get(key, []):
+                if id(pre_entry) not in emitted_pre_ids:
+                    _append_pre_entry(pre_entry)
+        _append_eis_entry(entry)
 
-            table_fig = _table_page(
-                translate("eis_pre_stabilization_report_title", language, curve=entry.display_name),
-                "",
-                [
-                    (
-                        translate("metadata", language),
-                        _pre_stab_metadata_rows(entry.parsed, language),
-                        [0.05, 0.58, 0.90, 0.29],
-                    ),
-                    (
-                        translate("pre_stabilization_indicators", language),
-                        eis.build_pre_stabilization_indicator_rows(entry.parsed),
-                        [0.05, 0.06, 0.90, 0.43],
-                    ),
-                ],
-                language,
-            )
-            _save_figure(pdf, table_fig)
-            step[0] += 1
-        except Exception as exc:
-            warnings.append(f"EIS Pre {entry.display_name}: {type(exc).__name__}: {exc}")
+    for pre_entry in pre_entries:
+        if id(pre_entry) not in emitted_pre_ids:
+            _append_pre_entry(pre_entry)
 
 
 def _append_cv_individual_pages(
@@ -1523,6 +1594,7 @@ def _append_activation_individual_pages(
 def _append_deg_individual_pages(
     pdf: PdfPages,
     parsed_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
+    ocp_items: list[tuple[deg.DegFile, ocp.ParsedDTA]],
     font_defaults: PlotFontDefaults,
     language: str,
     warnings: list[str],
@@ -1531,46 +1603,84 @@ def _append_deg_individual_pages(
     total: int,
 ) -> None:
     parsed_items = _sorted_deg_items(parsed_items)
-    if not parsed_items:
-        return
+    ocp_items = _sorted_deg_ocp_items(ocp_items)
 
-    _emit(progress_callback, translate("deg_report_title", language), step[0], total)
-    try:
-        plot_fig = _new_plot_figure(figsize=(10.0, 6.4), dpi=150)
-        if deg.draw_v_vs_t_on_figure(
-            fig=plot_fig,
-            parsed_items=parsed_items,
-            **_deg_v_vs_t_kwargs(
-                parsed_items,
-                font_defaults,
+    if parsed_items:
+        _emit(progress_callback, translate("deg_report_title", language), step[0], total)
+        try:
+            plot_fig = _new_plot_figure(figsize=(10.0, 6.4), dpi=150)
+            if deg.draw_v_vs_t_on_figure(
+                fig=plot_fig,
+                parsed_items=parsed_items,
+                **_deg_v_vs_t_kwargs(
+                    parsed_items,
+                    font_defaults,
+                    language,
+                    title_key="deg_report_plot_title",
+                    title_detail=_deg_stage_range_label(parsed_items, language),
+                ),
+            ):
+                _save_figure(pdf, plot_fig)
+                step[0] += 1
+
+            table_fig = _table_page(
+                f"{translate('deg_report_title', language)} - {_deg_stage_range_label(parsed_items, language)}",
+                translate("deg_report_subtitle", language),
+                [
+                    (
+                        translate("metadata", language),
+                        deg.build_deg_report_metadata(parsed_items, language=language),
+                        [0.05, 0.53, 0.90, 0.34],
+                    ),
+                    (
+                        translate("indicators", language),
+                        deg.build_deg_report_indicators(parsed_items, language=language),
+                        [0.05, 0.23, 0.90, 0.20],
+                    ),
+                ],
                 language,
-                title_key="deg_report_plot_title",
-            ),
-        ):
-            _save_figure(pdf, plot_fig)
+            )
+            _save_figure(pdf, table_fig)
             step[0] += 1
+        except Exception as exc:
+            warnings.append(f"Deg galvanostatic: {type(exc).__name__}: {exc}")
 
-        table_fig = _table_page(
-            translate("deg_report_title", language),
-            translate("deg_report_subtitle", language),
-            [
-                (
-                    translate("metadata", language),
-                    deg.build_deg_report_metadata(parsed_items, language=language),
-                    [0.05, 0.53, 0.90, 0.34],
-                ),
-                (
-                    translate("indicators", language),
-                    deg.build_deg_report_indicators(parsed_items, language=language),
-                    [0.05, 0.23, 0.90, 0.20],
-                ),
-            ],
-            language,
-        )
-        _save_figure(pdf, table_fig)
-        step[0] += 1
-    except Exception as exc:
-        warnings.append(f"Deg: {type(exc).__name__}: {exc}")
+    for deg_file, parsed in ocp_items:
+        stage_label = _stage_label(deg_file.stage, deg_file.path.stem, language)
+        source_label = f"Deg OCP - {stage_label}"
+        _emit(progress_callback, source_label, step[0], total)
+        try:
+            plot_fig = _new_plot_figure(figsize=(10.0, 6.4), dpi=150)
+            if ocp.draw_v_vs_t_on_figure(
+                plot_fig,
+                parsed=parsed,
+                source_name=source_label,
+                **_deg_ocp_plot_kwargs(deg_file, parsed, font_defaults, language),
+            ):
+                _save_figure(pdf, plot_fig)
+                step[0] += 1
+
+            table_fig = _table_page(
+                translate("ocp_v_vs_t_report_title", language, file=source_label),
+                translate("ocp_v_vs_t_report_subtitle", language),
+                [
+                    (
+                        translate("metadata", language),
+                        ocp.build_ocp_report_metadata(parsed, source_label, language=language),
+                        [0.05, 0.53, 0.90, 0.34],
+                    ),
+                    (
+                        translate("indicators", language),
+                        ocp.build_ocp_v_vs_t_report_indicators(parsed, language=language),
+                        [0.05, 0.08, 0.90, 0.36],
+                    ),
+                ],
+                language,
+            )
+            _save_figure(pdf, table_fig)
+            step[0] += 1
+        except Exception as exc:
+            warnings.append(f"{source_label}: {type(exc).__name__}: {exc}")
 
 
 def _append_warnings_page(pdf: PdfPages, warnings: list[str], language: str) -> None:
@@ -1596,37 +1706,37 @@ def _estimate_total_pages(
     pre_entries: list[eis.EISPlotEntry],
     cv_datasets: list[cv.CVDataset],
     current_groups: list[tuple[str, list[eis.EISPlotEntry]]],
+    resistance_groups: list[tuple[str, list[eis.EISPlotEntry]]],
     deg_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
+    deg_ocp_items: list[tuple[deg.DegFile, ocp.ParsedDTA]],
+    relevant_indicator_rows: list[tuple[object, object, object]],
 ) -> int:
     total = 2
-    if activation_bundles or pc_bundles or current_groups or pre_entries or cv_datasets or deg_items:
+    if activation_bundles or pc_bundles or resistance_groups or pre_entries or cv_datasets or deg_items or deg_ocp_items:
         total += 1
-    try:
-        summary_indicator_count = len(
-            _summary_indicator_rows(activation_bundles, pc_bundles, eis_entries, pre_entries, cv_datasets, deg_items, "es")
-        )
-    except Exception:
-        summary_indicator_count = 1
-    if summary_indicator_count:
-        total += max(1, math.ceil(summary_indicator_count / 30))
     total += len(activation_bundles)
     if pc_bundles:
         total += 1
     total += len(current_groups)
-    if current_groups:
+    if resistance_groups or pc_bundles:
         total += 1
     if deg_items:
         total += 1
+    total += _relevant_summary_indicator_page_count(relevant_indicator_rows)
     if activation_bundles:
         total += 1 + (3 * len(activation_bundles))
     if pc_bundles:
         total += 1 + (10 * len(pc_bundles))
     if eis_entries or pre_entries:
-        total += 1 + (4 * len(eis_entries)) + (2 * len(pre_entries))
+        total += 1 + (5 * len(eis_entries)) + (2 * len(pre_entries))
     if cv_datasets:
         total += 1 + (2 * len(cv_datasets))
+    if deg_items or deg_ocp_items:
+        total += 1
     if deg_items:
-        total += 3
+        total += 2
+    if deg_ocp_items:
+        total += 2 * len(deg_ocp_items)
     return max(total, 1)
 
 
@@ -1658,9 +1768,15 @@ def generate_full_report(
     cv_datasets = cv.discover_cv_datasets(input_dir)
     deg_files = deg.find_deg_files(input_dir)
     deg_items = _sorted_deg_items([(deg_file, deg.parse_gamry_dta(deg_file.path)) for deg_file in deg_files])
+    deg_ocp_files = deg.find_deg_ocp_files(input_dir)
+    deg_ocp_items = _sorted_deg_ocp_items(
+        [(deg_file, ocp.parse_gamry_dta(deg_file.path)) for deg_file in deg_ocp_files]
+    )
     current_groups = _eis_current_groups(eis_entries)
+    resistance_groups = _eis_resistance_summary_groups(eis_entries, language)
+    relevant_indicator_rows = _relevant_summary_indicator_rows(activation_bundles, deg_items, language)
 
-    if not (activation_bundles or pc_bundles or eis_entries or pre_entries or cv_datasets or deg_items):
+    if not (activation_bundles or pc_bundles or eis_entries or pre_entries or cv_datasets or deg_items or deg_ocp_items):
         raise ValueError(translate("full_report_no_data", language))
 
     counts = {
@@ -1670,6 +1786,7 @@ def generate_full_report(
         "pre_stab": len(pre_entries),
         "cv": len(cv_datasets),
         "deg": len(deg_items),
+        "deg_ocp": len(deg_ocp_items),
     }
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_path = output_dir / f"Full_Report_{_safe_filename_part(input_dir.name)}_{timestamp}.pdf"
@@ -1680,12 +1797,15 @@ def generate_full_report(
         pre_entries,
         cv_datasets,
         current_groups,
+        resistance_groups,
         deg_items,
+        deg_ocp_items,
+        relevant_indicator_rows,
     )
     step = [0]
     warnings: list[str] = []
     section_titles: list[str] = []
-    if activation_bundles or pc_bundles or current_groups or pre_entries or cv_datasets or deg_items:
+    if activation_bundles or pc_bundles or resistance_groups or pre_entries or cv_datasets or deg_items or deg_ocp_items:
         section_titles.append(translate("full_report_summary", language))
     if activation_bundles:
         section_titles.append("Activacion")
@@ -1695,7 +1815,7 @@ def generate_full_report(
         section_titles.append("EIS")
     if cv_datasets:
         section_titles.append("CV")
-    if deg_items:
+    if deg_items or deg_ocp_items:
         section_titles.append("Deg")
     section_entries: list[tuple[str, int]] = []
 
@@ -1708,7 +1828,7 @@ def generate_full_report(
         _bookmark(section_entries, translate("full_report_index", language), step[0])
         step[0] += 1
 
-        if activation_bundles or pc_bundles or current_groups or pre_entries or cv_datasets or deg_items:
+        if activation_bundles or pc_bundles or resistance_groups or pre_entries or cv_datasets or deg_items or deg_ocp_items:
             _bookmark(section_entries, translate("full_report_summary", language), step[0])
             _save_figure(
                 pdf,
@@ -1719,24 +1839,6 @@ def generate_full_report(
                 ),
             )
             step[0] += 1
-
-        summary_indicator_figs = _draw_summary_indicators_pages(
-            activation_bundles,
-            pc_bundles,
-            eis_entries,
-            pre_entries,
-            cv_datasets,
-            deg_items,
-            language,
-        )
-        if summary_indicator_figs:
-            title = translate("full_report_summary_indicators_title", language)
-            for page_index, summary_indicator_fig in enumerate(summary_indicator_figs):
-                _emit(progress_callback, title, step[0], total)
-                if page_index == 0:
-                    _bookmark(section_entries, title, step[0])
-                _save_figure(pdf, summary_indicator_fig)
-                step[0] += 1
 
         for bundle in activation_bundles:
             title = translate("full_report_activation_summary_title", language, curve=bundle.label)
@@ -1775,10 +1877,10 @@ def generate_full_report(
                 _save_figure(pdf, summary_fig)
                 step[0] += 1
 
-        if current_groups:
+        if resistance_groups or pc_bundles:
             title = translate("full_report_eis_y0_summary_title", language)
             _emit(progress_callback, title, step[0], total)
-            y0_summary_fig = _draw_eis_y0_bar_summary(current_groups, font_defaults, language)
+            y0_summary_fig = _draw_eis_y0_bar_summary(resistance_groups, pc_bundles, font_defaults, language)
             if y0_summary_fig is not None:
                 _bookmark(section_entries, title, step[0])
                 _save_figure(pdf, y0_summary_fig)
@@ -1791,6 +1893,15 @@ def generate_full_report(
             if deg_summary_fig is not None:
                 _bookmark(section_entries, title, step[0])
                 _save_figure(pdf, deg_summary_fig)
+                step[0] += 1
+
+        if relevant_indicator_rows:
+            title = translate("full_report_relevant_indicators_title", language)
+            for page_index, indicator_fig in enumerate(_relevant_summary_indicator_pages(relevant_indicator_rows, language)):
+                _emit(progress_callback, title, step[0], total)
+                if page_index == 0:
+                    _bookmark(section_entries, title, step[0])
+                _save_figure(pdf, indicator_fig)
                 step[0] += 1
 
         if activation_bundles:
@@ -1854,7 +1965,7 @@ def generate_full_report(
             step[0] += 1
             _append_cv_individual_pages(pdf, cv_datasets, font_defaults, language, warnings, progress_callback, step, total)
 
-        if deg_items:
+        if deg_items or deg_ocp_items:
             _bookmark(section_entries, "Deg", step[0])
             _save_figure(
                 pdf,
@@ -1865,7 +1976,17 @@ def generate_full_report(
                 ),
             )
             step[0] += 1
-            _append_deg_individual_pages(pdf, deg_items, font_defaults, language, warnings, progress_callback, step, total)
+            _append_deg_individual_pages(
+                pdf,
+                deg_items,
+                deg_ocp_items,
+                font_defaults,
+                language,
+                warnings,
+                progress_callback,
+                step,
+                total,
+            )
 
         _append_warnings_page(pdf, warnings, language)
 

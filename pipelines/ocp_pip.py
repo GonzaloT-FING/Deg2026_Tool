@@ -8,8 +8,10 @@ import re
 from math import floor, log10
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.ticker import MaxNLocator
 
@@ -17,6 +19,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
+from i18n import normalize_language, translate
 from plot_defaults import PlotFontDefaults, apply_x_tick_label_padding, make_legend_draggable, resolve_plot_font_defaults
 from ui_layout import create_resizable_plot_layout, create_scrollable_controls
 
@@ -466,6 +469,23 @@ def _build_scrollable_controls(parent) -> ttk.Frame:
     return controls_frame
 
 
+def _ocp_language(language: str | None = None) -> str:
+    return normalize_language(language)
+
+
+def _safe_filename_part(text: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", text.strip())
+    return cleaned.strip("._") or "OCP"
+
+
+def _format_report_value(value: object, digits: int = 6) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return f"{value:.{digits}g}"
+    return str(value)
+
+
 def compute_default_v_vs_t_limits(parsed: ParsedDTA, decimals: int = 1) -> dict[str, str]:
     time_values, voltage_values = _required_numeric_series(parsed, "T", "Vf")
     _temp_time_values, temp_values = _required_numeric_series(parsed, "T", "Temp")
@@ -492,6 +512,183 @@ def compute_autofit_v_vs_t_limits(parsed: ParsedDTA, show_temperature: bool, dec
         limits["temp_min"] = ""
         limits["temp_max"] = ""
     return limits
+
+
+def build_ocp_report_metadata(
+    parsed: ParsedDTA,
+    source_name: str,
+    language: str | None = None,
+) -> list[tuple[str, object, str]]:
+    language = _ocp_language(language)
+    label_keys = {
+        "TITLE": "technique",
+        "DATE": "date",
+        "TIME": "start_time",
+        "TIMEOUT": "duration",
+        "SAMPLETIME": "sampling_time",
+        "STABILITY": "stabilization",
+        "AREA": "area",
+    }
+    numeric_meta_keys = {"TIMEOUT", "SAMPLETIME", "STABILITY", "AREA"}
+    rows: list[tuple[str, object, str]] = [(translate("source_file", language), source_name, "")]
+    for key, fallback_label in META_FIELDS:
+        raw_value = parsed.meta_values.get(key, "")
+        value = to_float(raw_value) if key in numeric_meta_keys else None
+        rows.append(
+            (
+                translate(label_keys.get(key, fallback_label), language),
+                _format_report_value(value if value is not None else raw_value),
+                parsed.meta_units.get(key, ""),
+            )
+        )
+    return rows
+
+
+def build_ocp_v_vs_t_report_indicators(
+    parsed: ParsedDTA,
+    language: str | None = None,
+) -> list[tuple[str, object, str]]:
+    language = _ocp_language(language)
+    time_values, voltage_values = _required_numeric_series(parsed, "T", "Vf")
+    rows: list[tuple[str, object, str]] = []
+    if time_values:
+        rows.append((translate("total_time", language), _format_report_value(max(time_values) - min(time_values)), "s"))
+    if voltage_values:
+        rows.extend(
+            [
+                (translate("initial_voltage", language), _format_report_value(voltage_values[0]), "V"),
+                (translate("final_voltage", language), _format_report_value(voltage_values[-1]), "V"),
+                (translate("delta_voltage", language), _format_report_value(voltage_values[-1] - voltage_values[0]), "V"),
+                (translate("minimum_voltage", language), _format_report_value(min(voltage_values)), "V"),
+                (translate("maximum_voltage", language), _format_report_value(max(voltage_values)), "V"),
+            ]
+        )
+
+    try:
+        _temp_time_values, temp_values = _required_numeric_series(parsed, "T", "Temp")
+    except ValueError:
+        temp_values = []
+    if temp_values:
+        rows.extend(
+            [
+                (translate("average_temperature", language), _format_report_value(sum(temp_values) / len(temp_values), digits=3), "C"),
+                (translate("minimum_temperature", language), _format_report_value(min(temp_values), digits=3), "C"),
+                (translate("maximum_temperature", language), _format_report_value(max(temp_values), digits=3), "C"),
+            ]
+        )
+    return rows
+
+
+def _add_report_table(
+    ax,
+    title: str,
+    rows: list[tuple[str, object, str]],
+    bbox: list[float],
+    language: str = "es",
+) -> None:
+    ax.text(
+        bbox[0],
+        bbox[1] + bbox[3] + 0.025,
+        title,
+        fontsize=13,
+        fontweight="bold",
+        ha="left",
+        va="bottom",
+        transform=ax.transAxes,
+    )
+    table = ax.table(
+        cellText=[[_format_report_value(name), _format_report_value(value), _format_report_value(unit)] for name, value, unit in rows],
+        colLabels=[translate("name", language), translate("value", language), translate("unit", language)],
+        cellLoc="left",
+        colLoc="left",
+        colWidths=[bbox[2] * 0.58, bbox[2] * 0.27, bbox[2] * 0.15],
+        bbox=bbox,
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8.0)
+    for (row_idx, _col_idx), cell in table.get_celld().items():
+        cell.set_edgecolor("#b8c0c8")
+        cell.set_linewidth(0.5)
+        if row_idx == 0:
+            cell.set_facecolor("#edf2f7")
+            cell.set_text_props(weight="bold")
+        else:
+            cell.set_facecolor("white")
+
+
+def export_ocp_v_vs_t_report_pdf(
+    parsed: ParsedDTA,
+    output_path: Path,
+    *,
+    source_name: str,
+    language: str = "es",
+    font_defaults: PlotFontDefaults | None = None,
+) -> Path:
+    language = _ocp_language(language)
+    font_defaults = resolve_plot_font_defaults(font_defaults)
+    font_values = font_defaults.as_strings()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    limits = compute_autofit_v_vs_t_limits(parsed, show_temperature=True)
+    plot_kwargs = {
+        "show_temperature": True,
+        "voltage_linestyle": "-",
+        "temperature_linestyle": "--",
+        "tick_count": 6,
+        "plot_title": translate("ocp_v_vs_t_report_plot_title", language, file=source_name),
+        "show_title": True,
+        "title_fontsize": float(font_values["title"]),
+        "tick_fontsize": float(font_values["tick"]),
+        "label_fontsize": float(font_values["label"]),
+        "legend_fontsize": float(font_values["legend"]),
+        "line_width": 1.5,
+        "t_min": _optional_float(limits["t_min"]),
+        "t_max": _optional_float(limits["t_max"]),
+        "v_min": _optional_float(limits["v_min"]),
+        "v_max": _optional_float(limits["v_max"]),
+        "temp_min": _optional_float(limits["temp_min"]),
+        "temp_max": _optional_float(limits["temp_max"]),
+        "language": language,
+    }
+
+    metadata_rows = build_ocp_report_metadata(parsed, source_name, language=language)
+    indicator_rows = build_ocp_v_vs_t_report_indicators(parsed, language=language)
+
+    with PdfPages(output_path) as pdf:
+        plot_fig = Figure(figsize=(9.5, 6.2), dpi=150)
+        FigureCanvasAgg(plot_fig)
+        has_plot = draw_v_vs_t_on_figure(plot_fig, parsed=parsed, source_name=source_name, **plot_kwargs)
+        if not has_plot:
+            raise ValueError("No hay datos suficientes para generar el grafico del reporte.")
+        pdf.savefig(plot_fig, bbox_inches="tight")
+
+        table_fig = Figure(figsize=(8.5, 11.0), dpi=150)
+        ax = table_fig.add_subplot(111)
+        ax.axis("off")
+        table_fig.text(
+            0.05,
+            0.965,
+            translate("ocp_v_vs_t_report_title", language, file=source_name),
+            fontsize=18,
+            fontweight="bold",
+            ha="left",
+            va="top",
+        )
+        table_fig.text(
+            0.05,
+            0.935,
+            translate("ocp_v_vs_t_report_subtitle", language),
+            fontsize=10,
+            ha="left",
+            va="top",
+            color="#4a5568",
+        )
+        _add_report_table(ax, translate("metadata", language), metadata_rows, [0.05, 0.53, 0.90, 0.34], language=language)
+        _add_report_table(ax, translate("indicators", language), indicator_rows, [0.05, 0.08, 0.90, 0.36], language=language)
+        pdf.savefig(table_fig, bbox_inches="tight")
+
+    return output_path
 
 
 def build_delta_v_data(parsed: ParsedDTA) -> dict[str, list[float]]:
@@ -654,8 +851,10 @@ def draw_v_vs_t_on_figure(
     v_max: float | None = None,
     temp_min: float | None = None,
     temp_max: float | None = None,
+    language: str = "es",
 ) -> bool:
     fig.clear()
+    language = _ocp_language(language)
 
     time_values, voltage_values = _required_numeric_series(parsed, "T", "Vf")
     if not _mpl_linestyle(voltage_linestyle) == "None":
@@ -676,11 +875,11 @@ def draw_v_vs_t_on_figure(
             color=OCP_PLOT_COLORS["voltage"],
             linewidth=line_width,
             linestyle=_mpl_linestyle(voltage_linestyle),
-            label="Voltaje",
+            label=translate("voltage", language),
         )
 
-    ax_main.set_xlabel("Tiempo [s]", fontsize=label_fontsize)
-    ax_main.set_ylabel("Voltaje [V]", color=OCP_PLOT_COLORS["voltage"], fontsize=label_fontsize)
+    ax_main.set_xlabel(translate("time_seconds", language), fontsize=label_fontsize)
+    ax_main.set_ylabel(translate("voltage_v", language), color=OCP_PLOT_COLORS["voltage"], fontsize=label_fontsize)
     ax_main.tick_params(axis="x", labelsize=tick_fontsize)
     apply_x_tick_label_padding(ax_main, tick_fontsize)
     ax_main.tick_params(axis="y", labelcolor=OCP_PLOT_COLORS["voltage"], labelsize=tick_fontsize)
@@ -705,9 +904,9 @@ def draw_v_vs_t_on_figure(
             color=OCP_PLOT_COLORS["temperature"],
             linewidth=line_width,
             linestyle=_mpl_linestyle(temperature_linestyle),
-            label="Temperatura",
+            label=translate("temperature", language),
         )
-        ax_temp.set_ylabel("Temperatura [°C]", color=OCP_PLOT_COLORS["temperature"], fontsize=label_fontsize)
+        ax_temp.set_ylabel(translate("temperature_c", language), color=OCP_PLOT_COLORS["temperature"], fontsize=label_fontsize)
         ax_temp.tick_params(axis="y", labelcolor=OCP_PLOT_COLORS["temperature"], labelsize=tick_fontsize)
         ax_temp.yaxis.set_major_locator(MaxNLocator(nbins=max(2, int(tick_count))))
         if temp_min is not None or temp_max is not None:
@@ -751,7 +950,9 @@ def _build_v_vs_t_tab(
     parent: tk.Widget,
     source_path: Path,
     font_defaults: PlotFontDefaults | None = None,
+    language: str = "es",
 ) -> None:
+    language = _ocp_language(language)
     root = parent.winfo_toplevel()
     parsed = parse_gamry_dta(source_path)
     default_limits = compute_default_v_vs_t_limits(parsed)
@@ -778,7 +979,7 @@ def _build_v_vs_t_tab(
     toolbar.update()
     toolbar.pack(side="left", fill="x")
 
-    status_var = tk.StringVar(value="Listo.")
+    status_var = tk.StringVar(value=translate("ready", language))
     temperature_var = tk.BooleanVar(value=False)
     voltage_line_var = tk.StringVar(value="-")
     temperature_line_var = tk.StringVar(value="--")
@@ -842,11 +1043,12 @@ def _build_v_vs_t_tab(
                 tick_count=tick_count_var.get(),
                 plot_title=plot_title_var.get(),
                 show_title=show_title_var.get(),
-                title_fontsize=_positive_float(title_fontsize_var.get(), "Tamaño del título"),
-                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
-                label_fontsize=_positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
-                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
-                line_width=_positive_float(line_width_var.get(), "Grosor de línea"),
+                title_fontsize=_positive_float(title_fontsize_var.get(), translate("title_font_size", language)),
+                tick_fontsize=_positive_float(tick_fontsize_var.get(), translate("tick_font_size", language)),
+                label_fontsize=_positive_float(label_fontsize_var.get(), translate("label_font_size", language)),
+                legend_fontsize=_positive_float(legend_fontsize_var.get(), translate("legend_font_size", language)),
+                line_width=_positive_float(line_width_var.get(), translate("line_width", language)),
+                language=language,
                 **_collect_limits(),
             )
         except ValueError as exc:
@@ -858,11 +1060,11 @@ def _build_v_vs_t_tab(
         if not has_plot:
             fig.clear()
             canvas.draw_idle()
-            status_var.set("No se muestra gráfico: active al menos una serie.")
+            status_var.set(translate("graph_no_visible_series", language))
             return
 
         canvas.draw_idle()
-        status_var.set("Gráfico actualizado.")
+        status_var.set(translate("graph_updated", language))
 
     def _schedule_plot(*_args):
         if suspend_events["value"]:
@@ -890,7 +1092,7 @@ def _build_v_vs_t_tab(
             suspend_events["value"] = False
 
         _plot()
-        status_var.set("Autoescala aplicada.")
+        status_var.set(translate("autofit_applied", language))
 
     def _reset():
         suspend_events["value"] = True
@@ -916,34 +1118,68 @@ def _build_v_vs_t_tab(
             suspend_events["value"] = False
 
         _plot()
-        status_var.set("Valores restaurados.")
+        status_var.set(translate("values_reset", language))
+
+    def _current_font_defaults() -> PlotFontDefaults:
+        return PlotFontDefaults(
+            title=_positive_float(title_fontsize_var.get(), translate("title_font_size", language)),
+            tick=_positive_float(tick_fontsize_var.get(), translate("tick_font_size", language)),
+            label=_positive_float(label_fontsize_var.get(), translate("label_font_size", language)),
+            legend=_positive_float(legend_fontsize_var.get(), translate("legend_font_size", language)),
+        )
+
+    def _export_report() -> None:
+        default_name = f"OCP_V_vs_t_Report_{_safe_filename_part(source_path.stem)}.pdf"
+        path_text = filedialog.asksaveasfilename(
+            parent=root,
+            title=translate("save_ocp_v_vs_t_report", language),
+            initialfile=default_name,
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+        )
+        if not path_text:
+            status_var.set(translate("export_cancelled", language))
+            return
+        try:
+            exported_path = export_ocp_v_vs_t_report_pdf(
+                parsed,
+                Path(path_text),
+                source_name=source_path.stem,
+                language=language,
+                font_defaults=_current_font_defaults(),
+            )
+        except Exception as exc:
+            status_var.set(f"{translate('report_export_failed', language)}: {type(exc).__name__}: {exc}")
+            return
+
+        status_var.set(f"{translate('report_exported', language)}: {exported_path}")
 
     ttk.Label(
         controls_frame,
-        text=f"Archivo detectado:\n{source_path.name}",
+        text=f"{translate('detected_file', language)}:\n{source_path.name}",
         justify="left",
     ).pack(anchor="w", pady=(0, 10))
 
-    series_box = ttk.LabelFrame(controls_frame, text="Series")
+    series_box = ttk.LabelFrame(controls_frame, text=translate("series", language))
     series_box.pack(fill="x", pady=5)
 
-    style_box = ttk.LabelFrame(controls_frame, text="Estilo")
+    style_box = ttk.LabelFrame(controls_frame, text=translate("style", language))
     style_box.pack(fill="x", pady=5)
 
-    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamaños")
+    text_box = ttk.LabelFrame(controls_frame, text=translate("text_sizes", language))
     text_box.pack(fill="x", pady=5)
 
-    limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
+    limits_box = ttk.LabelFrame(controls_frame, text=translate("axis_limits", language))
     limits_box.pack(fill="x", pady=5)
 
     ttk.Checkbutton(
         series_box,
-        text="Temperatura",
+        text=translate("temperature", language),
         variable=temperature_var,
         command=_schedule_plot,
     ).pack(anchor="w", padx=8, pady=4)
 
-    ttk.Label(style_box, text="Línea de voltaje").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text=translate("voltage_line", language)).grid(row=0, column=0, sticky="w", padx=8, pady=3)
     voltage_line_combo = ttk.Combobox(
         style_box,
         textvariable=voltage_line_var,
@@ -953,7 +1189,7 @@ def _build_v_vs_t_tab(
     )
     voltage_line_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Línea de temperatura").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text=translate("temperature_line", language)).grid(row=1, column=0, sticky="w", padx=8, pady=3)
     temperature_line_combo = ttk.Combobox(
         style_box,
         textvariable=temperature_line_var,
@@ -963,18 +1199,18 @@ def _build_v_vs_t_tab(
     )
     temperature_line_combo.grid(row=1, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(style_box, text="Ticks").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text=translate("ticks", language)).grid(row=2, column=0, sticky="w", padx=8, pady=3)
     tick_spin = tk.Spinbox(style_box, from_=2, to=10, textvariable=tick_count_var, width=8)
     tick_spin.grid(row=2, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Título").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text=translate("title", language)).grid(row=0, column=0, sticky="w", padx=8, pady=3)
     title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
     title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
-    ttk.Checkbutton(text_box, text="Mostrar titulo", variable=show_title_var, command=_schedule_plot).grid(
+    ttk.Checkbutton(text_box, text=translate("show_title", language), variable=show_title_var, command=_schedule_plot).grid(
         row=6, column=0, columnspan=2, sticky="w", padx=8, pady=3
     )
 
-    ttk.Label(text_box, text="Tamaño del título").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text=translate("title_font_size", language)).grid(row=1, column=0, sticky="w", padx=8, pady=3)
     title_size_spin = tk.Spinbox(
         text_box,
         from_=6,
@@ -985,7 +1221,7 @@ def _build_v_vs_t_tab(
     )
     title_size_spin.grid(row=1, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Tamaño de ticks").grid(row=2, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text=translate("tick_font_size", language)).grid(row=2, column=0, sticky="w", padx=8, pady=3)
     tick_size_spin = tk.Spinbox(
         text_box,
         from_=6,
@@ -996,7 +1232,7 @@ def _build_v_vs_t_tab(
     )
     tick_size_spin.grid(row=2, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Tamaño de etiquetas").grid(row=3, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text=translate("label_font_size", language)).grid(row=3, column=0, sticky="w", padx=8, pady=3)
     label_size_spin = tk.Spinbox(
         text_box,
         from_=6,
@@ -1007,7 +1243,7 @@ def _build_v_vs_t_tab(
     )
     label_size_spin.grid(row=3, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Tamaño de leyenda").grid(row=4, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text=translate("legend_font_size", language)).grid(row=4, column=0, sticky="w", padx=8, pady=3)
     legend_size_spin = tk.Spinbox(
         text_box,
         from_=6,
@@ -1018,7 +1254,7 @@ def _build_v_vs_t_tab(
     )
     legend_size_spin.grid(row=4, column=1, sticky="w", padx=8, pady=3)
 
-    ttk.Label(text_box, text="Grosor de línea").grid(row=5, column=0, sticky="w", padx=8, pady=3)
+    ttk.Label(text_box, text=translate("line_width", language)).grid(row=5, column=0, sticky="w", padx=8, pady=3)
     line_width_spin = tk.Spinbox(
         text_box,
         from_=0.5,
@@ -1084,8 +1320,9 @@ def _build_v_vs_t_tab(
     buttons_frame = ttk.Frame(controls_frame)
     buttons_frame.pack(fill="x", pady=(5, 0))
 
-    ttk.Button(buttons_frame, text="Restablecer", command=_reset).pack(side="left", padx=(0, 6))
-    ttk.Button(buttons_frame, text="Autoescala", command=_autofit).pack(side="left")
+    ttk.Button(buttons_frame, text=translate("reset", language), command=_reset).pack(side="left", padx=(0, 6))
+    ttk.Button(buttons_frame, text=translate("autofit", language), command=_autofit).pack(side="left")
+    ttk.Button(buttons_frame, text=translate("pdf_report", language), command=_export_report).pack(side="left", padx=(6, 0))
 
     _plot()
 
@@ -1108,7 +1345,12 @@ def open_delta_v_window(input_dir: Path, font_defaults: PlotFontDefaults | None 
         _build_delta_v_tab(tab_frame, source_path, font_defaults=font_defaults)
 
 
-def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:
+def open_v_vs_t_window(
+    input_dir: Path,
+    font_defaults: PlotFontDefaults | None = None,
+    language: str = "es",
+) -> None:
+    language = _ocp_language(language)
     ocp_files = find_ocp_files(Path(input_dir))
     if not ocp_files:
         raise ValueError("No se encontraron archivos OCP válidos.")
@@ -1124,7 +1366,7 @@ def open_v_vs_t_window(input_dir: Path, font_defaults: PlotFontDefaults | None =
     for source_path in ocp_files:
         tab_frame = ttk.Frame(notebook)
         notebook.add(tab_frame, text=source_path.stem)
-        _build_v_vs_t_tab(tab_frame, source_path, font_defaults=font_defaults)
+        _build_v_vs_t_tab(tab_frame, source_path, font_defaults=font_defaults, language=language)
 
 
 def draw_delta_v_on_figure(
@@ -1792,7 +2034,7 @@ def run_pipeline(
     chosen = set(selected_options or [])
 
     if "V vs t" in chosen:
-        open_v_vs_t_window(input_dir, font_defaults=font_defaults)
+        open_v_vs_t_window(input_dir, font_defaults=font_defaults, language=language)
 
     if "DeltaV" in chosen:
         open_delta_v_window(input_dir, font_defaults=font_defaults)

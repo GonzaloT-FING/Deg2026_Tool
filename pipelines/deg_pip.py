@@ -21,6 +21,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
+from pipelines import ocp_pip as ocp
 from pipelines.activ_pip import ACTIV_CYCLE_GRADIENTS, _build_scrollable_cycle_selector, _cycle_gradient_color
 from plot_defaults import PlotFontDefaults, apply_x_tick_label_padding, make_legend_draggable, resolve_plot_font_defaults
 from i18n import normalize_language, translate
@@ -47,6 +48,10 @@ DATA_EXPORT = [
 
 DEG_FILE_RE = re.compile(
     r"^Degradacion_galvanostatica_19A_60C_#(?P<stage>\d+)\.DTA$",
+    re.IGNORECASE,
+)
+DEG_OCP_FILE_RE = re.compile(
+    r"^Degradacion_OCP_#(?P<stage>\d+)\.DTA$",
     re.IGNORECASE,
 )
 
@@ -222,6 +227,16 @@ def find_deg_files(input_dir: Path) -> list[DegFile]:
     files: list[DegFile] = []
     for path in sorted(Path(input_dir).glob("*.DTA")):
         match = DEG_FILE_RE.match(path.name)
+        if not match:
+            continue
+        files.append(DegFile(path=path, stage=int(match.group("stage"))))
+    return sorted(files, key=lambda item: item.stage)
+
+
+def find_deg_ocp_files(input_dir: Path) -> list[DegFile]:
+    files: list[DegFile] = []
+    for path in sorted(Path(input_dir).glob("*.DTA")):
+        match = DEG_OCP_FILE_RE.match(path.name)
         if not match:
             continue
         files.append(DegFile(path=path, stage=int(match.group("stage"))))
@@ -840,6 +855,36 @@ def _padded_limits(
     return lo, hi
 
 
+def _tight_limits(values: list[float], decimals: int = 1) -> tuple[float | None, float | None]:
+    if not values:
+        return None, None
+    lo = _round_down_dec(min(values), decimals)
+    hi = _round_up_dec(max(values), decimals)
+    if lo == hi:
+        return _padded_limits(values, decimals=decimals)
+    return lo, hi
+
+
+def _auto_decimals(
+    values: list[float],
+    default: int = 1,
+    min_decimals: int = 1,
+    max_decimals: int = 5,
+) -> int:
+    if not values:
+        return max(default, min_decimals)
+    span = max(values) - min(values)
+    if span <= 0:
+        ref = max(abs(value) for value in values)
+        span = ref * 0.02 if ref > 0 else 1.0
+    if span <= 0:
+        return max(default, min_decimals)
+    magnitude = floor(log10(span))
+    decimals = 1 - magnitude
+    decimals = max(min_decimals, min(max_decimals, int(decimals)))
+    return max(default, decimals)
+
+
 def _positive_dv_dt_rows(rows: list[dict[str, float]]) -> list[dict[str, float]]:
     return [row for row in rows if row["dVdt"] > 0]
 
@@ -1002,16 +1047,18 @@ def compute_default_v_vs_t_limits(
         scaled_time_values = [value / time_scale for value in time_values]
         _t_min, t_max = _padded_limits(scaled_time_values, decimals=time_decimals)
         t_min = 0.0
-    v_min, v_max = _padded_limits(voltage_values)
-    temp_min, temp_max = _padded_limits(temperature_values) if temperature_values else (None, None)
+    voltage_decimals = _auto_decimals(voltage_values)
+    temp_decimals = _auto_decimals(temperature_values) if temperature_values else 1
+    v_min, v_max = _tight_limits(voltage_values, decimals=voltage_decimals)
+    temp_min, temp_max = _tight_limits(temperature_values, decimals=temp_decimals) if temperature_values else (None, None)
 
     return {
         "t_min": _format_time_limit(t_min, time_unit),
         "t_max": _format_time_limit(t_max, time_unit),
-        "v_min": _format_limit_value(v_min),
-        "v_max": _format_limit_value(v_max),
-        "temp_min": _format_limit_value(temp_min) if temp_min is not None else "",
-        "temp_max": _format_limit_value(temp_max) if temp_max is not None else "",
+        "v_min": _format_limit_value(v_min, voltage_decimals),
+        "v_max": _format_limit_value(v_max, voltage_decimals),
+        "temp_min": _format_limit_value(temp_min, temp_decimals) if temp_min is not None else "",
+        "temp_max": _format_limit_value(temp_max, temp_decimals) if temp_max is not None else "",
     }
 
 
@@ -1051,20 +1098,22 @@ def compute_autofit_v_vs_t_limits(
         scaled_time_values = [value / time_scale for value in time_values]
         _t_min, t_max = _padded_limits(scaled_time_values, decimals=time_decimals)
         t_min = 0.0
-    v_min, v_max = _padded_limits(voltage_values)
+    voltage_decimals = _auto_decimals(voltage_values)
+    v_min, v_max = _tight_limits(voltage_values, decimals=voltage_decimals)
 
     out = {
         "t_min": _format_time_limit(t_min, time_unit),
         "t_max": _format_time_limit(t_max, time_unit),
-        "v_min": _format_limit_value(v_min),
-        "v_max": _format_limit_value(v_max),
+        "v_min": _format_limit_value(v_min, voltage_decimals),
+        "v_max": _format_limit_value(v_max, voltage_decimals),
         "temp_min": "",
         "temp_max": "",
     }
     if show_temperature and temperature_values:
-        temp_min, temp_max = _padded_limits(temperature_values)
-        out["temp_min"] = _format_limit_value(temp_min)
-        out["temp_max"] = _format_limit_value(temp_max)
+        temp_decimals = _auto_decimals(temperature_values)
+        temp_min, temp_max = _tight_limits(temperature_values, decimals=temp_decimals)
+        out["temp_min"] = _format_limit_value(temp_min, temp_decimals)
+        out["temp_max"] = _format_limit_value(temp_max, temp_decimals)
     return out
 
 
@@ -2665,6 +2714,29 @@ def open_dv_dt_window(input_dir: Path, font_defaults: PlotFontDefaults | None = 
     _plot()
 
 
+def open_ocp_window(
+    input_dir: Path,
+    font_defaults: PlotFontDefaults | None = None,
+    language: str = "es",
+) -> None:
+    language = _deg_language(language)
+    ocp_files = find_deg_ocp_files(Path(input_dir))
+    if not ocp_files:
+        raise ValueError("No se encontraron archivos Degradacion_OCP validos.")
+
+    win = tk.Toplevel()
+    win.title("Deg - OCP")
+    win.geometry("1200x720")
+
+    notebook = ttk.Notebook(win)
+    notebook.pack(fill="both", expand=True)
+
+    for deg_file in ocp_files:
+        tab_frame = ttk.Frame(notebook)
+        notebook.add(tab_frame, text=f"Etapa #{deg_file.stage}")
+        ocp._build_v_vs_t_tab(tab_frame, deg_file.path, font_defaults=font_defaults, language=language)
+
+
 def _write_metadata_sheet(ws, parsed: ParsedDTA) -> None:
     ws["A1"] = "Campo"
     ws["B1"] = "Valor"
@@ -2747,7 +2819,7 @@ def export_file(source_path: Path, output_path: Path) -> None:
 
 def export_folder(input_dir: Path, output_dir: Path) -> list[Path]:
     exported: list[Path] = []
-    for deg_file in find_deg_files(input_dir):
+    for deg_file in [*find_deg_files(input_dir), *find_deg_ocp_files(input_dir)]:
         out_path = output_dir / f"{deg_file.path.stem}.xlsx"
         export_file(deg_file.path, out_path)
         exported.append(out_path)
@@ -2779,5 +2851,8 @@ def run_pipeline(
 
     if "dV/dt" in chosen:
         open_dv_dt_window(input_dir, font_defaults=font_defaults)
+
+    if "OCP" in chosen:
+        open_ocp_window(input_dir, font_defaults=font_defaults, language=language)
 
     return exported_files
