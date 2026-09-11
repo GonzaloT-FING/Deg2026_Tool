@@ -23,7 +23,7 @@ PIPELINE_OPTIONS = {
     "CV": ["I vs V", "Peak current"],
     "EIS": ["Nyquist plot", "Bode plot", "Series by Pt", "Pre-estabilización", "MultiFit"],
     "PC": ["V vs I", "Series by time", "dV/dI", "Step Stability"],
-    "Deg": ["V vs t", "dV/dt"],
+    "Deg": ["V vs t", "dV/dt", "OCP"],
     "Analisis multiple": ["EIS", "CV", "PC", "OCP", "Deg"],
 }
 

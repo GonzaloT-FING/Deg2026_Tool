@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date as date_cls, datetime, time as time_cls, timedelta
 from pathlib import Path
 from math import ceil, floor, log10
+import colorsys
 import re
 
 import tkinter as tk
@@ -503,6 +504,37 @@ def _mpl_linestyle(value: str) -> str:
     return "None" if value == "none" else value
 
 
+def _hls_to_hex(hue: float, lightness: float, saturation: float) -> str:
+    r, g, b = colorsys.hls_to_rgb(
+        hue % 1.0,
+        max(0.0, min(1.0, lightness)),
+        max(0.0, min(1.0, saturation)),
+    )
+    return f"#{int(round(r * 255)):02x}{int(round(g * 255)):02x}{int(round(b * 255)):02x}"
+
+
+def _stage_number_context(
+    parsed_items: list[tuple[DegFile, ParsedDTA]],
+    stage_numbers: list[int] | None = None,
+) -> list[int]:
+    if stage_numbers is not None:
+        return sorted({int(stage) for stage in stage_numbers})
+    return sorted({deg_file.stage for deg_file, _parsed in parsed_items})
+
+
+def _stage_plot_color(
+    deg_file: DegFile,
+    stage_numbers: list[int],
+    fallback_index: int,
+    fallback_total: int,
+) -> str:
+    if deg_file.stage in stage_numbers:
+        stage_index = stage_numbers.index(deg_file.stage)
+        stage_count = max(1, len(stage_numbers))
+        return _hls_to_hex((0.58 + (stage_index / stage_count)) % 1.0, 0.46, 0.80)
+    return _cycle_gradient_color(DEG_STAGE_GRADIENTS["voltage"], fallback_index, fallback_total)
+
+
 def _linear_fit_slope(x_vals: list[float], y_vals: list[float]) -> float | None:
     if len(x_vals) < 2:
         return None
@@ -597,6 +629,17 @@ def compute_degradation_rate(
     return slope, len(filt_t)
 
 
+def compute_degradation_linear_fit(
+    parsed: ParsedDTA,
+) -> tuple[float | None, float | None, int]:
+    time_values, voltage_values = _required_numeric_series(parsed, "T", "Vf")
+    params = _linear_fit_params(list(time_values), list(voltage_values))
+    if params is None:
+        return None, None, len(time_values)
+    slope, intercept = params
+    return slope, intercept, len(time_values)
+
+
 def _deg_language(language: str | None = None) -> str:
     return normalize_language(language)
 
@@ -650,6 +693,7 @@ def build_deg_report_indicators(
 ) -> list[tuple[str, object, str]]:
     language = _deg_language(language)
     slopes_uv_h: list[float] = []
+    linear_fits: list[tuple[float, float]] = []
     voltage_deltas: list[float] = []
     temperature_deltas: list[float] = []
     temperatures: list[float] = []
@@ -662,6 +706,9 @@ def build_deg_report_indicators(
         slope = _edge_slope(t_vals, v_vals)
         if slope is not None:
             slopes_uv_h.append(slope * 1e6 * SECONDS_PER_HOUR)
+        fit_slope, fit_intercept, _fit_count = compute_degradation_linear_fit(parsed)
+        if fit_slope is not None and fit_intercept is not None:
+            linear_fits.append((fit_slope, fit_intercept))
         if v_vals:
             voltage_deltas.append(max(v_vals) - min(v_vals))
 
@@ -676,6 +723,10 @@ def build_deg_report_indicators(
     rows: list[tuple[str, object, str]] = []
     if slopes_uv_h:
         rows.append((translate("deg_average_slope", language), _format_report_value(sum(slopes_uv_h) / len(slopes_uv_h)), "µV/h"))
+    if len(linear_fits) == 1:
+        fit_slope, fit_intercept = linear_fits[0]
+        rows.append((translate("deg_linear_fit_slope", language), _format_report_value(fit_slope * 1e6 * SECONDS_PER_HOUR), "µV/h"))
+        rows.append((translate("deg_linear_fit_intercept", language), _format_report_value(fit_intercept), "V"))
     if voltage_deltas:
         rows.append((translate("deg_max_delta_voltage", language), _format_report_value(max(voltage_deltas)), "V"))
     if temperature_deltas:
@@ -728,6 +779,7 @@ def export_deg_v_vs_t_report_pdf(
     *,
     language: str = "es",
     font_defaults: PlotFontDefaults | None = None,
+    stage_numbers: list[int] | None = None,
 ) -> Path:
     if not parsed_items:
         raise ValueError("Debe seleccionar al menos una etapa para generar el reporte.")
@@ -759,8 +811,12 @@ def export_deg_v_vs_t_report_pdf(
         "v_max": _optional_float(limits["v_max"]),
         "temp_min": _optional_float(limits["temp_min"]),
         "temp_max": _optional_float(limits["temp_max"]),
-        "show_fit_line": False,
+        "fit_use_linear": True,
+        "show_fit_line": True,
         "show_fit_range": False,
+        "stage_numbers": stage_numbers,
+        "use_stage_colors": False,
+        "language": language,
     }
 
     metadata_rows = build_deg_report_metadata(parsed_items, language=language)
@@ -1296,8 +1352,11 @@ def draw_dv_dt_on_figure(
     label_fontsize: float = 11,
     legend_fontsize: float = 10,
     line_width: float = 1.5,
+    stage_numbers: list[int] | None = None,
+    language: str | None = None,
 ) -> bool:
     fig.clear()
+    language = _deg_language(language)
 
     if not parsed_items:
         return False
@@ -1310,6 +1369,7 @@ def draw_dv_dt_on_figure(
         return False
 
     ax = fig.add_subplot(111)
+    stage_context = _stage_number_context(parsed_items, stage_numbers)
 
     def _line_kwargs(color: str) -> dict:
         return {
@@ -1331,11 +1391,11 @@ def draw_dv_dt_on_figure(
         )
         if not delta_rows:
             continue
-        color = _cycle_gradient_color(DEG_STAGE_GRADIENTS["dvdt"], idx, len(parsed_items))
+        color = _stage_plot_color(deg_file, stage_context, idx, len(parsed_items))
         ax.plot(
             [row["time"] for row in delta_rows],
             [row["dVdt"] for row in delta_rows],
-            label=f"Etapa #{deg_file.stage} dV/dt",
+            label=f"{translate('stage', language)} {deg_file.stage} dV/dt",
             **_line_kwargs(color),
         )
 
@@ -1347,7 +1407,7 @@ def draw_dv_dt_on_figure(
     default_title = "dV/dt vs t - Degradacion galvanostatica"
     final_title = plot_title.strip() if plot_title.strip() else default_title
 
-    x_label = "Fecha / hora" if _is_date_axis(time_unit) else f"Tiempo [{time_unit}]"
+    x_label = "Fecha / hora" if _is_date_axis(time_unit) else f"{translate('time', language)} [{time_unit}]"
     dvdt_label_unit = "s" if _is_date_axis(time_unit) else time_unit
     ax.set_xlabel(x_label, fontsize=label_fontsize)
     ax.set_ylabel(f"dV/dt [{_dv_dt_unit_label(dvdt_label_unit)}]", fontsize=label_fontsize)
@@ -1418,8 +1478,15 @@ def draw_v_vs_t_on_figure(
     show_fit_line: bool = True,
     show_fit_range: bool = False,
     reference_start: datetime | None = None,
+    stage_numbers: list[int] | None = None,
+    use_stage_colors: bool = True,
+    voltage_color: str | None = None,
+    temperature_color: str | None = None,
+    fit_color: str | None = None,
+    language: str | None = None,
 ) -> bool:
     fig.clear()
+    language = _deg_language(language)
 
     if not parsed_items:
         return False
@@ -1431,20 +1498,23 @@ def draw_v_vs_t_on_figure(
 
     ax = fig.add_subplot(111)
     ax_temp = ax.twinx() if has_temperature else None
+    stage_context = _stage_number_context(parsed_items, stage_numbers)
 
     for idx, (deg_file, parsed) in enumerate(parsed_items):
         t_vals, v_vals = _required_numeric_series(parsed, "T", "Vf")
         plot_t_vals = _plot_time_values(parsed, t_vals, time_unit, deg_file.path.name)
-        voltage_color = _cycle_gradient_color(DEG_STAGE_GRADIENTS["voltage"], idx, len(parsed_items))
-        temperature_color = _cycle_gradient_color(DEG_STAGE_GRADIENTS["temperature"], idx, len(parsed_items))
+        stage_color = _stage_plot_color(deg_file, stage_context, idx, len(parsed_items))
+        line_voltage_color = voltage_color or (stage_color if use_stage_colors else DEG_PLOT_COLORS["voltage"])
+        line_temperature_color = temperature_color or (stage_color if use_stage_colors else DEG_PLOT_COLORS["temperature"])
+        line_fit_color = fit_color or line_voltage_color
         if has_voltage:
             ax.plot(
                 plot_t_vals,
                 v_vals,
-                color=voltage_color,
+                color=line_voltage_color,
                 linewidth=line_width,
                 linestyle=_mpl_linestyle(voltage_linestyle),
-                label=f"Etapa #{deg_file.stage} V",
+                label=f"{translate('stage', language)} {deg_file.stage} V",
             )
 
             if show_fit_line:
@@ -1502,10 +1572,11 @@ def draw_v_vs_t_on_figure(
                         ax.plot(
                             plot_fit_t,
                             [y0, y1],
-                            color=voltage_color,
+                            color=line_fit_color,
                             linewidth=max(1.0, line_width),
                             linestyle="--",
                             alpha=0.6,
+                            label=translate("linear_fit", language) if len(parsed_items) == 1 else "_nolegend_",
                         )
         if has_temperature and ax_temp is not None:
             temp_time, temp_vals = _required_numeric_series(parsed, "T", "Temp")
@@ -1513,19 +1584,19 @@ def draw_v_vs_t_on_figure(
             ax_temp.plot(
                 plot_temp_time,
                 temp_vals,
-                color=temperature_color,
+                color=line_temperature_color,
                 linewidth=line_width,
                 linestyle=_mpl_linestyle(temperature_linestyle),
-                label=f"Etapa #{deg_file.stage} T",
+                label=f"{translate('stage', language)} {deg_file.stage} T",
             )
 
     default_title = "V vs t - Degradacion galvanostatica"
     final_title = plot_title.strip() if plot_title.strip() else default_title
 
-    x_label = "Fecha / hora" if _is_date_axis(time_unit) else f"Tiempo [{time_unit}]"
+    x_label = "Fecha / hora" if _is_date_axis(time_unit) else f"{translate('time', language)} [{time_unit}]"
     ax.set_xlabel(x_label, fontsize=label_fontsize)
     if has_voltage:
-        ax.set_ylabel("Voltaje [V]", fontsize=label_fontsize)
+        ax.set_ylabel(f"{translate('voltage', language)} [V]", fontsize=label_fontsize)
     ax.set_title(final_title if show_title else "", fontsize=title_fontsize)
     ax.grid(True, alpha=0.25)
     ax.tick_params(axis="both", labelsize=tick_fontsize)
@@ -1555,7 +1626,7 @@ def draw_v_vs_t_on_figure(
     handles, labels = ax.get_legend_handles_labels()
     if ax_temp is not None:
         ax_temp.tick_params(axis="y", labelsize=tick_fontsize)
-        ax_temp.set_ylabel("Temperatura [°C]", fontsize=label_fontsize)
+        ax_temp.set_ylabel(f"{translate('temperature', language)} [°C]", fontsize=label_fontsize)
         if temp_min is not None or temp_max is not None:
             ax_temp.set_ylim(bottom=temp_min, top=temp_max)
             ax_temp.yaxis.set_major_locator(LinearLocator(max(2, int(y_tick_count))))
@@ -1575,7 +1646,7 @@ def draw_v_vs_t_on_figure(
     return True
 
 
-def open_v_vs_t_window(
+def _open_v_vs_t_window_legacy(
     input_dir: Path,
     font_defaults: PlotFontDefaults | None = None,
     language: str = "es",
@@ -2216,6 +2287,1057 @@ def open_v_vs_t_window(
     ttk.Button(buttons_frame, text=translate("pdf_report", language), command=_export_report).pack(side="left", padx=(6, 0))
 
     _plot()
+
+
+def _deg_stage_label(stage: int, language: str | None = None) -> str:
+    return f"{translate('stage', _deg_language(language))} {stage}"
+
+
+def _copy_v_vs_t_line_style(src_line, dst_line) -> None:
+    dst_line.set_color(src_line.get_color())
+    dst_line.set_linestyle(src_line.get_linestyle())
+    dst_line.set_linewidth(src_line.get_linewidth())
+    dst_line.set_marker(src_line.get_marker())
+    dst_line.set_markersize(src_line.get_markersize())
+    try:
+        dst_line.set_markerfacecolor(src_line.get_markerfacecolor())
+    except Exception:
+        pass
+    try:
+        dst_line.set_markeredgecolor(src_line.get_markeredgecolor())
+    except Exception:
+        pass
+    try:
+        dst_line.set_markeredgewidth(src_line.get_markeredgewidth())
+    except Exception:
+        pass
+    try:
+        dst_line.set_alpha(src_line.get_alpha())
+    except Exception:
+        pass
+
+
+def _open_v_vs_t_composer(
+    parent,
+    source_contexts: dict[str, dict[str, object]],
+    font_defaults: PlotFontDefaults,
+    language: str = "es",
+) -> None:
+    language = _deg_language(language)
+    if not source_contexts:
+        return
+
+    existing = getattr(parent, "_composer_win_v_vs_t", None)
+    if existing is not None and existing.winfo_exists():
+        existing.lift()
+        existing.focus_force()
+        return
+
+    comp = tk.Toplevel(parent)
+    parent._composer_win_v_vs_t = comp  # type: ignore[attr-defined]
+    comp.title("Composite (Deg V vs t)")
+    comp.geometry("1240x760")
+
+    ctrl_host, plot_side = create_resizable_plot_layout(
+        comp,
+        sidebar_width=320,
+        sidebar_side="right",
+        plot_padding=0,
+    )
+    ctrl = _build_scrollable_controls(ctrl_host)
+
+    figc = Figure(figsize=(8.5, 6.0), dpi=100)
+    ax_main = figc.add_subplot(111)
+    ax_temp = ax_main.twinx()
+
+    canvas = FigureCanvasTkAgg(figc, master=plot_side)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    toolbar = NavigationToolbar2Tk(canvas, plot_side, pack_toolbar=False)
+    toolbar.update()
+    toolbar.pack(side="top", fill="x")
+
+    title_var = tk.StringVar(value="Composite - Deg V vs t")
+    show_title_var = tk.BooleanVar(value=True)
+    legend_var = tk.BooleanVar(value=True)
+    status_var = tk.StringVar(value="Listo.")
+    title_fs_var = tk.DoubleVar(value=float(font_defaults.title))
+    label_fs_var = tk.DoubleVar(value=float(font_defaults.label))
+    legend_fs_var = tk.DoubleVar(value=float(font_defaults.legend))
+    tick_fs_var = tk.DoubleVar(value=float(font_defaults.tick))
+    x_tick_count_var = tk.IntVar(value=6)
+    y_tick_count_var = tk.IntVar(value=6)
+    xmin_var = tk.StringVar()
+    xmax_var = tk.StringVar()
+    vmin_var = tk.StringVar()
+    vmax_var = tk.StringVar()
+    tmin_var = tk.StringVar()
+    tmax_var = tk.StringVar()
+    comp_lines: dict[str, list[object]] = {}
+    active_keys: list[str] = []
+    idx_to_key: list[str] = []
+    time_unit_var = tk.StringVar(value="h")
+
+    def _source_title(key: str) -> str:
+        fig = source_contexts[key].get("figure")
+        if isinstance(fig, Figure) and fig.axes:
+            title = (fig.axes[0].get_title() or "").strip()
+            if title:
+                return title
+        return str(source_contexts[key].get("tab_title", key))
+
+    def _source_lines(key: str) -> list[tuple[str, list[object], list[object], bool, str, float]]:
+        series_getter = source_contexts[key].get("series_getter")
+        if callable(series_getter):
+            try:
+                return list(series_getter(time_unit_var.get()))
+            except ValueError:
+                return []
+
+        fig = source_contexts[key].get("figure")
+        out: list[tuple[str, list[object], list[object], bool, str, float]] = []
+        if not isinstance(fig, Figure):
+            return out
+        for axis in fig.axes:
+            y_label = (axis.get_ylabel() or "").lower()
+            is_temp_axis = "temp" in y_label
+            for line in axis.get_lines():
+                label = (line.get_label() or "").strip()
+                if label and not label.startswith("_"):
+                    out.append(
+                        (
+                            label,
+                            list(line.get_xdata(orig=False)),
+                            list(line.get_ydata(orig=False)),
+                            is_temp_axis,
+                            str(line.get_linestyle()),
+                            float(line.get_linewidth()),
+                        )
+                    )
+        return out
+
+    def _refresh_listbox() -> None:
+        lb.delete(0, "end")
+        idx_to_key.clear()
+        for key in sorted(source_contexts, key=lambda item: _source_title(item).lower()):
+            lb.insert("end", f"{_source_title(key)}   [{key}]")
+            idx_to_key.append(key)
+
+    def _selected_keys() -> list[str]:
+        return [idx_to_key[index] for index in lb.curselection()]
+
+    def _parse_float(value: str) -> float | None:
+        text = value.strip()
+        if not text:
+            return None
+        return float(text.replace(",", "."))
+
+    def _set_axis_limits() -> None:
+        time_unit = time_unit_var.get()
+        xmin = _parse_time_limit_text(xmin_var.get(), time_unit)
+        xmax = _parse_time_limit_text(xmax_var.get(), time_unit)
+        vmin = _parse_float(vmin_var.get())
+        vmax = _parse_float(vmax_var.get())
+        tmin = _parse_float(tmin_var.get())
+        tmax = _parse_float(tmax_var.get())
+        if xmin is not None or xmax is not None:
+            ax_main.set_xlim(left=xmin, right=xmax)
+        if vmin is not None or vmax is not None:
+            ax_main.set_ylim(bottom=vmin, top=vmax)
+        if tmin is not None or tmax is not None:
+            ax_temp.set_ylim(bottom=tmin, top=tmax)
+
+    def _has_temp_lines() -> bool:
+        return any(
+            bool(getattr(line, "_deg_is_temperature", False))
+            for lines in comp_lines.values()
+            for line in lines
+        )
+
+    def _apply_axes() -> None:
+        ax_main.set_title(title_var.get() if show_title_var.get() else "", fontsize=title_fs_var.get())
+        time_unit = time_unit_var.get()
+        x_label = "Fecha / hora" if _is_date_axis(time_unit) else f"{translate('time', language)} [{time_unit}]"
+        ax_main.set_xlabel(x_label, fontsize=label_fs_var.get())
+        ax_main.set_ylabel(f"{translate('voltage', language)} [V]", fontsize=label_fs_var.get())
+        ax_temp.set_ylabel(f"{translate('temperature', language)} [°C]", fontsize=label_fs_var.get())
+        ax_main.grid(True, alpha=0.25)
+        ax_temp.grid(False)
+
+        ax_main.relim()
+        ax_main.autoscale_view()
+        ax_temp.relim()
+        ax_temp.autoscale_view()
+        _set_axis_limits()
+
+        ax_main.tick_params(axis="both", labelsize=tick_fs_var.get())
+        ax_temp.tick_params(axis="y", labelsize=tick_fs_var.get())
+        apply_x_tick_label_padding(ax_main, tick_fs_var.get())
+        _apply_time_axis_format(ax_main, time_unit, x_tick_count_var.get())
+        ax_main.yaxis.set_major_locator(MaxNLocator(nbins=max(2, int(y_tick_count_var.get()))))
+        ax_main.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+        ax_temp.yaxis.set_major_locator(MaxNLocator(nbins=max(2, int(y_tick_count_var.get()))))
+        ax_temp.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+
+        has_temp = _has_temp_lines()
+        ax_temp.yaxis.set_visible(has_temp)
+        ax_temp.spines["right"].set_visible(has_temp)
+        ax_temp.yaxis.label.set_visible(has_temp)
+
+        handles, labels = ax_main.get_legend_handles_labels()
+        if has_temp:
+            h2, l2 = ax_temp.get_legend_handles_labels()
+            handles += h2
+            labels += l2
+        legend = ax_main.get_legend()
+        if legend is not None:
+            legend.remove()
+        if legend_var.get() and handles:
+            make_legend_draggable(ax_main.legend(handles, labels, fontsize=legend_fs_var.get()))
+
+        figc.tight_layout()
+        canvas.draw_idle()
+
+    def _composer_line_color(key: str, source_index: int, source_total: int, is_temperature: bool) -> str:
+        total = max(1, source_total)
+        if is_temperature:
+            return _hls_to_hex((0.08 + (source_index / total)) % 1.0, 0.42, 0.78)
+
+        deg_file = source_contexts[key].get("deg_file")
+        stage_numbers = source_contexts[key].get("stage_numbers")
+        if isinstance(deg_file, DegFile):
+            stage_context = stage_numbers if isinstance(stage_numbers, list) else [deg_file.stage]
+            return _stage_plot_color(deg_file, stage_context, source_index, total)
+        return _hls_to_hex((0.58 + (source_index / total)) % 1.0, 0.46, 0.80)
+
+    def _apply_composer_line_color(line, color: str) -> None:
+        line.set_color(color)
+        try:
+            line.set_markeredgecolor(color)
+        except Exception:
+            pass
+        try:
+            marker_face = str(line.get_markerfacecolor()).lower()
+            if marker_face != "none":
+                line.set_markerfacecolor(color)
+        except Exception:
+            pass
+
+    def _remove_drawn_lines() -> None:
+        for lines in comp_lines.values():
+            for line in lines:
+                try:
+                    line.remove()
+                except Exception:
+                    pass
+        comp_lines.clear()
+
+    def _redraw_active_sources() -> list[str]:
+        _remove_drawn_lines()
+        skipped: list[str] = []
+        kept_keys: list[str] = []
+        source_total = len(active_keys)
+        for source_index, key in enumerate(active_keys):
+            source_lines = _source_lines(key)
+            if not source_lines:
+                skipped.append(_source_title(key))
+                continue
+
+            new_lines: list[object] = []
+            for label, x_values, y_values, is_temperature, linestyle, linewidth in source_lines:
+                target_ax = ax_temp if is_temperature else ax_main
+                color = _composer_line_color(key, source_index, source_total, is_temperature)
+                new_line = target_ax.plot(
+                    x_values,
+                    y_values,
+                    label=label,
+                    color=color,
+                    linestyle=_mpl_linestyle(linestyle),
+                    linewidth=linewidth,
+                )[0]
+                _apply_composer_line_color(new_line, color)
+                new_line._deg_is_temperature = is_temperature  # type: ignore[attr-defined]
+                new_lines.append(new_line)
+            comp_lines[key] = new_lines
+            kept_keys.append(key)
+
+        active_keys[:] = kept_keys
+        _apply_axes()
+        return skipped
+
+    def _add_sources() -> None:
+        added = 0
+        skipped: list[str] = []
+        for key in _selected_keys():
+            if key in active_keys:
+                continue
+
+            source_lines = _source_lines(key)
+            if not source_lines:
+                skipped.append(_source_title(key))
+                continue
+
+            active_keys.append(key)
+            added += 1
+
+        redraw_skipped = _redraw_active_sources()
+        if skipped or redraw_skipped:
+            status_var.set("No se agregaron algunas fuentes: revise las series visibles.")
+        else:
+            status_var.set(f"Fuentes agregadas: {added}")
+
+    def _remove_selected() -> None:
+        removed = 0
+        for key in _selected_keys():
+            if key in active_keys:
+                active_keys.remove(key)
+                removed += 1
+        _redraw_active_sources()
+        status_var.set(f"Fuentes quitadas: {removed}")
+
+    def _clear() -> None:
+        active_keys.clear()
+        _remove_drawn_lines()
+        _apply_axes()
+        status_var.set("Composición vacía.")
+
+    def _on_time_unit_changed(*_args) -> None:
+        xmin_var.set("")
+        xmax_var.set("")
+        skipped = _redraw_active_sources()
+        if skipped:
+            status_var.set("Unidad actualizada; algunas fuentes no tienen series visibles.")
+        else:
+            status_var.set("Unidad de tiempo actualizada.")
+
+    def _autofit() -> None:
+        xmin_var.set("")
+        xmax_var.set("")
+        vmin_var.set("")
+        vmax_var.set("")
+        tmin_var.set("")
+        tmax_var.set("")
+        _apply_axes()
+        status_var.set("Autoescala aplicada.")
+
+    def _schedule_apply(*_args) -> None:
+        try:
+            _apply_axes()
+            status_var.set("Gráfico actualizado.")
+        except ValueError as exc:
+            status_var.set(f"Error: {exc}")
+
+    sources_box = ttk.LabelFrame(ctrl, text="Fuentes")
+    sources_box.pack(fill="x", pady=(0, 8))
+    lb_frame = ttk.Frame(sources_box)
+    lb_frame.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+    lb = tk.Listbox(lb_frame, selectmode="extended", height=9, exportselection=False)
+    lb_scroll = ttk.Scrollbar(lb_frame, orient="vertical", command=lb.yview)
+    lb.configure(yscrollcommand=lb_scroll.set)
+    lb.pack(side="left", fill="both", expand=True)
+    lb_scroll.pack(side="right", fill="y")
+    ttk.Button(sources_box, text="Agregar", command=_add_sources).pack(fill="x", padx=8, pady=(0, 4))
+    button_row = ttk.Frame(sources_box)
+    button_row.pack(fill="x", padx=8, pady=(0, 8))
+    ttk.Button(button_row, text="Quitar", command=_remove_selected).pack(side="left", fill="x", expand=True, padx=(0, 4))
+    ttk.Button(button_row, text="Limpiar", command=_clear).pack(side="left", fill="x", expand=True)
+
+    time_box = ttk.LabelFrame(ctrl, text="Tiempo")
+    time_box.pack(fill="x", pady=5)
+    ttk.Label(time_box, text="Unidad de tiempo").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    time_combo = ttk.Combobox(
+        time_box,
+        textvariable=time_unit_var,
+        values=["s", "min", "h"],
+        state="readonly",
+        width=8,
+    )
+    time_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
+    time_combo.bind("<<ComboboxSelected>>", _on_time_unit_changed)
+
+    text_box = ttk.LabelFrame(ctrl, text="Texto / tamaños")
+    text_box.pack(fill="x", pady=5)
+    text_specs = [
+        ("Título", title_var, None),
+        ("Tamaño del título", title_fs_var, (6.0, 50.0, 0.5)),
+        ("Tamaño de ticks", tick_fs_var, (6.0, 40.0, 0.5)),
+        ("Tamaño de etiquetas", label_fs_var, (6.0, 40.0, 0.5)),
+        ("Tamaño de leyenda", legend_fs_var, (6.0, 40.0, 0.5)),
+    ]
+    for row_idx, (label, variable, spin_cfg) in enumerate(text_specs):
+        ttk.Label(text_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        if spin_cfg is None:
+            widget = ttk.Entry(text_box, textvariable=variable, width=24)
+        else:
+            widget = ttk.Spinbox(
+                text_box,
+                from_=spin_cfg[0],
+                to=spin_cfg[1],
+                increment=spin_cfg[2],
+                textvariable=variable,
+                width=10,
+            )
+        widget.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        widget.bind("<Return>", _schedule_apply)
+        widget.bind("<KP_Enter>", _schedule_apply)
+        widget.bind("<FocusOut>", _schedule_apply)
+        if isinstance(widget, ttk.Spinbox):
+            widget.config(command=_schedule_apply)
+    ttk.Checkbutton(text_box, text="Mostrar título", variable=show_title_var, command=_schedule_apply).grid(
+        row=len(text_specs),
+        column=0,
+        columnspan=2,
+        sticky="w",
+        padx=8,
+        pady=3,
+    )
+    ttk.Checkbutton(text_box, text="Leyenda", variable=legend_var, command=_schedule_apply).grid(
+        row=len(text_specs) + 1,
+        column=0,
+        columnspan=2,
+        sticky="w",
+        padx=8,
+        pady=3,
+    )
+
+    limits_box = ttk.LabelFrame(ctrl, text="Límites de ejes")
+    limits_box.pack(fill="x", pady=5)
+    limit_specs = [
+        ("t min", xmin_var),
+        ("t max", xmax_var),
+        ("V min", vmin_var),
+        ("V max", vmax_var),
+        ("T min", tmin_var),
+        ("T max", tmax_var),
+    ]
+    for row_idx, (label, variable) in enumerate(limit_specs):
+        ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        entry = ttk.Entry(limits_box, textvariable=variable, width=14)
+        entry.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        entry.bind("<Return>", _schedule_apply)
+        entry.bind("<KP_Enter>", _schedule_apply)
+        entry.bind("<FocusOut>", _schedule_apply)
+    for row_idx, (label, variable) in enumerate((("x-Ticks", x_tick_count_var), ("y-Ticks", y_tick_count_var)), start=len(limit_specs)):
+        ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        spin = tk.Spinbox(limits_box, from_=2, to=10, textvariable=variable, width=8)
+        spin.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        spin.bind("<Return>", _schedule_apply)
+        spin.bind("<FocusOut>", _schedule_apply)
+        spin.config(command=_schedule_apply)
+
+    ttk.Button(ctrl, text="Autoescala", command=_autofit).pack(fill="x", pady=(8, 4))
+    ttk.Label(ctrl, textvariable=status_var, wraplength=260, justify="left").pack(anchor="w", fill="x", pady=(6, 10))
+
+    def _on_close() -> None:
+        try:
+            delattr(parent, "_composer_win_v_vs_t")
+        except Exception:
+            pass
+        comp.destroy()
+
+    comp.protocol("WM_DELETE_WINDOW", _on_close)
+    _refresh_listbox()
+    _apply_axes()
+
+
+def _build_v_vs_t_tab(
+    notebook: ttk.Notebook,
+    item: tuple[DegFile, ParsedDTA],
+    stage_numbers: list[int],
+    font_default_values: dict[str, str],
+    composer_parent,
+    source_contexts: dict[str, dict[str, object]],
+    font_defaults: PlotFontDefaults,
+    language: str = "es",
+) -> dict[str, object]:
+    language = _deg_language(language)
+    deg_file, parsed = item
+    parsed_items = [(deg_file, parsed)]
+    stage_label = _deg_stage_label(deg_file.stage, language)
+    tab_title = stage_label
+    default_plot_title = f"{translate('deg_report_plot_title', language)} - {stage_label}"
+    default_limits = compute_default_v_vs_t_limits(parsed_items, time_unit="s")
+
+    tab = ttk.Frame(notebook)
+    notebook.add(tab, text=tab_title)
+
+    controls_host, plot_outer = create_resizable_plot_layout(tab, sidebar_width=320)
+    controls_frame = _build_scrollable_controls(controls_host)
+    ttk.Button(
+        controls_frame,
+        text="Componer",
+        command=lambda: _open_v_vs_t_composer(composer_parent, source_contexts, font_defaults, language),
+    ).pack(fill="x", pady=(0, 8))
+
+    toolbar_frame = ttk.Frame(plot_outer)
+    toolbar_frame.pack(side="top", fill="x")
+
+    canvas_frame = ttk.Frame(plot_outer)
+    canvas_frame.pack(side="top", fill="both", expand=True)
+
+    fig = Figure(figsize=(8.8, 5.4), dpi=100)
+    canvas = FigureCanvasTkAgg(fig, master=canvas_frame)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    toolbar = NavigationToolbar2Tk(canvas, toolbar_frame, pack_toolbar=False)
+    toolbar.update()
+    toolbar.pack(side="left", fill="x")
+
+    status_var = tk.StringVar(value="Listo.")
+    temperature_var = tk.BooleanVar(value=False)
+    time_unit_var = tk.StringVar(value="s")
+    voltage_line_var = tk.StringVar(value="-")
+    temperature_line_var = tk.StringVar(value="--")
+    x_tick_count_var = tk.IntVar(value=6)
+    y_tick_count_var = tk.IntVar(value=6)
+    plot_title_var = tk.StringVar(value=default_plot_title)
+    show_title_var = tk.BooleanVar(value=True)
+    title_fontsize_var = tk.StringVar(value=font_default_values["title"])
+    tick_fontsize_var = tk.StringVar(value=font_default_values["tick"])
+    label_fontsize_var = tk.StringVar(value=font_default_values["label"])
+    legend_fontsize_var = tk.StringVar(value=font_default_values["legend"])
+    line_width_var = tk.StringVar(value="1.5")
+    t_min_var = tk.StringVar(value=default_limits["t_min"])
+    t_max_var = tk.StringVar(value=default_limits["t_max"])
+    v_min_var = tk.StringVar(value=default_limits["v_min"])
+    v_max_var = tk.StringVar(value=default_limits["v_max"])
+    temp_min_var = tk.StringVar(value=default_limits["temp_min"])
+    temp_max_var = tk.StringVar(value=default_limits["temp_max"])
+    slope_t_min_var = tk.StringVar(value="")
+    slope_t_max_var = tk.StringVar(value="")
+    slope_fit_var = tk.BooleanVar(value=False)
+    show_fit_var = tk.BooleanVar(value=False)
+    show_range_var = tk.BooleanVar(value=True)
+    slope_indicator_var = tk.StringVar(value="-")
+
+    initial_state = {
+        "temperature": False,
+        "time_unit": "s",
+        "voltage_line": "-",
+        "temperature_line": "--",
+        "x_tick_count": 6,
+        "y_tick_count": 6,
+        "plot_title": default_plot_title,
+        "show_title": True,
+        "title_fontsize": font_default_values["title"],
+        "tick_fontsize": font_default_values["tick"],
+        "label_fontsize": font_default_values["label"],
+        "legend_fontsize": font_default_values["legend"],
+        "line_width": "1.5",
+        "t_min": default_limits["t_min"],
+        "t_max": default_limits["t_max"],
+        "v_min": default_limits["v_min"],
+        "v_max": default_limits["v_max"],
+        "temp_min": default_limits["temp_min"],
+        "temp_max": default_limits["temp_max"],
+        "slope_t_min": "",
+        "slope_t_max": "",
+        "slope_fit": False,
+        "show_fit": False,
+        "show_range": True,
+    }
+
+    plot_job = {"id": None}
+    current_time_unit = {"value": time_unit_var.get()}
+    suspend_events = {"value": False}
+    reference_start_cache: dict[str, datetime | None] = {"value": None}
+
+    def _reference_start() -> datetime:
+        if reference_start_cache["value"] is None:
+            reference_start_cache["value"] = _reference_start_datetime(parsed_items)
+        return reference_start_cache["value"]
+
+    def _collect_limits() -> dict[str, TimeAxisValue | float | None]:
+        return dict(
+            t_min=_parse_time_limit_text(t_min_var.get(), time_unit_var.get()),
+            t_max=_parse_time_limit_text(t_max_var.get(), time_unit_var.get()),
+            v_min=_optional_float(v_min_var.get()),
+            v_max=_optional_float(v_max_var.get()),
+            temp_min=_optional_float(temp_min_var.get()),
+            temp_max=_optional_float(temp_max_var.get()),
+        )
+
+    def _collect_slope_limits() -> tuple[TimeAxisValue | None, TimeAxisValue | None]:
+        return (
+            _parse_time_limit_text(slope_t_min_var.get(), time_unit_var.get()),
+            _parse_time_limit_text(slope_t_max_var.get(), time_unit_var.get()),
+        )
+
+    def _update_degradation_indicator() -> None:
+        try:
+            t_min, t_max = _collect_slope_limits()
+        except ValueError as exc:
+            slope_indicator_var.set(f"Error: {exc}")
+            return
+        try:
+            ref_start = _reference_start() if _is_date_axis(time_unit_var.get()) else None
+            slope, _count = compute_degradation_rate(
+                parsed=parsed,
+                source_name=deg_file.path.name,
+                time_unit=time_unit_var.get(),
+                reference_start=ref_start,
+                t_min=t_min,
+                t_max=t_max,
+                use_linear_fit=slope_fit_var.get(),
+            )
+        except ValueError as exc:
+            slope_indicator_var.set(f"Error: {exc}")
+            return
+
+        if slope is None:
+            slope_indicator_var.set("Sin datos")
+            return
+
+        slope_uv_hour = slope * 1e6 * SECONDS_PER_HOUR
+        slope_indicator_var.set(f"{_format_adaptive_limit_value(slope_uv_hour)} µV/h")
+
+    def _plot() -> None:
+        plot_job["id"] = None
+        try:
+            fit_t_min, fit_t_max = _collect_slope_limits()
+        except ValueError:
+            fit_t_min, fit_t_max = None, None
+        show_fit_range = show_range_var.get() and fit_t_min is not None and fit_t_max is not None
+        try:
+            has_plot = draw_v_vs_t_on_figure(
+                fig=fig,
+                parsed_items=parsed_items,
+                show_temperature=temperature_var.get(),
+                voltage_linestyle=voltage_line_var.get(),
+                temperature_linestyle=temperature_line_var.get(),
+                time_unit=time_unit_var.get(),
+                x_tick_count=x_tick_count_var.get(),
+                y_tick_count=y_tick_count_var.get(),
+                plot_title=plot_title_var.get(),
+                show_title=show_title_var.get(),
+                title_fontsize=_positive_float(title_fontsize_var.get(), "Tamaño del título"),
+                tick_fontsize=_positive_float(tick_fontsize_var.get(), "Tamaño de ticks"),
+                label_fontsize=_positive_float(label_fontsize_var.get(), "Tamaño de etiquetas"),
+                legend_fontsize=_positive_float(legend_fontsize_var.get(), "Tamaño de leyenda"),
+                line_width=_positive_float(line_width_var.get(), "Grosor de línea"),
+                fit_t_min=fit_t_min,
+                fit_t_max=fit_t_max,
+                fit_use_linear=slope_fit_var.get(),
+                show_fit_line=show_fit_var.get(),
+                show_fit_range=show_fit_range,
+                reference_start=_reference_start() if _is_date_axis(time_unit_var.get()) else None,
+                stage_numbers=stage_numbers,
+                use_stage_colors=False,
+                language=language,
+                **_collect_limits(),
+            )
+        except ValueError as exc:
+            fig.clear()
+            canvas.draw_idle()
+            status_var.set(f"Error: {exc}")
+            _update_degradation_indicator()
+            return
+
+        if not has_plot:
+            fig.clear()
+            canvas.draw_idle()
+            status_var.set("No se muestra gráfico: active al menos una serie.")
+            _update_degradation_indicator()
+            return
+
+        canvas.draw_idle()
+        status_var.set("Gráfico actualizado.")
+        _update_degradation_indicator()
+
+    def _schedule_plot(*_args) -> None:
+        if suspend_events["value"]:
+            return
+        if plot_job["id"] is not None:
+            tab.after_cancel(plot_job["id"])
+        plot_job["id"] = tab.after(20, _plot)
+
+    def _autofit() -> None:
+        try:
+            fitted = compute_autofit_v_vs_t_limits(
+                parsed_items,
+                temperature_var.get(),
+                time_unit=time_unit_var.get(),
+            )
+        except ValueError as exc:
+            status_var.set(f"Error: {exc}")
+            return
+
+        suspend_events["value"] = True
+        try:
+            t_min_var.set(fitted["t_min"])
+            t_max_var.set(fitted["t_max"])
+            v_min_var.set(fitted["v_min"])
+            v_max_var.set(fitted["v_max"])
+            temp_min_var.set(fitted["temp_min"])
+            temp_max_var.set(fitted["temp_max"])
+        finally:
+            suspend_events["value"] = False
+
+        _plot()
+        status_var.set("Autoescala aplicada.")
+
+    def _on_time_unit_changed(*_args) -> None:
+        if suspend_events["value"]:
+            return
+
+        old_unit = current_time_unit["value"]
+        new_unit = time_unit_var.get()
+        old_t_min = t_min_var.get()
+        old_t_max = t_max_var.get()
+        old_slope_t_min = slope_t_min_var.get()
+        old_slope_t_max = slope_t_max_var.get()
+
+        suspend_events["value"] = True
+        try:
+            if t_min_var.get().strip():
+                t_min_var.set(_convert_time_limit_text(t_min_var.get(), old_unit, new_unit, _reference_start()))
+            if t_max_var.get().strip():
+                t_max_var.set(_convert_time_limit_text(t_max_var.get(), old_unit, new_unit, _reference_start()))
+            if slope_t_min_var.get().strip():
+                slope_t_min_var.set(_convert_time_limit_text(slope_t_min_var.get(), old_unit, new_unit, _reference_start()))
+            if slope_t_max_var.get().strip():
+                slope_t_max_var.set(_convert_time_limit_text(slope_t_max_var.get(), old_unit, new_unit, _reference_start()))
+            current_time_unit["value"] = new_unit
+        except ValueError as exc:
+            t_min_var.set(old_t_min)
+            t_max_var.set(old_t_max)
+            slope_t_min_var.set(old_slope_t_min)
+            slope_t_max_var.set(old_slope_t_max)
+            current_time_unit["value"] = old_unit
+            time_unit_var.set(old_unit)
+            status_var.set(f"Error: {exc}")
+            return
+        finally:
+            suspend_events["value"] = False
+
+        _schedule_plot()
+
+    def _reset() -> None:
+        suspend_events["value"] = True
+        try:
+            temperature_var.set(initial_state["temperature"])
+            current_time_unit["value"] = initial_state["time_unit"]
+            time_unit_var.set(initial_state["time_unit"])
+            voltage_line_var.set(initial_state["voltage_line"])
+            temperature_line_var.set(initial_state["temperature_line"])
+            x_tick_count_var.set(initial_state["x_tick_count"])
+            y_tick_count_var.set(initial_state["y_tick_count"])
+            plot_title_var.set(initial_state["plot_title"])
+            show_title_var.set(initial_state["show_title"])
+            title_fontsize_var.set(initial_state["title_fontsize"])
+            tick_fontsize_var.set(initial_state["tick_fontsize"])
+            label_fontsize_var.set(initial_state["label_fontsize"])
+            legend_fontsize_var.set(initial_state["legend_fontsize"])
+            line_width_var.set(initial_state["line_width"])
+            t_min_var.set(initial_state["t_min"])
+            t_max_var.set(initial_state["t_max"])
+            v_min_var.set(initial_state["v_min"])
+            v_max_var.set(initial_state["v_max"])
+            temp_min_var.set(initial_state["temp_min"])
+            temp_max_var.set(initial_state["temp_max"])
+            slope_t_min_var.set(initial_state["slope_t_min"])
+            slope_t_max_var.set(initial_state["slope_t_max"])
+            slope_fit_var.set(initial_state["slope_fit"])
+            show_fit_var.set(initial_state["show_fit"])
+            show_range_var.set(initial_state["show_range"])
+        finally:
+            suspend_events["value"] = False
+
+        _plot()
+        status_var.set("Valores restaurados.")
+
+    def _export_report() -> None:
+        try:
+            default_name = f"Deg_Report_stage_{deg_file.stage}.pdf"
+            path_text = filedialog.asksaveasfilename(
+                parent=tab,
+                title=translate("save_deg_report", language),
+                initialfile=default_name,
+                defaultextension=".pdf",
+                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            )
+            if not path_text:
+                status_var.set(translate("export_cancelled", language))
+                return
+            exported_path = export_deg_v_vs_t_report_pdf(
+                parsed_items,
+                Path(path_text),
+                language=language,
+                font_defaults=font_defaults,
+                stage_numbers=stage_numbers,
+            )
+        except Exception as exc:
+            status_var.set(f"Error al exportar reporte: {type(exc).__name__}: {exc}")
+            messagebox.showerror("Deg Report", str(exc), parent=tab)
+            return
+
+        status_var.set(f"{translate('report_exported', language)}: {exported_path}")
+
+    ttk.Label(
+        controls_frame,
+        text=f"Archivo detectado:\n{deg_file.path.name}",
+        justify="left",
+        wraplength=260,
+    ).pack(anchor="w", pady=(0, 10))
+
+    series_box = ttk.LabelFrame(controls_frame, text="Series")
+    series_box.pack(fill="x", pady=5)
+    style_box = ttk.LabelFrame(controls_frame, text="Estilo")
+    style_box.pack(fill="x", pady=5)
+    text_box = ttk.LabelFrame(controls_frame, text="Texto / tamaños")
+    text_box.pack(fill="x", pady=5)
+    degradation_box = ttk.LabelFrame(controls_frame, text="Degradación")
+    degradation_box.pack(fill="x", pady=5)
+    limits_box = ttk.LabelFrame(controls_frame, text="Límites de ejes")
+    limits_box.pack(fill="x", pady=5)
+
+    ttk.Checkbutton(series_box, text="Temperatura", variable=temperature_var, command=_schedule_plot).pack(
+        anchor="w",
+        padx=8,
+        pady=4,
+    )
+    ttk.Label(series_box, text="Unidad de tiempo").pack(anchor="w", padx=8, pady=(8, 2))
+    time_unit_combo = ttk.Combobox(
+        series_box,
+        textvariable=time_unit_var,
+        values=TIME_UNIT_OPTIONS,
+        state="readonly",
+        width=8,
+    )
+    time_unit_combo.pack(anchor="w", padx=8, pady=(0, 4))
+
+    ttk.Label(style_box, text="Línea de voltaje").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    voltage_line_combo = ttk.Combobox(
+        style_box,
+        textvariable=voltage_line_var,
+        values=LINESTYLE_OPTIONS,
+        state="readonly",
+        width=10,
+    )
+    voltage_line_combo.grid(row=0, column=1, sticky="w", padx=8, pady=3)
+    ttk.Label(style_box, text="Línea de temperatura").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    temperature_line_combo = ttk.Combobox(
+        style_box,
+        textvariable=temperature_line_var,
+        values=LINESTYLE_OPTIONS,
+        state="readonly",
+        width=10,
+    )
+    temperature_line_combo.grid(row=1, column=1, sticky="w", padx=8, pady=3)
+
+    ttk.Label(text_box, text="Título").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    title_entry = ttk.Entry(text_box, textvariable=plot_title_var, width=28)
+    title_entry.grid(row=0, column=1, sticky="we", padx=8, pady=3)
+    text_specs = [
+        ("Tamaño del título", title_fontsize_var, (6, 30, 0.5)),
+        ("Tamaño de ticks", tick_fontsize_var, (6, 24, 0.5)),
+        ("Tamaño de etiquetas", label_fontsize_var, (6, 24, 0.5)),
+        ("Tamaño de leyenda", legend_fontsize_var, (6, 24, 0.5)),
+        ("Grosor de línea", line_width_var, (0.5, 5.0, 0.1)),
+    ]
+    for row_idx, (label, variable, spin_cfg) in enumerate(text_specs, start=1):
+        ttk.Label(text_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        spin = tk.Spinbox(text_box, from_=spin_cfg[0], to=spin_cfg[1], increment=spin_cfg[2], textvariable=variable, width=8)
+        spin.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        spin.bind("<Return>", _schedule_plot)
+        spin.bind("<KP_Enter>", _schedule_plot)
+        spin.bind("<FocusOut>", _schedule_plot)
+        spin.config(command=_schedule_plot)
+    ttk.Checkbutton(text_box, text="Mostrar título", variable=show_title_var, command=_schedule_plot).grid(
+        row=len(text_specs) + 1,
+        column=0,
+        columnspan=2,
+        sticky="w",
+        padx=8,
+        pady=3,
+    )
+
+    ttk.Label(degradation_box, text="t min").grid(row=0, column=0, sticky="w", padx=8, pady=3)
+    slope_t_min_entry = ttk.Entry(degradation_box, textvariable=slope_t_min_var, width=16)
+    slope_t_min_entry.grid(row=0, column=1, sticky="w", padx=8, pady=3)
+    ttk.Label(degradation_box, text="t max").grid(row=1, column=0, sticky="w", padx=8, pady=3)
+    slope_t_max_entry = ttk.Entry(degradation_box, textvariable=slope_t_max_var, width=16)
+    slope_t_max_entry.grid(row=1, column=1, sticky="w", padx=8, pady=3)
+    ttk.Checkbutton(degradation_box, text="Ajuste lineal", variable=slope_fit_var, command=_schedule_plot).grid(
+        row=2,
+        column=0,
+        columnspan=2,
+        sticky="w",
+        padx=8,
+        pady=(3, 3),
+    )
+    ttk.Checkbutton(degradation_box, text="Mostrar ajuste", variable=show_fit_var, command=_schedule_plot).grid(
+        row=3,
+        column=0,
+        columnspan=2,
+        sticky="w",
+        padx=8,
+        pady=(0, 6),
+    )
+    ttk.Checkbutton(degradation_box, text="Mostrar rango", variable=show_range_var, command=_schedule_plot).grid(
+        row=4,
+        column=0,
+        columnspan=2,
+        sticky="w",
+        padx=8,
+        pady=(0, 6),
+    )
+    ttk.Label(degradation_box, text="dV/dt promedio [µV/h]").grid(
+        row=5,
+        column=0,
+        columnspan=2,
+        sticky="w",
+        padx=8,
+        pady=(6, 2),
+    )
+    ttk.Label(degradation_box, textvariable=slope_indicator_var, justify="left", wraplength=240).grid(
+        row=6,
+        column=0,
+        columnspan=2,
+        sticky="w",
+        padx=8,
+        pady=(0, 6),
+    )
+
+    limit_specs = [
+        ("t min", t_min_var),
+        ("t max", t_max_var),
+        ("V min", v_min_var),
+        ("V max", v_max_var),
+        ("T min", temp_min_var),
+        ("T max", temp_max_var),
+    ]
+    for row_idx, (label, var) in enumerate(limit_specs):
+        ttk.Label(limits_box, text=label).grid(row=row_idx, column=0, sticky="w", padx=8, pady=3)
+        entry = ttk.Entry(limits_box, textvariable=var, width=22)
+        entry.grid(row=row_idx, column=1, sticky="w", padx=8, pady=3)
+        entry.bind("<Return>", _schedule_plot)
+        entry.bind("<KP_Enter>", _schedule_plot)
+        entry.bind("<FocusOut>", _schedule_plot)
+    ttk.Label(limits_box, text="x-Ticks").grid(row=len(limit_specs), column=0, sticky="w", padx=8, pady=3)
+    x_tick_spin = tk.Spinbox(limits_box, from_=2, to=10, textvariable=x_tick_count_var, width=8)
+    x_tick_spin.grid(row=len(limit_specs), column=1, sticky="w", padx=8, pady=3)
+    ttk.Label(limits_box, text="y-Ticks").grid(row=len(limit_specs) + 1, column=0, sticky="w", padx=8, pady=3)
+    y_tick_spin = tk.Spinbox(limits_box, from_=2, to=10, textvariable=y_tick_count_var, width=8)
+    y_tick_spin.grid(row=len(limit_specs) + 1, column=1, sticky="w", padx=8, pady=3)
+
+    for combo in (voltage_line_combo, temperature_line_combo):
+        combo.bind("<<ComboboxSelected>>", _schedule_plot)
+    time_unit_combo.bind("<<ComboboxSelected>>", _on_time_unit_changed)
+    for entry in (title_entry, slope_t_min_entry, slope_t_max_entry):
+        entry.bind("<Return>", _schedule_plot)
+        entry.bind("<KP_Enter>", _schedule_plot)
+        entry.bind("<FocusOut>", _schedule_plot)
+    for spin in (x_tick_spin, y_tick_spin):
+        spin.bind("<Return>", _schedule_plot)
+        spin.bind("<FocusOut>", _schedule_plot)
+        spin.config(command=_schedule_plot)
+
+    ttk.Label(controls_frame, textvariable=status_var, wraplength=240, justify="left").pack(
+        anchor="w",
+        fill="x",
+        pady=(10, 10),
+    )
+
+    buttons_frame = ttk.Frame(controls_frame)
+    buttons_frame.pack(fill="x", pady=(5, 0))
+    ttk.Button(buttons_frame, text="Restablecer", command=_reset).pack(side="left", padx=(0, 6))
+    ttk.Button(buttons_frame, text="Autoescala", command=_autofit).pack(side="left")
+    ttk.Button(buttons_frame, text=translate("pdf_report", language), command=_export_report).pack(side="left", padx=(6, 0))
+
+    def _composer_series(composer_time_unit: str) -> list[tuple[str, list[object], list[object], bool, str, float]]:
+        try:
+            line_width = _positive_float(line_width_var.get(), "Grosor de línea")
+        except ValueError:
+            line_width = 1.5
+
+        series: list[tuple[str, list[object], list[object], bool, str, float]] = []
+        voltage_linestyle = voltage_line_var.get()
+        if _mpl_linestyle(voltage_linestyle) != "None":
+            try:
+                t_vals, v_vals = _required_numeric_series(parsed, "T", "Vf")
+            except ValueError:
+                pass
+            else:
+                series.append(
+                    (
+                        f"{stage_label} V",
+                        list(_plot_time_values(parsed, t_vals, composer_time_unit, deg_file.path.name)),
+                        list(v_vals),
+                        False,
+                        voltage_linestyle,
+                        line_width,
+                    )
+                )
+
+        temperature_linestyle = temperature_line_var.get()
+        if temperature_var.get() and _mpl_linestyle(temperature_linestyle) != "None":
+            try:
+                temp_time, temp_vals = _required_numeric_series(parsed, "T", "Temp")
+            except ValueError:
+                pass
+            else:
+                series.append(
+                    (
+                        f"{stage_label} T",
+                        list(_plot_time_values(parsed, temp_time, composer_time_unit, deg_file.path.name)),
+                        list(temp_vals),
+                        True,
+                        temperature_linestyle,
+                        line_width,
+                    )
+                )
+        return series
+
+    context = {
+        "tab_title": tab_title,
+        "figure": fig,
+        "time_unit_getter": lambda: time_unit_var.get(),
+        "deg_file": deg_file,
+        "stage_numbers": stage_numbers,
+        "series_getter": _composer_series,
+    }
+    source_contexts[f"stage_{deg_file.stage}"] = context
+    _plot()
+    return context
+
+
+def open_v_vs_t_window(
+    input_dir: Path,
+    font_defaults: PlotFontDefaults | None = None,
+    language: str = "es",
+) -> None:
+    language = _deg_language(language)
+    deg_files = find_deg_files(Path(input_dir))
+    if not deg_files:
+        raise ValueError("No se encontraron archivos de degradacion validos.")
+
+    font_defaults = resolve_plot_font_defaults(font_defaults)
+    font_default_values = font_defaults.as_strings()
+    parsed_items = [(deg_file, parse_gamry_dta(deg_file.path)) for deg_file in deg_files]
+    stage_numbers = [deg_file.stage for deg_file, _parsed in parsed_items]
+
+    win = tk.Toplevel()
+    win.title("Deg - V vs t")
+    win.geometry("1200x720")
+
+    notebook = ttk.Notebook(win)
+    notebook.pack(fill="both", expand=True)
+
+    source_contexts: dict[str, dict[str, object]] = {}
+    for item in parsed_items:
+        _build_v_vs_t_tab(
+            notebook,
+            item,
+            stage_numbers,
+            font_default_values,
+            win,
+            source_contexts,
+            font_defaults,
+            language=language,
+        )
 
 
 def open_dv_dt_window(input_dir: Path, font_defaults: PlotFontDefaults | None = None) -> None:

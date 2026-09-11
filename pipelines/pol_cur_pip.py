@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from collections import defaultdict
+import colorsys
 import re
 
 from math import floor, ceil, log10, isfinite
@@ -83,6 +84,19 @@ PC_PLOT_COLORS = {
     "dsc_current": "#1b5e20",
 }
 
+PC_COMPOSER_PALETTE = [
+    "#1f77b4",
+    "#d62728",
+    "#2ca02c",
+    "#9467bd",
+    "#ff7f0e",
+    "#17becf",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f",
+    "#bcbd22",
+]
+
 SECONDS_PER_MINUTE = 60.0
 SECONDS_PER_HOUR = 3600.0
 TIME_UNIT_OPTIONS = ["s", "min", "h"]
@@ -93,6 +107,35 @@ PC_HIGH_CURRENT_FIT_POINTS = 5
 
 def _pc_language(language: str | None = None) -> str:
     return normalize_language(language or PC_LANGUAGE)
+
+
+def _pc_hls_to_hex(hue: float, lightness: float = 0.46, saturation: float = 0.75) -> str:
+    r, g, b = colorsys.hls_to_rgb(hue % 1.0, lightness, saturation)
+    return f"#{int(round(r * 255)):02x}{int(round(g * 255)):02x}{int(round(b * 255)):02x}"
+
+
+def _pc_composer_color_for_index(index: int, total: int) -> str:
+    if index < len(PC_COMPOSER_PALETTE):
+        return PC_COMPOSER_PALETTE[index]
+    return _pc_hls_to_hex(index / max(1, total))
+
+
+def _pc_composer_temperature_color_for_index(index: int, total: int) -> str:
+    return _pc_hls_to_hex((0.08 + (index / max(1, total))) % 1.0, 0.42, 0.78)
+
+
+def _apply_composer_line_color(line, color: str) -> None:
+    line.set_color(color)
+    try:
+        line.set_markeredgecolor(color)
+    except Exception:
+        pass
+    try:
+        marker_face = str(line.get_markerfacecolor()).lower()
+        if marker_face != "none":
+            line.set_markerfacecolor(color)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -4782,18 +4825,30 @@ def _open_v_vs_i_composer(
         if legend_var.get() and (handles or h2):
             make_legend_draggable(ax_main.legend(handles + h2, labels + l2, fontsize=float(font_defaults.legend)))
 
-        has_temp = any(" T" in label for lines in comp_lines.values() for label in [line.get_label() for line in lines])
+        has_temp = _has_temp_lines()
         ax_temp.yaxis.set_visible(has_temp)
         ax_temp.spines["right"].set_visible(has_temp)
         ax_temp.yaxis.label.set_visible(has_temp)
         canvas.draw_idle()
 
+    def _is_temperature_line(line) -> bool:
+        return bool(getattr(line, "_pc_is_temperature", False)) or str(line.get_label()).endswith(" T")
+
     def _has_temp_lines() -> bool:
         return any(
-            str(line.get_label()).endswith(" T")
+            _is_temperature_line(line)
             for lines in comp_lines.values()
             for line in lines
         )
+
+    def _restyle_composite_lines() -> None:
+        total = max(1, len(comp_lines))
+        for source_index, lines in enumerate(comp_lines.values()):
+            voltage_color = _pc_composer_color_for_index(source_index, total)
+            temperature_color = _pc_composer_temperature_color_for_index(source_index, total)
+            for line in lines:
+                color = temperature_color if _is_temperature_line(line) else voltage_color
+                _apply_composer_line_color(line, color)
 
     def _fmt(v: float) -> str:
         return f"{v:.6g}"
@@ -4955,7 +5010,7 @@ def _open_v_vs_i_composer(
             for line in lines:
                 label = line.get_label()
                 xs.extend(float(value) for value in line.get_xdata(orig=False))
-                if " T" in label:
+                if _is_temperature_line(line):
                     ys_temp.extend(float(value) for value in line.get_ydata(orig=False))
                 else:
                     ys_main.extend(float(value) for value in line.get_ydata(orig=False))
@@ -5004,14 +5059,17 @@ def _open_v_vs_i_composer(
             _remove_key(key)
             new_lines: list[object] = []
             for label, src_line in source_lines:
-                target_ax = ax_temp if label.endswith(" T") else ax_main
+                is_temperature = label.endswith(" T")
+                target_ax = ax_temp if is_temperature else ax_main
                 x = list(src_line.get_xdata(orig=False))
                 y = list(src_line.get_ydata(orig=False))
                 (new_line,) = target_ax.plot(x, y, label=f"{_source_title(key)} - {label}")
                 _copy_v_vs_i_line_style(src_line, new_line)
+                new_line._pc_is_temperature = is_temperature  # type: ignore[attr-defined]
                 new_lines.append(new_line)
             comp_lines[key] = new_lines
 
+        _restyle_composite_lines()
         _fit_all()
         status_var.set(" / ".join(errors) if errors else "Curvas agregadas al composite.")
 
@@ -5022,6 +5080,7 @@ def _open_v_vs_i_composer(
                 _remove_key(key)
                 changed = True
         if changed:
+            _restyle_composite_lines()
             _fit_all()
             status_var.set("Curvas removidas del composite.")
 

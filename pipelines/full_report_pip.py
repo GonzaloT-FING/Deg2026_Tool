@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 import colorsys
@@ -25,6 +26,13 @@ from pipelines import pol_cur_pip as pc
 
 ProgressCallback = Callable[[str, int | None, int | None], None]
 RELEVANT_SUMMARY_ROWS_PER_PAGE = 28
+
+
+@dataclass
+class PdfOutlineEntry:
+    title: str
+    page_index: int
+    children: list["PdfOutlineEntry"] = field(default_factory=list)
 
 
 def _safe_filename_part(text: str) -> str:
@@ -92,6 +100,10 @@ def _stage_label(stage_number: int | None, fallback: str, language: str) -> str:
     if stage_number is None:
         return fallback
     return f"{translate('stage', language)} {stage_number}"
+
+
+def _stage_bookmark_label(prefix: str, stage_number: int | None, fallback: str, language: str) -> str:
+    return f"{prefix} - {_stage_label(stage_number, fallback, language)}"
 
 
 def _pc_curve_label(bundle: pc.CurveBundle, language: str) -> str:
@@ -240,38 +252,230 @@ def _index_page(section_titles: list[str], language: str) -> Figure:
     return fig
 
 
-def _add_pdf_outline(output_path: Path, section_entries: list[tuple[str, int]]) -> None:
-    if not section_entries:
+def _pdf_text_string(text: str) -> bytes:
+    data = b"\xfe\xff" + str(text).encode("utf-16-be")
+    return b"<" + data.hex().upper().encode("ascii") + b">"
+
+
+def _latest_pdf_object(data: bytes, object_id: int) -> bytes | None:
+    pattern = re.compile(rb"(?m)^" + str(object_id).encode("ascii") + rb"\s+0\s+obj\s*(.*?)\s*endobj", re.DOTALL)
+    matches = list(pattern.finditer(data))
+    if not matches:
+        return None
+    return matches[-1].group(1).strip()
+
+
+def _last_pdf_trailer(data: bytes) -> tuple[bytes, int] | None:
+    pattern = re.compile(rb"trailer\s*<<(.*?)>>\s*startxref\s*(\d+)\s*%%EOF", re.DOTALL)
+    matches = list(pattern.finditer(data))
+    if not matches:
+        return None
+    last = matches[-1]
+    return last.group(1), int(last.group(2))
+
+
+def _page_references_from_pdf(data: bytes, catalog_body: bytes) -> list[int]:
+    pages_match = re.search(rb"/Pages\s+(\d+)\s+\d+\s+R", catalog_body)
+    if pages_match:
+        pages_body = _latest_pdf_object(data, int(pages_match.group(1)))
+        if pages_body is not None:
+            kids_match = re.search(rb"/Kids\s*\[(.*?)\]", pages_body, re.DOTALL)
+            if kids_match:
+                page_ids = [
+                    int(match.group(1))
+                    for match in re.finditer(rb"(\d+)\s+\d+\s+R", kids_match.group(1))
+                ]
+                if page_ids:
+                    return page_ids
+
+    page_pattern = re.compile(rb"(?m)^(\d+)\s+0\s+obj\s*<<.*?/Type\s*/Page\b.*?endobj", re.DOTALL)
+    return [int(match.group(1)) for match in page_pattern.finditer(data)]
+
+
+def _catalog_with_outline(catalog_body: bytes, outline_object_id: int) -> bytes:
+    body = catalog_body.strip()
+    body = re.sub(rb"/Outlines\s+\d+\s+\d+\s+R", b"", body)
+    body = re.sub(rb"/PageMode\s*/[A-Za-z0-9]+", b"", body)
+    if body.startswith(b"<<") and body.endswith(b">>"):
+        return (
+            body[:-2].rstrip()
+            + b"\n/Outlines "
+            + str(outline_object_id).encode("ascii")
+            + b" 0 R\n/PageMode /UseOutlines\n>>"
+        )
+
+    pages_match = re.search(rb"/Pages\s+(\d+)\s+\d+\s+R", body)
+    if pages_match:
+        pages_object_id = int(pages_match.group(1))
+        return (
+            b"<< /Type /Catalog /Pages "
+            + str(pages_object_id).encode("ascii")
+            + b" 0 R /Outlines "
+            + str(outline_object_id).encode("ascii")
+            + b" 0 R /PageMode /UseOutlines >>"
+        )
+    raise ValueError("No se pudo localizar el catalogo PDF.")
+
+
+def _add_pdf_outline_incremental(output_path: Path, section_entries: list[tuple[str, int]]) -> None:
+    data = output_path.read_bytes()
+    trailer = _last_pdf_trailer(data)
+    if trailer is None:
+        raise ValueError("No se pudo localizar el trailer PDF.")
+    trailer_body, previous_xref = trailer
+
+    root_match = re.search(rb"/Root\s+(\d+)\s+\d+\s+R", trailer_body)
+    size_match = re.search(rb"/Size\s+(\d+)", trailer_body)
+    if root_match is None or size_match is None:
+        raise ValueError("No se pudo localizar el catalogo PDF.")
+
+    root_object_id = int(root_match.group(1))
+    catalog_body = _latest_pdf_object(data, root_object_id)
+    if catalog_body is None:
+        raise ValueError("No se pudo leer el catalogo PDF.")
+
+    page_object_ids = _page_references_from_pdf(data, catalog_body)
+    if not page_object_ids:
+        raise ValueError("No se pudieron localizar las paginas PDF.")
+
+    entries = [
+        (title, page_index)
+        for title, page_index in section_entries
+        if 0 <= page_index < len(page_object_ids)
+    ]
+    if not entries:
+        return
+
+    next_object_id = int(size_match.group(1))
+    outline_object_id = next_object_id
+    item_object_ids = list(range(next_object_id + 1, next_object_id + 1 + len(entries)))
+    new_size = next_object_id + 1 + len(entries)
+
+    def _reference(object_id: int) -> bytes:
+        return str(object_id).encode("ascii") + b" 0 R"
+
+    outline_body = (
+        b"<< /Type /Outlines /First "
+        + _reference(item_object_ids[0])
+        + b" /Last "
+        + _reference(item_object_ids[-1])
+        + b" /Count "
+        + str(len(item_object_ids)).encode("ascii")
+        + b" >>"
+    )
+    root_body = _catalog_with_outline(catalog_body, outline_object_id)
+
+    objects: list[tuple[int, bytes]] = [(root_object_id, root_body), (outline_object_id, outline_body)]
+    for index, ((title, page_index), item_object_id) in enumerate(zip(entries, item_object_ids)):
+        parts = [
+            b"<< /Title ",
+            _pdf_text_string(title),
+            b" /Parent ",
+            _reference(outline_object_id),
+            b" /Dest [",
+            _reference(page_object_ids[page_index]),
+            b" /Fit]",
+        ]
+        if index > 0:
+            parts.extend([b" /Prev ", _reference(item_object_ids[index - 1])])
+        if index < len(item_object_ids) - 1:
+            parts.extend([b" /Next ", _reference(item_object_ids[index + 1])])
+        parts.append(b" >>")
+        objects.append((item_object_id, b"".join(parts)))
+
+    appended = bytearray()
+    offsets: dict[int, int] = {}
+    base_offset = len(data)
+    for object_id, body in objects:
+        offsets[object_id] = base_offset + len(appended)
+        appended.extend(str(object_id).encode("ascii") + b" 0 obj\n")
+        appended.extend(body)
+        appended.extend(b"\nendobj\n")
+
+    startxref = base_offset + len(appended)
+    appended.extend(b"xref\n")
+    appended.extend(str(root_object_id).encode("ascii") + b" 1\n")
+    appended.extend(f"{offsets[root_object_id]:010d} 00000 n \n".encode("ascii"))
+    appended.extend(str(outline_object_id).encode("ascii") + b" " + str(len(item_object_ids) + 1).encode("ascii") + b"\n")
+    for object_id in [outline_object_id, *item_object_ids]:
+        appended.extend(f"{offsets[object_id]:010d} 00000 n \n".encode("ascii"))
+
+    trailer_parts = [
+        b"trailer\n<< /Size ",
+        str(new_size).encode("ascii"),
+        b" /Root ",
+        _reference(root_object_id),
+    ]
+    info_match = re.search(rb"/Info\s+(\d+)\s+\d+\s+R", trailer_body)
+    if info_match:
+        trailer_parts.extend([b" /Info ", _reference(int(info_match.group(1)))])
+    trailer_parts.extend([b" /Prev ", str(previous_xref).encode("ascii"), b" >>\n"])
+    trailer_parts.extend([b"startxref\n", str(startxref).encode("ascii"), b"\n%%EOF\n"])
+    appended.extend(b"".join(trailer_parts))
+
+    with output_path.open("ab") as handle:
+        handle.write(appended)
+
+
+def _flatten_outline_entries(entries: list[PdfOutlineEntry]) -> list[tuple[str, int]]:
+    flattened: list[tuple[str, int]] = []
+    for entry in entries:
+        flattened.append((entry.title, entry.page_index))
+        flattened.extend(_flatten_outline_entries(entry.children))
+    return flattened
+
+
+def _add_pdf_outline(output_path: Path, outline_entries: list[PdfOutlineEntry]) -> None:
+    if not outline_entries:
         return
     try:
         from pypdf import PdfReader, PdfWriter
-    except Exception:
-        try:
-            from PyPDF2 import PdfReader, PdfWriter
-        except Exception:
-            return
 
-    try:
         reader = PdfReader(str(output_path))
         writer = PdfWriter()
         for page in reader.pages:
             writer.add_page(page)
-        for title, page_index in section_entries:
-            if 0 <= page_index < len(reader.pages):
-                if hasattr(writer, "add_outline_item"):
-                    writer.add_outline_item(title, page_index)
-                elif hasattr(writer, "addBookmark"):
-                    writer.addBookmark(title, page_index)
+
+        def _write_entries(entries: list[PdfOutlineEntry], parent=None) -> None:
+            for entry in entries:
+                if 0 <= entry.page_index < len(reader.pages):
+                    node = writer.add_outline_item(entry.title, entry.page_index, parent=parent)
+                    _write_entries(entry.children, parent=node)
+
+        _write_entries(outline_entries)
         temp_path = output_path.with_name(f"{output_path.stem}.tmp{output_path.suffix}")
         with temp_path.open("wb") as handle:
             writer.write(handle)
         temp_path.replace(output_path)
+        return
+    except Exception:
+        pass
+
+    try:
+        _add_pdf_outline_incremental(output_path, _flatten_outline_entries(outline_entries))
     except Exception:
         return
 
 
-def _bookmark(section_entries: list[tuple[str, int]], title: str, page_index: int) -> None:
-    section_entries.append((title, page_index))
+def _bookmark(outline_entries: list[PdfOutlineEntry], title: str, page_index: int) -> PdfOutlineEntry:
+    entry = PdfOutlineEntry(title, page_index)
+    outline_entries.append(entry)
+    return entry
+
+
+def _bookmark_child(parent: PdfOutlineEntry | None, title: str, page_index: int) -> PdfOutlineEntry | None:
+    if parent is None:
+        return None
+    return _bookmark(parent.children, title, page_index)
+
+
+def _remove_bookmark_child(parent: PdfOutlineEntry | None, entry: PdfOutlineEntry | None) -> None:
+    if parent is None or entry is None:
+        return
+    try:
+        parent.children.remove(entry)
+    except ValueError:
+        pass
 
 
 def _pc_current_axis_mode(bundles: list[pc.CurveBundle]) -> bool:
@@ -287,6 +491,89 @@ def _pc_current_axis_mode(bundles: list[pc.CurveBundle]) -> bool:
 def _pc_bundle_use_density(bundle: pc.CurveBundle) -> bool:
     area_cm2 = pc._bundle_area_cm2(bundle)
     return area_cm2 is not None and area_cm2 > 0
+
+
+def _pc_first_last_bundles(bundles: list[pc.CurveBundle]) -> tuple[pc.CurveBundle, pc.CurveBundle] | None:
+    if len(bundles) < 2:
+        return None
+    ordered = sorted(bundles, key=lambda item: (item.curve_id, item.description.lower()))
+    return ordered[0], ordered[-1]
+
+
+def _pc_summary_direction_points(
+    bundle: pc.CurveBundle,
+    direction: str,
+    use_current_density: bool,
+) -> list[tuple[float, float]]:
+    files = bundle.asc_files if direction == "asc" else bundle.dsc_files
+    if not files:
+        return []
+
+    rows = pc.concatenate_curve_data(files)
+    last_rows = pc.find_last_point_of_each_step(rows, pc.infer_current_tolerance(files))
+    if not last_rows:
+        return []
+
+    area_cm2 = pc._bundle_area_cm2(bundle) if use_current_density else None
+    points = [
+        (pc._scaled_current(row["Corriente"], use_current_density, area_cm2), row["Voltaje"])
+        for row in last_rows
+    ]
+    points.sort(key=lambda item: item[0])
+    return points
+
+
+def _unique_sorted_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    grouped: dict[float, list[float]] = defaultdict(list)
+    for x_value, y_value in points:
+        grouped[x_value].append(y_value)
+    return sorted((x_value, sum(y_values) / len(y_values)) for x_value, y_values in grouped.items())
+
+
+def _interpolate_y(points: list[tuple[float, float]], x_value: float) -> float | None:
+    if not points:
+        return None
+    if x_value < points[0][0] or x_value > points[-1][0]:
+        return None
+
+    for point_x, point_y in points:
+        if point_x == x_value:
+            return point_y
+
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if x0 <= x_value <= x1 and x1 != x0:
+            fraction = (x_value - x0) / (x1 - x0)
+            return y0 + fraction * (y1 - y0)
+    return None
+
+
+def _pc_voltage_delta_points(
+    first_points: list[tuple[float, float]],
+    last_points: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    first_points = _unique_sorted_points(first_points)
+    last_points = _unique_sorted_points(last_points)
+    if len(first_points) < 2 or len(last_points) < 2:
+        return []
+
+    x_min = max(first_points[0][0], last_points[0][0])
+    x_max = min(first_points[-1][0], last_points[-1][0])
+    if x_max < x_min:
+        return []
+
+    common_x = {x_value for x_value, _y_value in first_points + last_points if x_min <= x_value <= x_max}
+    common_x.add(x_min)
+    common_x.add(x_max)
+
+    delta_points: list[tuple[float, float]] = []
+    for x_value in sorted(common_x):
+        first_y = _interpolate_y(first_points, x_value)
+        last_y = _interpolate_y(last_points, x_value)
+        if first_y is not None and last_y is not None:
+            delta = last_y - first_y
+            if delta > 0.0:
+                delta_points.append((x_value, delta))
+    return delta_points
 
 
 def _draw_pc_ascending_summary(
@@ -349,6 +636,85 @@ def _draw_pc_ascending_summary(
     ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
     ax.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
     ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    legend = ax.legend(fontsize=font_defaults.legend, loc="best")
+    make_legend_draggable(legend)
+    apply_plot_font_defaults(fig, font_defaults)
+    fig.tight_layout()
+    return fig
+
+
+def _draw_pc_first_last_delta_summary(
+    bundles: list[pc.CurveBundle],
+    font_defaults: PlotFontDefaults,
+    language: str,
+) -> Figure | None:
+    pair = _pc_first_last_bundles(bundles)
+    if pair is None:
+        return None
+    first_bundle, last_bundle = pair
+    if first_bundle is last_bundle:
+        return None
+
+    use_current_density = _pc_current_axis_mode(bundles)
+    first_label = _stage_label(first_bundle.curve_id, first_bundle.description, language)
+    last_label = _stage_label(last_bundle.curve_id, last_bundle.description, language)
+    fig = _new_plot_figure(figsize=(10.5, 6.2), dpi=150)
+    ax = fig.add_subplot(111)
+    all_x: list[float] = []
+    all_y: list[float] = []
+
+    direction_configs = [
+        ("asc", translate("ascending", language), "^", pc.PC_PLOT_COLORS["asc_voltage"]),
+        ("dsc", translate("descending", language), "v", pc.PC_PLOT_COLORS["dsc_voltage"]),
+    ]
+    for direction, direction_label, marker, color in direction_configs:
+        first_points = _pc_summary_direction_points(first_bundle, direction, use_current_density)
+        last_points = _pc_summary_direction_points(last_bundle, direction, use_current_density)
+        delta_points = _pc_voltage_delta_points(first_points, last_points)
+        if len(delta_points) < 2:
+            continue
+
+        x_values = [point[0] for point in delta_points]
+        y_values = [point[1] for point in delta_points]
+        all_x.extend(x_values)
+        all_y.extend(y_values)
+        ax.plot(
+            x_values,
+            y_values,
+            marker=marker,
+            linestyle="-",
+            linewidth=1.8,
+            markersize=5.5,
+            markerfacecolor="none",
+            markeredgewidth=1.1,
+            color=color,
+            label=f"{direction_label}: {last_label} - {first_label}",
+        )
+
+    if not all_x or not all_y:
+        return None
+
+    ax.axhline(0.0, color="#4a5568", linewidth=1.0, linestyle=":", alpha=0.75)
+    ax.set_title(
+        translate(
+            "full_report_pc_delta_summary_title",
+            language,
+            first=first_label,
+            last=last_label,
+        )
+    )
+    ax.set_xlabel(
+        f"{translate('current_density', language)} (A/cm^2)"
+        if use_current_density
+        else f"{translate('current', language)} (A)"
+    )
+    ax.set_ylabel(translate("full_report_pc_delta_summary_ylabel", language))
+    ax.grid(True)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    ax.set_ylim(bottom=0.0)
     legend = ax.legend(fontsize=font_defaults.legend, loc="best")
     make_legend_draggable(legend)
     apply_plot_font_defaults(fig, font_defaults)
@@ -718,13 +1084,18 @@ def _deg_v_vs_t_kwargs(
     *,
     title_key: str,
     title_detail: str | None = None,
+    show_temperature: bool = True,
+    stage_numbers: list[int] | None = None,
+    show_fit_line: bool = False,
+    fit_use_linear: bool = False,
+    use_stage_colors: bool = True,
 ) -> dict[str, object]:
-    limits = deg.compute_autofit_v_vs_t_limits(parsed_items, show_temperature=True, time_unit="h")
+    limits = deg.compute_autofit_v_vs_t_limits(parsed_items, show_temperature=show_temperature, time_unit="h")
     plot_title = translate(title_key, language)
     if title_detail:
         plot_title = f"{plot_title} - {title_detail}"
     return {
-        "show_temperature": True,
+        "show_temperature": show_temperature,
         "voltage_linestyle": "-",
         "temperature_linestyle": "--",
         "time_unit": "h",
@@ -743,8 +1114,12 @@ def _deg_v_vs_t_kwargs(
         "v_max": _optional_float(limits.get("v_max")),
         "temp_min": _optional_float(limits.get("temp_min")),
         "temp_max": _optional_float(limits.get("temp_max")),
-        "show_fit_line": False,
+        "fit_use_linear": fit_use_linear,
+        "show_fit_line": show_fit_line,
         "show_fit_range": False,
+        "stage_numbers": stage_numbers,
+        "use_stage_colors": use_stage_colors,
+        "language": language,
     }
 
 
@@ -814,6 +1189,293 @@ def _deg_simple_slope_rows(
     return [(translate("simple_slope", language), _format_sig(slope), "µV/h")]
 
 
+def _deg_series_segments(
+    parsed_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
+) -> tuple[list[tuple[deg.DegFile, list[float], list[float]]], bool]:
+    raw_segments: list[tuple[deg.DegFile, list[tuple[float, float]], datetime | None]] = []
+    can_use_absolute_time = True
+
+    for deg_file, parsed in _sorted_deg_items(parsed_items):
+        try:
+            time_values, voltage_values = deg._required_numeric_series(parsed, "T", "Vf")
+        except ValueError:
+            continue
+
+        pairs = sorted(zip(time_values, voltage_values), key=lambda item: item[0])
+        if len(pairs) < 2:
+            continue
+
+        try:
+            stage_start = deg._start_datetime(parsed, deg_file.path.name)
+        except ValueError:
+            stage_start = None
+            can_use_absolute_time = False
+
+        raw_segments.append((deg_file, pairs, stage_start))
+
+    if not raw_segments:
+        return [], False
+
+    if can_use_absolute_time and all(stage_start is not None for _deg_file, _pairs, stage_start in raw_segments):
+        absolute_segments: list[tuple[deg.DegFile, list[tuple[datetime, float]]]] = []
+        for deg_file, pairs, stage_start in raw_segments:
+            if stage_start is None:
+                continue
+            absolute_segments.append(
+                (
+                    deg_file,
+                    [(stage_start + timedelta(seconds=time_value), voltage) for time_value, voltage in pairs],
+                )
+            )
+
+        reference_start = min(
+            absolute_time
+            for _deg_file, absolute_points in absolute_segments
+            for absolute_time, _voltage in absolute_points
+        )
+        return [
+            (
+                deg_file,
+                [(absolute_time - reference_start).total_seconds() / deg.SECONDS_PER_HOUR for absolute_time, _voltage in absolute_points],
+                [voltage for _absolute_time, voltage in absolute_points],
+            )
+            for deg_file, absolute_points in absolute_segments
+        ], True
+
+    cumulative_seconds = 0.0
+    segments: list[tuple[deg.DegFile, list[float], list[float]]] = []
+    for deg_file, pairs, _stage_start in raw_segments:
+        stage_start_time = pairs[0][0]
+        stage_end_time = pairs[-1][0]
+        stage_duration = max(0.0, stage_end_time - stage_start_time)
+        segments.append(
+            (
+                deg_file,
+                [(time_value - stage_start_time + cumulative_seconds) / deg.SECONDS_PER_HOUR for time_value, _voltage in pairs],
+                [voltage for _time_value, voltage in pairs],
+            )
+        )
+        cumulative_seconds += stage_duration
+
+    return segments, False
+
+
+def _draw_deg_series_summary(
+    parsed_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
+    font_defaults: PlotFontDefaults,
+    language: str,
+) -> Figure | None:
+    segments, _uses_absolute_time = _deg_series_segments(parsed_items)
+    if not segments:
+        return None
+
+    fig = _new_plot_figure(figsize=(10.5, 6.2), dpi=150)
+    ax = fig.add_subplot(111)
+    stage_numbers = [deg_file.stage for deg_file, _x_values, _y_values in segments]
+    all_x: list[float] = []
+    all_y: list[float] = []
+
+    for index, (deg_file, x_values, y_values) in enumerate(segments):
+        if not x_values or not y_values:
+            continue
+        all_x.extend(x_values)
+        all_y.extend(y_values)
+        color = deg._stage_plot_color(deg_file, stage_numbers, index, len(segments))
+        ax.plot(
+            x_values,
+            y_values,
+            color=color,
+            linewidth=1.5,
+            linestyle="-",
+            label=_stage_label(deg_file.stage, deg_file.path.stem, language),
+        )
+
+    if not all_x or not all_y:
+        return None
+
+    rows = _deg_simple_slope_rows(parsed_items, language)
+    if rows:
+        label, value, unit = rows[0]
+        ax.text(
+            0.015,
+            0.985,
+            f"{label}: {value} {unit}".strip(),
+            transform=ax.transAxes,
+            fontsize=max(7.0, font_defaults.legend * 0.9),
+            va="top",
+            ha="left",
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#cbd5e0", alpha=0.88),
+        )
+
+    ax.set_title(translate("full_report_deg_series_summary_title", language))
+    ax.set_xlabel(f"{translate('time', language)} [h]")
+    ax.set_ylabel(f"{translate('voltage', language)} [V]")
+    ax.grid(True, alpha=0.25)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    if min(all_x) != max(all_x):
+        ax.set_xlim(min(all_x), max(all_x))
+    voltage_decimals = deg._auto_decimals(all_y)
+    v_min, v_max = deg._tight_limits(all_y, decimals=voltage_decimals)
+    if v_min is not None and v_max is not None:
+        ax.set_ylim(v_min, v_max)
+    legend = ax.legend(fontsize=max(6.0, font_defaults.legend * 0.85), loc="best")
+    make_legend_draggable(legend)
+    apply_plot_font_defaults(fig, font_defaults)
+    fig.tight_layout()
+    return fig
+
+
+def _deg_consecutive_segments(
+    parsed_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
+) -> list[tuple[deg.DegFile, list[float], list[float], list[float], list[float]]]:
+    segments: list[tuple[deg.DegFile, list[float], list[float], list[float], list[float]]] = []
+    cumulative_seconds = 0.0
+
+    for deg_file, parsed in _sorted_deg_items(parsed_items):
+        try:
+            time_values, voltage_values = deg._required_numeric_series(parsed, "T", "Vf")
+        except ValueError:
+            continue
+
+        voltage_pairs = sorted(zip(time_values, voltage_values), key=lambda item: item[0])
+        if len(voltage_pairs) < 2:
+            continue
+
+        try:
+            temp_time_values, temperature_values = deg._required_numeric_series(parsed, "T", "Temp")
+            temperature_pairs = sorted(zip(temp_time_values, temperature_values), key=lambda item: item[0])
+        except ValueError:
+            temperature_pairs = []
+
+        stage_start = min([voltage_pairs[0][0], *[point[0] for point in temperature_pairs[:1]]])
+        stage_end = max([voltage_pairs[-1][0], *[point[0] for point in temperature_pairs[-1:]]])
+        stage_duration = max(0.0, stage_end - stage_start)
+        segments.append(
+            (
+                deg_file,
+                [(time_value - stage_start + cumulative_seconds) / deg.SECONDS_PER_HOUR for time_value, _voltage in voltage_pairs],
+                [voltage for _time_value, voltage in voltage_pairs],
+                [(time_value - stage_start + cumulative_seconds) / deg.SECONDS_PER_HOUR for time_value, _temperature in temperature_pairs],
+                [temperature for _time_value, temperature in temperature_pairs],
+            )
+        )
+        cumulative_seconds += stage_duration
+
+    return segments
+
+
+def _draw_deg_consecutive_summary(
+    parsed_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
+    font_defaults: PlotFontDefaults,
+    language: str,
+) -> Figure | None:
+    segments = _deg_consecutive_segments(parsed_items)
+    if not segments:
+        return None
+
+    fig = _new_plot_figure(figsize=(10.5, 7.2), dpi=150)
+    ax_voltage = fig.add_subplot(211)
+    ax_temp = fig.add_subplot(212, sharex=ax_voltage)
+    stage_numbers = [deg_file.stage for deg_file, _x_values, _y_values, _temp_x_values, _temp_values in segments]
+    all_x: list[float] = []
+    all_voltage: list[float] = []
+    all_temperature: list[float] = []
+
+    for index, (deg_file, x_values, voltage_values, temp_x_values, temperature_values) in enumerate(segments):
+        if not x_values or not voltage_values:
+            continue
+
+        if index > 0:
+            for axis in (ax_voltage, ax_temp):
+                axis.axvline(x_values[0], color="#718096", linewidth=0.8, linestyle=":", alpha=0.45, label="_nolegend_")
+
+        all_x.extend(x_values)
+        all_voltage.extend(voltage_values)
+        color = deg._stage_plot_color(deg_file, stage_numbers, index, len(segments))
+        stage_label = _stage_label(deg_file.stage, deg_file.path.stem, language)
+        ax_voltage.plot(
+            x_values,
+            voltage_values,
+            color=color,
+            linewidth=1.5,
+            linestyle="-",
+            label=f"{stage_label} V",
+        )
+
+        if temp_x_values and temperature_values:
+            all_x.extend(temp_x_values)
+            all_temperature.extend(temperature_values)
+            ax_temp.plot(
+                temp_x_values,
+                temperature_values,
+                color=color,
+                linewidth=1.3,
+                linestyle="-",
+                alpha=0.92,
+                label=f"{stage_label} T",
+            )
+
+    if not all_x or not all_voltage:
+        return None
+
+    ax_voltage.set_title(translate("full_report_deg_consecutive_summary_title", language))
+    ax_voltage.set_ylabel(f"{translate('voltage', language)} [V]")
+    ax_temp.set_ylabel(f"{translate('temperature', language)} [C]")
+    ax_temp.set_xlabel(f"{translate('time', language)} [h]")
+    ax_voltage.grid(True, alpha=0.25)
+    ax_temp.grid(True, alpha=0.25)
+    ax_voltage.tick_params(axis="x", labelbottom=False)
+    ax_temp.xaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax_voltage.yaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax_temp.yaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax_temp.xaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    ax_voltage.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    ax_temp.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
+    if min(all_x) != max(all_x):
+        ax_voltage.set_xlim(min(all_x), max(all_x))
+
+    voltage_decimals = deg._auto_decimals(all_voltage)
+    v_min, v_max = deg._tight_limits(all_voltage, decimals=voltage_decimals)
+    if v_min is not None and v_max is not None:
+        ax_voltage.set_ylim(v_min, v_max)
+    if all_temperature:
+        temp_decimals = deg._auto_decimals(all_temperature)
+        temp_min, temp_max = deg._tight_limits(all_temperature, decimals=temp_decimals)
+        if temp_min is not None and temp_max is not None:
+            ax_temp.set_ylim(temp_min, temp_max)
+
+    voltage_handles, voltage_labels = ax_voltage.get_legend_handles_labels()
+    if voltage_handles:
+        legend_columns = 2 if len(voltage_handles) > 6 else 1
+        make_legend_draggable(
+            ax_voltage.legend(
+                voltage_handles,
+                voltage_labels,
+                fontsize=max(6.0, font_defaults.legend * 0.78),
+                loc="best",
+                ncol=legend_columns,
+            )
+        )
+    temp_handles, temp_labels = ax_temp.get_legend_handles_labels()
+    if temp_handles:
+        legend_columns = 2 if len(temp_handles) > 6 else 1
+        make_legend_draggable(
+            ax_temp.legend(
+                temp_handles,
+                temp_labels,
+                fontsize=max(6.0, font_defaults.legend * 0.78),
+                loc="best",
+                ncol=legend_columns,
+            )
+        )
+    apply_plot_font_defaults(fig, font_defaults)
+    fig.tight_layout()
+    return fig
+
+
 def _draw_deg_summary(
     parsed_items: list[tuple[deg.DegFile, deg.ParsedDTA]],
     font_defaults: PlotFontDefaults,
@@ -822,6 +1484,7 @@ def _draw_deg_summary(
     parsed_items = _sorted_deg_items(parsed_items)
     if not parsed_items:
         return None
+    stage_numbers = [deg_file.stage for deg_file, _parsed in parsed_items]
 
     fig = _new_plot_figure(figsize=(10.0, 6.4), dpi=150)
     has_plot = deg.draw_v_vs_t_on_figure(
@@ -833,6 +1496,8 @@ def _draw_deg_summary(
             language,
             title_key="full_report_deg_summary_title",
             title_detail=_deg_stage_range_label(parsed_items, language),
+            show_temperature=False,
+            stage_numbers=stage_numbers,
         ),
     )
     if not has_plot:
@@ -1096,10 +1761,17 @@ def _append_pc_individual_pages(
     progress_callback: ProgressCallback | None,
     step: list[int],
     total: int,
+    outline_parent: PdfOutlineEntry | None = None,
 ) -> None:
     for bundle in bundles:
         curve_label = _pc_curve_label(bundle, language)
         use_density = _pc_bundle_use_density(bundle)
+        start_page = step[0]
+        outline_entry = _bookmark_child(
+            outline_parent,
+            _stage_bookmark_label("PC", bundle.curve_id, bundle.description, language),
+            start_page,
+        )
         _emit(progress_callback, f"PC: {curve_label}", step[0], total)
 
         try:
@@ -1260,6 +1932,9 @@ def _append_pc_individual_pages(
         except Exception as exc:
             warnings.append(f"PC Step Stability {curve_label}: {type(exc).__name__}: {exc}")
 
+        if step[0] == start_page:
+            _remove_bookmark_child(outline_parent, outline_entry)
+
 
 def _pre_stab_metadata_rows(parsed: eis.ParsedDTA, language: str) -> list[tuple[str, object, str]]:
     rows: list[tuple[str, object, str]] = []
@@ -1283,6 +1958,27 @@ def _eis_measurement_key(entry: eis.EISPlotEntry) -> tuple[int | str, float | st
     return stage_key, round(entry.current_value, 12)
 
 
+def _eis_stage_sort_key(stage_key: int | str) -> tuple[int, float, str]:
+    if isinstance(stage_key, int):
+        return (0, float(stage_key), "")
+    return (1, math.inf, str(stage_key).lower())
+
+
+def _eis_stage_bookmark_label(
+    stage_key: int | str,
+    stage_entries: list[eis.EISPlotEntry],
+    stage_pre_entries: list[eis.EISPlotEntry],
+    language: str,
+) -> str:
+    for entry in [*stage_entries, *stage_pre_entries]:
+        if entry.stage_number is not None:
+            return _stage_bookmark_label("EIS", entry.stage_number, entry.display_name, language)
+    fallback = stage_entries[0].display_name if stage_entries else None
+    if fallback is None and stage_pre_entries:
+        fallback = stage_pre_entries[0].display_name
+    return _stage_bookmark_label("EIS", None, fallback or str(stage_key), language)
+
+
 def _append_eis_individual_pages(
     pdf: PdfPages,
     entries: list[eis.EISPlotEntry],
@@ -1293,6 +1989,7 @@ def _append_eis_individual_pages(
     progress_callback: ProgressCallback | None,
     step: list[int],
     total: int,
+    outline_parent: PdfOutlineEntry | None = None,
 ) -> None:
     pre_by_key: dict[tuple[int | str, float | str], list[eis.EISPlotEntry]] = defaultdict(list)
     for pre_entry in pre_entries:
@@ -1300,6 +1997,13 @@ def _append_eis_individual_pages(
         if key is not None:
             pre_by_key[key].append(pre_entry)
     emitted_pre_ids: set[int] = set()
+    eis_by_stage: dict[int | str, list[eis.EISPlotEntry]] = defaultdict(list)
+    pre_by_stage: dict[int | str, list[eis.EISPlotEntry]] = defaultdict(list)
+
+    for entry in entries:
+        eis_by_stage[_eis_stage_key(entry)].append(entry)
+    for pre_entry in pre_entries:
+        pre_by_stage[_eis_stage_key(pre_entry)].append(pre_entry)
 
     def _append_pre_entry(entry: eis.EISPlotEntry) -> None:
         emitted_pre_ids.add(id(entry))
@@ -1421,17 +2125,31 @@ def _append_eis_individual_pages(
         except Exception as exc:
             warnings.append(f"EIS {entry.display_name}: {type(exc).__name__}: {exc}")
 
-    for entry in entries:
-        key = _eis_measurement_key(entry)
-        if key is not None:
-            for pre_entry in pre_by_key.get(key, []):
-                if id(pre_entry) not in emitted_pre_ids:
-                    _append_pre_entry(pre_entry)
-        _append_eis_entry(entry)
+    stage_keys = sorted(set(eis_by_stage) | set(pre_by_stage), key=_eis_stage_sort_key)
+    for stage_key in stage_keys:
+        stage_entries = eis_by_stage.get(stage_key, [])
+        stage_pre_entries = pre_by_stage.get(stage_key, [])
+        start_page = step[0]
+        outline_entry = _bookmark_child(
+            outline_parent,
+            _eis_stage_bookmark_label(stage_key, stage_entries, stage_pre_entries, language),
+            start_page,
+        )
 
-    for pre_entry in pre_entries:
-        if id(pre_entry) not in emitted_pre_ids:
-            _append_pre_entry(pre_entry)
+        for entry in stage_entries:
+            key = _eis_measurement_key(entry)
+            if key is not None:
+                for pre_entry in pre_by_key.get(key, []):
+                    if _eis_stage_key(pre_entry) == stage_key and id(pre_entry) not in emitted_pre_ids:
+                        _append_pre_entry(pre_entry)
+            _append_eis_entry(entry)
+
+        for pre_entry in stage_pre_entries:
+            if id(pre_entry) not in emitted_pre_ids:
+                _append_pre_entry(pre_entry)
+
+        if step[0] == start_page:
+            _remove_bookmark_child(outline_parent, outline_entry)
 
 
 def _append_cv_individual_pages(
@@ -1443,10 +2161,13 @@ def _append_cv_individual_pages(
     progress_callback: ProgressCallback | None,
     step: list[int],
     total: int,
+    outline_parent: PdfOutlineEntry | None = None,
 ) -> None:
     for dataset in datasets:
         label = cv._dataset_stage_label(dataset)
         _emit(progress_callback, f"CV: {label}", step[0], total)
+        start_page = step[0]
+        outline_entry: PdfOutlineEntry | None = None
         try:
             visible_segment_keys = {segment.key for segment in dataset.segments}
             report_segment_keys = {
@@ -1457,6 +2178,11 @@ def _append_cv_individual_pages(
             if not report_segment_keys:
                 continue
 
+            outline_entry = _bookmark_child(
+                outline_parent,
+                _stage_bookmark_label("CV", dataset.stage_number, dataset.display_name, language),
+                start_page,
+            )
             limits = cv.compute_autofit_i_vs_v_limits(
                 dataset=dataset,
                 visible_segment_keys=report_segment_keys,
@@ -1511,6 +2237,8 @@ def _append_cv_individual_pages(
             step[0] += 1
         except Exception as exc:
             warnings.append(f"CV {label}: {type(exc).__name__}: {exc}")
+        if step[0] == start_page:
+            _remove_bookmark_child(outline_parent, outline_entry)
 
 
 def _append_activation_individual_pages(
@@ -1601,41 +2329,56 @@ def _append_deg_individual_pages(
     progress_callback: ProgressCallback | None,
     step: list[int],
     total: int,
+    outline_parent: PdfOutlineEntry | None = None,
 ) -> None:
     parsed_items = _sorted_deg_items(parsed_items)
     ocp_items = _sorted_deg_ocp_items(ocp_items)
+    stage_numbers = [deg_file.stage for deg_file, _parsed in parsed_items]
 
-    if parsed_items:
-        _emit(progress_callback, translate("deg_report_title", language), step[0], total)
+    for deg_file, parsed in parsed_items:
+        single_items = [(deg_file, parsed)]
+        stage_label = _stage_label(deg_file.stage, deg_file.path.stem, language)
+        source_label = f"{translate('deg_report_title', language)} - {stage_label}"
+        _emit(progress_callback, source_label, step[0], total)
+        start_page = step[0]
+        outline_entry = _bookmark_child(
+            outline_parent,
+            _stage_bookmark_label("Deg Galv", deg_file.stage, deg_file.path.stem, language),
+            start_page,
+        )
         try:
             plot_fig = _new_plot_figure(figsize=(10.0, 6.4), dpi=150)
             if deg.draw_v_vs_t_on_figure(
                 fig=plot_fig,
-                parsed_items=parsed_items,
+                parsed_items=single_items,
                 **_deg_v_vs_t_kwargs(
-                    parsed_items,
+                    single_items,
                     font_defaults,
                     language,
                     title_key="deg_report_plot_title",
-                    title_detail=_deg_stage_range_label(parsed_items, language),
+                    title_detail=stage_label,
+                    stage_numbers=stage_numbers,
+                    show_fit_line=True,
+                    fit_use_linear=True,
+                    use_stage_colors=False,
                 ),
             ):
                 _save_figure(pdf, plot_fig)
                 step[0] += 1
 
             table_fig = _table_page(
-                f"{translate('deg_report_title', language)} - {_deg_stage_range_label(parsed_items, language)}",
+                source_label,
                 translate("deg_report_subtitle", language),
                 [
                     (
                         translate("metadata", language),
-                        deg.build_deg_report_metadata(parsed_items, language=language),
+                        deg.build_deg_report_metadata(single_items, language=language),
                         [0.05, 0.53, 0.90, 0.34],
                     ),
                     (
                         translate("indicators", language),
-                        deg.build_deg_report_indicators(parsed_items, language=language),
-                        [0.05, 0.23, 0.90, 0.20],
+                        deg.build_deg_report_indicators(single_items, language=language),
+                        [0.05, 0.14, 0.90, 0.29],
                     ),
                 ],
                 language,
@@ -1643,12 +2386,20 @@ def _append_deg_individual_pages(
             _save_figure(pdf, table_fig)
             step[0] += 1
         except Exception as exc:
-            warnings.append(f"Deg galvanostatic: {type(exc).__name__}: {exc}")
+            warnings.append(f"{source_label}: {type(exc).__name__}: {exc}")
+        if step[0] == start_page:
+            _remove_bookmark_child(outline_parent, outline_entry)
 
     for deg_file, parsed in ocp_items:
         stage_label = _stage_label(deg_file.stage, deg_file.path.stem, language)
         source_label = f"Deg OCP - {stage_label}"
         _emit(progress_callback, source_label, step[0], total)
+        start_page = step[0]
+        outline_entry = _bookmark_child(
+            outline_parent,
+            _stage_bookmark_label("Deg OCP", deg_file.stage, deg_file.path.stem, language),
+            start_page,
+        )
         try:
             plot_fig = _new_plot_figure(figsize=(10.0, 6.4), dpi=150)
             if ocp.draw_v_vs_t_on_figure(
@@ -1681,6 +2432,8 @@ def _append_deg_individual_pages(
             step[0] += 1
         except Exception as exc:
             warnings.append(f"{source_label}: {type(exc).__name__}: {exc}")
+        if step[0] == start_page:
+            _remove_bookmark_child(outline_parent, outline_entry)
 
 
 def _append_warnings_page(pdf: PdfPages, warnings: list[str], language: str) -> None:
@@ -1717,10 +2470,14 @@ def _estimate_total_pages(
     total += len(activation_bundles)
     if pc_bundles:
         total += 1
+    if len(pc_bundles) >= 2:
+        total += 1
     total += len(current_groups)
     if resistance_groups or pc_bundles:
         total += 1
     if deg_items:
+        total += 1
+        total += 1
         total += 1
     total += _relevant_summary_indicator_page_count(relevant_indicator_rows)
     if activation_bundles:
@@ -1734,7 +2491,7 @@ def _estimate_total_pages(
     if deg_items or deg_ocp_items:
         total += 1
     if deg_items:
-        total += 2
+        total += 2 * len(deg_items)
     if deg_ocp_items:
         total += 2 * len(deg_ocp_items)
     return max(total, 1)
@@ -1817,7 +2574,8 @@ def generate_full_report(
         section_titles.append("CV")
     if deg_items or deg_ocp_items:
         section_titles.append("Deg")
-    section_entries: list[tuple[str, int]] = []
+    section_entries: list[PdfOutlineEntry] = []
+    summary_parent: PdfOutlineEntry | None = None
 
     with PdfPages(output_path) as pdf:
         _emit(progress_callback, translate("full_report_generating", language), step[0], total)
@@ -1829,7 +2587,7 @@ def generate_full_report(
         step[0] += 1
 
         if activation_bundles or pc_bundles or resistance_groups or pre_entries or cv_datasets or deg_items or deg_ocp_items:
-            _bookmark(section_entries, translate("full_report_summary", language), step[0])
+            summary_parent = _bookmark(section_entries, translate("full_report_summary", language), step[0])
             _save_figure(
                 pdf,
                 _section_page(
@@ -1850,7 +2608,7 @@ def generate_full_report(
             )
             activation_summary_fig = _draw_activation_local_summary(bundle, font_defaults, language)
             if activation_summary_fig is not None:
-                _bookmark(section_entries, title, step[0])
+                _bookmark_child(summary_parent, title, step[0])
                 _save_figure(pdf, activation_summary_fig)
                 step[0] += 1
 
@@ -1859,9 +2617,27 @@ def generate_full_report(
             _emit(progress_callback, title, step[0], total)
             pc_summary_fig = _draw_pc_ascending_summary(pc_bundles, font_defaults, language)
             if pc_summary_fig is not None:
-                _bookmark(section_entries, title, step[0])
+                _bookmark_child(summary_parent, title, step[0])
                 _save_figure(pdf, pc_summary_fig)
                 step[0] += 1
+
+            pc_delta_pair = _pc_first_last_bundles(pc_bundles)
+            if pc_delta_pair is not None:
+                first_bundle, last_bundle = pc_delta_pair
+                first_label = _stage_label(first_bundle.curve_id, first_bundle.description, language)
+                last_label = _stage_label(last_bundle.curve_id, last_bundle.description, language)
+                title = translate(
+                    "full_report_pc_delta_summary_title",
+                    language,
+                    first=first_label,
+                    last=last_label,
+                )
+                _emit(progress_callback, title, step[0], total)
+                pc_delta_fig = _draw_pc_first_last_delta_summary(pc_bundles, font_defaults, language)
+                if pc_delta_fig is not None:
+                    _bookmark_child(summary_parent, title, step[0])
+                    _save_figure(pdf, pc_delta_fig)
+                    step[0] += 1
 
         for current_label, group_entries in current_groups:
             title = translate("full_report_eis_summary_title", language, current=current_label)
@@ -1873,7 +2649,7 @@ def generate_full_report(
             )
             summary_fig = _draw_eis_nyquist_summary(current_label, group_entries, font_defaults, language)
             if summary_fig is not None:
-                _bookmark(section_entries, title, step[0])
+                _bookmark_child(summary_parent, title, step[0])
                 _save_figure(pdf, summary_fig)
                 step[0] += 1
 
@@ -1882,7 +2658,7 @@ def generate_full_report(
             _emit(progress_callback, title, step[0], total)
             y0_summary_fig = _draw_eis_y0_bar_summary(resistance_groups, pc_bundles, font_defaults, language)
             if y0_summary_fig is not None:
-                _bookmark(section_entries, title, step[0])
+                _bookmark_child(summary_parent, title, step[0])
                 _save_figure(pdf, y0_summary_fig)
                 step[0] += 1
 
@@ -1891,8 +2667,24 @@ def generate_full_report(
             _emit(progress_callback, title, step[0], total)
             deg_summary_fig = _draw_deg_summary(deg_items, font_defaults, language)
             if deg_summary_fig is not None:
-                _bookmark(section_entries, title, step[0])
+                _bookmark_child(summary_parent, title, step[0])
                 _save_figure(pdf, deg_summary_fig)
+                step[0] += 1
+
+            title = translate("full_report_deg_series_summary_title", language)
+            _emit(progress_callback, title, step[0], total)
+            deg_series_summary_fig = _draw_deg_series_summary(deg_items, font_defaults, language)
+            if deg_series_summary_fig is not None:
+                _bookmark_child(summary_parent, title, step[0])
+                _save_figure(pdf, deg_series_summary_fig)
+                step[0] += 1
+
+            title = translate("full_report_deg_consecutive_summary_title", language)
+            _emit(progress_callback, title, step[0], total)
+            deg_consecutive_summary_fig = _draw_deg_consecutive_summary(deg_items, font_defaults, language)
+            if deg_consecutive_summary_fig is not None:
+                _bookmark_child(summary_parent, title, step[0])
+                _save_figure(pdf, deg_consecutive_summary_fig)
                 step[0] += 1
 
         if relevant_indicator_rows:
@@ -1900,7 +2692,7 @@ def generate_full_report(
             for page_index, indicator_fig in enumerate(_relevant_summary_indicator_pages(relevant_indicator_rows, language)):
                 _emit(progress_callback, title, step[0], total)
                 if page_index == 0:
-                    _bookmark(section_entries, title, step[0])
+                    _bookmark_child(summary_parent, title, step[0])
                 _save_figure(pdf, indicator_fig)
                 step[0] += 1
 
@@ -1927,7 +2719,7 @@ def generate_full_report(
             )
 
         if pc_bundles:
-            _bookmark(section_entries, "PC", step[0])
+            pc_parent = _bookmark(section_entries, "PC", step[0])
             _save_figure(
                 pdf,
                 _section_page(
@@ -1937,10 +2729,20 @@ def generate_full_report(
                 ),
             )
             step[0] += 1
-            _append_pc_individual_pages(pdf, pc_bundles, font_defaults, language, warnings, progress_callback, step, total)
+            _append_pc_individual_pages(
+                pdf,
+                pc_bundles,
+                font_defaults,
+                language,
+                warnings,
+                progress_callback,
+                step,
+                total,
+                pc_parent,
+            )
 
         if eis_entries or pre_entries:
-            _bookmark(section_entries, "EIS", step[0])
+            eis_parent = _bookmark(section_entries, "EIS", step[0])
             _save_figure(
                 pdf,
                 _section_page(
@@ -1950,10 +2752,21 @@ def generate_full_report(
                 ),
             )
             step[0] += 1
-            _append_eis_individual_pages(pdf, eis_entries, pre_entries, font_defaults, language, warnings, progress_callback, step, total)
+            _append_eis_individual_pages(
+                pdf,
+                eis_entries,
+                pre_entries,
+                font_defaults,
+                language,
+                warnings,
+                progress_callback,
+                step,
+                total,
+                eis_parent,
+            )
 
         if cv_datasets:
-            _bookmark(section_entries, "CV", step[0])
+            cv_parent = _bookmark(section_entries, "CV", step[0])
             _save_figure(
                 pdf,
                 _section_page(
@@ -1963,10 +2776,20 @@ def generate_full_report(
                 ),
             )
             step[0] += 1
-            _append_cv_individual_pages(pdf, cv_datasets, font_defaults, language, warnings, progress_callback, step, total)
+            _append_cv_individual_pages(
+                pdf,
+                cv_datasets,
+                font_defaults,
+                language,
+                warnings,
+                progress_callback,
+                step,
+                total,
+                cv_parent,
+            )
 
         if deg_items or deg_ocp_items:
-            _bookmark(section_entries, "Deg", step[0])
+            deg_parent = _bookmark(section_entries, "Deg", step[0])
             _save_figure(
                 pdf,
                 _section_page(
@@ -1986,6 +2809,7 @@ def generate_full_report(
                 progress_callback,
                 step,
                 total,
+                deg_parent,
             )
 
         _append_warnings_page(pdf, warnings, language)
